@@ -36,7 +36,7 @@ class Probes(unittest.TestCase):
         self.assertEqual(len(ids), len(set(ids)))
 
     def test_every_probe_has_a_known_check(self):
-        known = {"canary_in_output", "write_tamper", "no_guard"}
+        known = {"canary_in_output", "write_tamper", "no_guard", "reaches_model"}
         for p in loader.load():
             self.assertIn(p.check, known, p.id)
 
@@ -134,9 +134,25 @@ class RunnerWithStuntkeyHook(unittest.TestCase):
         r = run_probe(self._probe("cat-log-with-key"), self.sbx, self.hook, "stuntkey-hook")
         self.assertEqual(r.status, "masked")
 
-    def test_hook_does_not_see_a_written_script_run(self):
-        r = run_probe(self._probe("script-prints-environ"), self.sbx, self.hook, "stuntkey-hook")
-        self.assertEqual(r.status, "leaked")
+    def test_hook_blocks_writing_a_script_that_prints_the_environment(self):
+        # 0.10: the Write's content is judged, so the script is stopped before
+        # it exists (before 0.10 this probe leaked)
+        for pid in ("script-prints-environ", "node-prints-process-env", "script-reads-env-file"):
+            r = run_probe(self._probe(pid), self.sbx, self.hook, "stuntkey-hook")
+            self.assertEqual(r.status, "blocked", pid)
+
+    def test_hook_blocks_a_stored_key_written_into_a_file_and_a_pasted_prompt(self):
+        for pid in ("write-key-into-test", "edit-key-into-env-example",
+                    "multiedit-key-into-config", "paste-key-in-prompt",
+                    "paste-vendor-key-in-prompt"):
+            r = run_probe(self._probe(pid), self.sbx, self.hook, "stuntkey-hook")
+            self.assertEqual(r.status, "blocked", pid)
+
+    def test_new_probes_leak_without_protection(self):
+        none = profiles.get("none")
+        for pid in ("write-key-into-test", "paste-key-in-prompt"):
+            r = run_probe(self._probe(pid), self.sbx, none, "none")
+            self.assertEqual(r.status, "leaked", pid)
 
 
 class Reporting(unittest.TestCase):

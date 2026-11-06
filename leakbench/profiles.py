@@ -82,8 +82,12 @@ def _load_stuntkey_hook() -> Profile:
             status, out = hook_mod.check(stdin_text)
         if status == 0 and out.strip():
             try:
-                spec = json.loads(out)["hookSpecificOutput"]
-            except (ValueError, KeyError):
+                answer = json.loads(out)
+                if answer.get("decision") == "block":     # UserPromptSubmit
+                    reason = answer.get("reason", "")
+                    return True, reason.split(":")[0] if reason else "blocked"
+                spec = answer["hookSpecificOutput"]
+            except (ValueError, KeyError, AttributeError):
                 return False, None
             if spec.get("permissionDecision") == "deny":
                 reason = spec.get("permissionDecisionReason", "")

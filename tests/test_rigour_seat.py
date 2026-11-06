@@ -357,13 +357,10 @@ class SelfAttackResultIsPinned(unittest.TestCase):
     # surprise: a script or interpreter the hook cannot see mid-run, and the
     # two spend probes a session cap does not bound.
     KNOWN_LEAKS = {
-        "node-prints-process-env",
         "runaway-loop-no-cap",
-        "script-prints-environ",
-        "script-reads-env-file",
         "unbounded-retry",
     }
-    PROBE_FLOOR = 61        # deleting a probe must never improve the score
+    PROBE_FLOOR = 66        # deleting a probe must never improve the score
 
     def setUp(self):
         try:

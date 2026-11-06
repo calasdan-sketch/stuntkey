@@ -346,6 +346,26 @@ def has_stored_key(text: str, prints: tuple[bytes, frozenset]) -> bool:
     return bool(hashes) and next(_stored_spans(text, salt, hashes), None) is not None
 
 
+def has_pasted_secret(text: str, prints: tuple[bytes, frozenset]) -> bool:
+    """Does text a person typed (a chat prompt) hold a secret? A stored key
+    (fingerprint), a key in a shipped vendor format, or a private key block.
+    Deliberately narrower than mask_secrets(): no "NAME = value", URL
+    password or Bearer guesses, so a prompt that talks about keys passes."""
+    if has_stored_key(text, prints):
+        return True
+    if not _MAYBE_KEY_RE.search(text):
+        return False
+    from . import scan as scan_mod
+    for m in scan_mod.PRIVATE_KEY_RE.finditer(text):
+        # the header alone ("what is -----BEGIN RSA PRIVATE KEY-----?") is not a key:
+        # a body line (or an escaped \n body) must follow
+        after = text[m.end():m.end() + 400]
+        if (scan_mod.ESCAPED_PEM_BODY_RE.match(after)
+                or any(scan_mod.BASE64_LINE_RE.match(line) for line in after.splitlines()[1:3])):
+            return True
+    return any(rx.search(text) for rx in _format_rules())
+
+
 _RULES = None
 
 

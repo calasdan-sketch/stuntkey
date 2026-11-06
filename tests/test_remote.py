@@ -149,8 +149,12 @@ def test_script_really_exports_token_and_scoped_git_header():
     script = remote.build_script(
         GITHUB, ["sh", "-c",
                  'echo "$GITHUB_TOKEN|$GIT_CONFIG_COUNT|$GIT_CONFIG_KEY_0|$GIT_CONFIG_VALUE_0"'])
+    # a clean environment: a host that already sets GIT_CONFIG_COUNT (some CI
+    # and sandboxes do) would shift the slot the script appends to
+    import os
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_CONFIG_")}
     out = subprocess.run(["sh", "-c", script], input=(TOKEN + "\n").encode(),
-                         capture_output=True).stdout.decode().strip()
+                         capture_output=True, env=env).stdout.decode().strip()
     tok, count, key, header = out.split("|")
     assert tok == TOKEN and count == "1"
     assert key == "http.https://github.com/.extraHeader"

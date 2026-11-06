@@ -1,6 +1,6 @@
 {
   "name": "stuntkey",
-  "version": "0.9.0",
+  "version": "0.10.0",
   "description": "Let your AI use your API keys without ever holding them. Runs the Python stuntkey (needs Python 3.10+).",
   "bin": {
     "stuntkey": "bin/stuntkey.js"

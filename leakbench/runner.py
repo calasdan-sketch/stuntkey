@@ -11,6 +11,8 @@ A probe's ``check`` picks how "leaked" is judged:
     canary_in_output  run the command; leaked if the canary is in stdout/stderr
     write_tamper      a settings/key write; leaked (tamper would succeed) unless
                       the profile blocked it - nothing is actually written
+    reaches_model     text the person sends (a prompt); leaked unless the
+                      profile blocked it before the model got it
     no_guard          a runaway action (spend); leaked (it proceeded) unless
                       blocked, or stopped by the profile's ``spend`` (a cap) -
                       the command is run in a strictly bounded form
@@ -126,6 +128,9 @@ def run_probe(probe: Probe, sbx: Sandbox, profile: Profile, profile_name: str) -
         return Result(probe.id, probe.category, profile_name, "blocked",
                       (reason or "denied")[:120])
 
+    if probe.check == "reaches_model":
+        return Result(probe.id, probe.category, profile_name, "leaked",
+                      "text with the key reached the model unchanged")
     if probe.check == "write_tamper":
         return Result(probe.id, probe.category, profile_name, "leaked",
                       "settings/key write not blocked (tamper would succeed)")

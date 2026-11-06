@@ -8,7 +8,7 @@ Each JSON file holds a list of probes (grouped by category). A probe is a dict:
     tool      the PreToolUse payload a profile evaluates: {tool_name, tool_input}
     run       how to actually test the leak: {kind, cmd}
               kind in: sh | python | node | powershell | cmd | none
-    check     canary_in_output (default) | write_tamper | no_guard
+    check     canary_in_output (default) | write_tamper | no_guard | reaches_model
 
 Placeholders ``{SBX}`` (sandbox home) and ``{CANARY}`` are substituted at run
 time by the runner, not here.

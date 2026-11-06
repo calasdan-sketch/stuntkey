@@ -5,7 +5,10 @@ hook") and that program can say no. `hook install` adds one to Claude Code's
 settings; `hook check` is that program. When the agent tries to Read, Grep,
 or run a Bash, PowerShell or Monitor command that touches a .env file, or
 tries to Edit, Write, MultiEdit or NotebookEdit one, the answer is "deny" and
-the reason is handed back to the agent in plain words.
+the reason is handed back to the agent in plain words. Since 0.10 it also
+reads what an Edit / Write would put in a file (a stored key, a program that
+prints the environment) and, as a UserPromptSubmit hook, stops a prompt with a
+pasted key before the model gets it.
 
 This is a guardrail, not a sandbox. It catches the direct ways (cat .env,
 Read .env, grep KEY .env, source .env). A determined or confused program can
@@ -271,13 +274,27 @@ def globs_to_our_folder(text: str) -> bool:
     return False
 
 
+_WS_RUN_RE = re.compile(r"\s{2,}")
+
+
+def _collapse_ws(text: str) -> str:
+    """Every run of whitespace as one character: a newline if the run held
+    one, else a space. The rules only ever ask for "some whitespace" or "a
+    newline", so this never hides a match; it stops a command padded with
+    thousands of newlines from making the whitespace patterns take seconds (a hook
+    that times out is a hook that fails, and a --fail-open hook lets the
+    call through). (0.10)"""
+    return _WS_RUN_RE.sub(lambda m: "\n" if ("\n" in m.group() or "\r" in m.group()) else " ", text)
+
+
 def steals_key(text: str, shell: bool = False) -> str | None:
     """What a shell command / path would do to a stored key, or None. A speed
     bump, not a lock: it reads the text of the call, and a program that builds
     its command at run time gets past it. `shell`: the text is a shell
     command, so DUMP_RULES apply too."""
     flat = text.replace("\\", "/") if "stuntkey" in text else text
-    variants = (text, flat, *_squash(text))
+    # collapsed AFTER squashing: taking quotes out can join whitespace runs
+    variants = tuple(_collapse_ws(v) for v in (text, flat, *_squash(text)))
     if any(globs_to_our_folder(v) for v in variants):
         return "touch stuntkey's own store (a wildcard that matches its folder)"
     for rx, what in STEAL_RULES + (DUMP_RULES if shell else ()):
@@ -383,7 +400,9 @@ def _pieces(text: str, budget: list):
         if budget[0] <= 0:
             return
         piece = text[i:i + CHUNK]
-        budget[0] -= len(piece)
+        # count only the characters this window adds (not the overlap again),
+        # so a text of exactly the budget is checked to its last character
+        budget[0] -= min(step, len(piece))
         yield piece
 
 
@@ -517,6 +536,219 @@ def decide_mcp_key(payload) -> str | None:
     return None
 
 
+# ------------------------------------- what an Edit / Write would put in a file
+#
+# 0.10: the write tools are judged by their CONTENT too, not only their path.
+# Two things are refused (STUNTKEY_HOOK_ALLOW_WRITE=1 turns both off, like the
+# .env write check):
+#   * one of YOUR stored keys written into any file (by fingerprint only, so a
+#     fake key in a test fixture is never a false alarm). Seen in the wild: an
+#     agent copying .env.local's values into env.example and pushing it, or
+#     hard-coding a key into a test file
+#     (https://github.com/anthropics/claude-code/issues/25053).
+#   * a program whose output would be the whole environment or a .env file
+#     (`print(os.environ)`, `console.log(process.env)`, a print of what a
+#     read of .env returns). The hook sees the Write, not the later run, so this is the
+#     one moment to stop it. A speed bump: a program that builds the same
+#     thing at run time is not recognised.
+# The text being REPLACED (Edit's old_string) is never judged: taking a key
+# out of a file must stay possible.
+
+_WRITE_PATH_KEYS = frozenset({"file_path", "notebook_path", "path"})
+_WRITE_OLD_KEYS = frozenset({"old_string", "old_source"})
+
+WRITE_KEY_REASON = (
+    "stuntkey blocked this because it would write one of your stored keys into "
+    "{what}. A key in a file gets committed, shared and read back into the chat. "
+    "Read it from the environment instead (for example os.environ[\"NAME\"]) and "
+    "ask the person to run the program with `stuntkey run <service> -- <command>`, "
+    "or write a placeholder such as YOUR_KEY_HERE.")
+
+WRITE_DUMP_REASON = (
+    "stuntkey blocked this because the program written to {what} would {how}; "
+    "when it runs, the keys land in the chat. Print only the names (for example "
+    "sorted(os.environ) or Object.keys(process.env)), or check that one variable "
+    "is set without printing its value.")
+
+# Code that prints the WHOLE environment. A single named variable
+# (os.environ["X"], process.env.X, ENV["X"]) is not matched.
+CODE_DUMP_RULES = (
+    (re.compile(r"\b(?:print|pprint|pp|logging\.\w+|log(?:ger)?\.\w+|sys\.std(?:out|err)\.write)"
+                r"\s*\(\s*(?:f?[\"'][^\"'\n]{0,80}[\"']\s*[,%+]\s*)?(?:dict\s*\(\s*|str\s*\(\s*|repr\s*\(\s*)?"
+                r"os\.environ(?:\.(?:items|copy|values)\s*\(\s*\))?\s*\)", re.I),
+     "print every environment variable"),
+    (re.compile(r"\bjson\.dumps?\s*\(\s*(?:dict\s*\(\s*)?os\.environ\b(?!\s*[\[.])"), "print every environment variable"),
+    (re.compile(r"\bconsole\.(?:log|dir|info|warn|error|debug|table)\s*\(\s*"
+                r"(?:[`\"'][^`\"'\n]{0,80}[`\"']\s*[,+]\s*)?(?:\{\s*\.\.\.\s*)?process\.env\s*\}?\s*\)|"
+                r"\bJSON\.stringify\s*\(\s*process\.env\s*[,)]|"
+                r"\bObject\.(?:entries|values)\s*\(\s*process\.env\s*\)\s*\)\s*;?\s*$", re.M),
+     "print every environment variable"),
+    (re.compile(r"(?m)^[ \t]*(?:puts|p|pp|print)[ \t]*\(?[ \t]*ENV(?:\.to_h|\.inspect)?[ \t]*\)?[ \t]*$"),
+     "print every environment variable"),
+    (re.compile(r"\bfmt\.(?:Print|Fprint)\w*\s*\([^\n)]{0,40}os\.Environ\s*\(\s*\)|"
+                r"\bSystem\.(?:out|err)\.print\w*\s*\(\s*System\.getenv\s*\(\s*\)\s*\)|"
+                r"\b(?:print_r|var_dump|var_export)\s*\(\s*(?:\$_ENV|\$_SERVER|getenv\s*\(\s*\))\s*[,)]"),
+     "print every environment variable"),
+)
+
+# Shell and PowerShell scripts: the whole-environment dumps a Bash call is
+# refused for (DUMP_RULES 0 and 3), checked line by line in the script text.
+_SCRIPT_SUFFIX_RE = re.compile(r"\.(?:sh|bash|zsh|ksh|fish|ps1|psm1|bat|cmd)\Z", re.I)
+
+# A line that prints and reads a real .env file (a print of a read of '.env'),
+# console.log(fs.readFileSync('.env', 'utf8')), cat .env in a script.
+_PRINT_WORD_RE = re.compile(
+    r"\b(?:print|pprint|puts|echo|cat|type|console\.\w+|Write-(?:Output|Host)|"
+    r"fmt\.(?:Print|Fprint)\w*|System\.(?:out|err)\.print\w*|logging\.\w+|logger\.\w+)\b", re.I)
+_READ_WORD_RE = re.compile(
+    r"\bopen\s*\(|\bread_text\b|\.read\s*\(|\breadFile(?:Sync)?\b|\bFile\.read\b|"
+    r"\bGet-Content\b|\bgc\b|\bReadAllText\b|\bcat\b|\btype\b|\bos\.ReadFile\b|\bfile_get_contents\b", re.I)
+
+
+def written_text(payload: dict) -> list[str]:
+    """The text a write tool would put in a file: Write's content, Edit's
+    new_string, MultiEdit's edits[].new_string, NotebookEdit's new_source.
+    Read as every string in tool_input except the path and the text being
+    replaced, so a renamed field cannot slip past."""
+    args = payload.get("tool_input") if isinstance(payload, dict) else None
+    if payload.get("tool_name") not in WRITE_TOOLS or not isinstance(args, dict):
+        return []
+    out: list[str] = []
+
+    def walk(value, depth: int) -> None:
+        if len(out) >= MAX_STRINGS or depth > MAX_DEPTH:
+            return
+        if isinstance(value, str):
+            out.append(value)
+        elif isinstance(value, dict):
+            for k, v in value.items():
+                if k in _WRITE_OLD_KEYS or (depth == 0 and k in _WRITE_PATH_KEYS):
+                    continue
+                walk(v, depth + 1)
+        elif isinstance(value, (list, tuple)):
+            for v in value:
+                walk(v, depth + 1)
+    walk(args, 0)
+    return out
+
+
+def _target_name(payload: dict) -> str:
+    paths = touched_text(payload)
+    return recipes_mod.printable(paths[0]) if paths else "a file"
+
+
+# prose, not programs: a README that says "`cat .env` shows the file" is not
+# refused. Only the .env-line rule is skipped for them: the whole-environment
+# rules and the stored-key check still apply (`python notes.txt` runs a .txt
+# file just as well).
+_DOC_SUFFIX_RE = re.compile(r"\.(?:md|markdown|mdx|rst|txt|adoc|org)\Z", re.I)
+
+
+def _dump_in_code(text: str, script: bool, prose: bool = False) -> str | None:
+    text = _collapse_ws(text)
+    for rx, how in CODE_DUMP_RULES:
+        if rx.search(text):
+            return how
+    if script:
+        for rx, how in (DUMP_RULES[0], DUMP_RULES[3]):
+            if rx.search(text):
+                return how
+    if not prose and ".env" in text.lower():
+        for line in text.splitlines():
+            if (len(line) <= 2000 and find_env_files(line) and _PRINT_WORD_RE.search(line)
+                    and _READ_WORD_RE.search(line)):
+                return "print a .env file (that is where keys live)"
+    return None
+
+
+def decide_write_content(payload) -> str | None:
+    """The deny reason for a write whose content holds a stored key or is a
+    program that prints the environment / a .env file, else None."""
+    if not isinstance(payload, dict) or payload.get("tool_name") not in WRITE_TOOLS:
+        return None
+    if writes_allowed():
+        return None
+    texts = written_text(payload)
+    if not texts:
+        return None
+    from . import scrub as scrub_mod
+    try:
+        prints = scrub_mod.load_fingerprints()
+    except (OSError, ValueError):
+        prints = (b"", frozenset())
+    where = _target_name(payload)
+    paths = [re.sub(r"::\$DATA\Z", "", p.strip(), flags=re.I).rstrip(" .")
+             for p in touched_text(payload)]
+    script = any(_SCRIPT_SUFFIX_RE.search(p) for p in paths)
+    prose = bool(paths) and all(_DOC_SUFFIX_RE.search(p) for p in paths)
+    budget = [SCAN_BUDGET]
+    for text in texts:
+        for piece in _pieces(text, budget):
+            if scrub_mod.has_stored_key(piece, prints):
+                return WRITE_KEY_REASON.format(what=f"'{where}'")
+            how = _dump_in_code(piece, script, prose)
+            if how:
+                return WRITE_DUMP_REASON.format(what=f"'{where}'", how=how)
+    return None
+
+
+# ------------------------------------------- UserPromptSubmit: a pasted key
+#
+# A key pasted into a prompt goes to the AI company and into the chat log. The
+# hook blocks the prompt (`decision: "block"`; Claude never gets it) and keeps
+# the text out of the block message (`suppressOriginalPrompt`). What counts: one
+# of YOUR stored keys (fingerprint), a key in a well-known vendor format, or a
+# private key block - not the looser "NAME = value" guesses the Bash mask uses,
+# so a prompt that talks ABOUT keys goes through. STUNTKEY_HOOK_ALLOW_PROMPT=1
+# turns it off. Claude Code still keeps the typed text in its local transcript
+# and history files; this only stops it reaching the model.
+# https://code.claude.com/docs/en/hooks#userpromptsubmit
+
+PROMPT_EVENT = "UserPromptSubmit"
+PROMPT_SCAN = 8_000_000      # characters of a prompt checked in full
+ALLOW_PROMPT_VAR = "STUNTKEY_HOOK_ALLOW_PROMPT"
+PROMPT_REASON = (
+    "stuntkey stopped this message before it reached Claude: it holds an API key "
+    "or a private key. Anything you send goes to the AI company and stays in the "
+    "chat log. Take the key out and send it again. To give Claude access to a "
+    "service, run `stuntkey get <service>` in a terminal instead. If this key is "
+    "real and was pasted anywhere else, run `stuntkey panic <service>`. "
+    "(Claude Code may still keep what you typed in its local history files.)")
+
+
+def _prompt_fallback(raw: str) -> str:
+    """A prompt too big (or too odd) to parse as JSON: look at the raw text."""
+    return prompt_check({"prompt": raw.replace("\\n", "\n")})
+
+
+def prompt_check(payload: dict, environ=None) -> str:
+    """The UserPromptSubmit answer: "" (let it through) or the block JSON."""
+    env = environ if environ is not None else os.environ
+    if env.get(ALLOW_PROMPT_VAR, "").strip() == "1":
+        return ""
+    prompt = payload.get("prompt")
+    if not isinstance(prompt, str) or not prompt:
+        return ""
+    from . import scrub as scrub_mod
+    try:
+        prints = scrub_mod.load_fingerprints()
+    except (OSError, ValueError):
+        prints = (b"", frozenset())
+    # a prompt is checked whole up to PROMPT_SCAN characters (about a second);
+    # past that, only its start and its end
+    half = PROMPT_SCAN // 2
+    parts = [prompt] if len(prompt) <= PROMPT_SCAN else [prompt[:half], prompt[-half:]]
+    if not any(scrub_mod.has_pasted_secret(piece, prints)
+               for part in parts for piece in _pieces(part, [len(part)])):
+        return ""
+    return json.dumps({
+        "decision": "block",
+        "reason": PROMPT_REASON,
+        "hookSpecificOutput": {"hookEventName": PROMPT_EVENT,
+                               "suppressOriginalPrompt": True},
+    }) + "\n"
+
+
 def writes_allowed(environ=None) -> bool:
     return (environ if environ is not None else os.environ).get(ALLOW_WRITE_VAR, "").strip() == "1"
 
@@ -553,12 +785,16 @@ def check(stdin_text: str) -> tuple[int, str]:
     .env file name and, if one is there, the call is refused. Only when that
     finds nothing is it a non-blocking error (status 1): a broken hook must
     not stop all work unless you installed it with --fail-closed."""
-    if len(stdin_text) > 2 * SCAN_BUDGET:
+    is_prompt = re.match(r'\s*\{[^{]{0,2000}?"hook_event_name"\s*:\s*"' + PROMPT_EVENT + '"',
+                         stdin_text) is not None
+    if len(stdin_text) > (PROMPT_SCAN if is_prompt else 2 * SCAN_BUDGET):
         # only ever look at a bounded amount: the start and the end
         stdin_text = stdin_text[:SCAN_BUDGET] + " " + stdin_text[-SCAN_BUDGET:]
     try:
         payload = json.loads(stdin_text)
     except (ValueError, RecursionError):
+        if re.search(r'"hook_event_name"\s*:\s*"' + PROMPT_EVENT + '"', stdin_text):
+            return 0, _prompt_fallback(stdin_text)
         # undo JSON's escapes so that "cat\t.env" or "...\\.env" still shows its name
         flat = re.sub(r'\\[nrtbf"]', " ", stdin_text.replace("\\\\", "/"))
         hits = find_env_files(flat)
@@ -573,6 +809,8 @@ def check(stdin_text: str) -> tuple[int, str]:
         return 1, ""
     if isinstance(payload, dict) and payload.get("hook_event_name") == "PostToolUse":
         return 0, post_check(payload)
+    if isinstance(payload, dict) and payload.get("hook_event_name") == PROMPT_EVENT:
+        return 0, prompt_check(payload)
     size = too_long(payload)
     if size is not None:
         return 0, json.dumps(decision_json(
@@ -587,6 +825,9 @@ def check(stdin_text: str) -> tuple[int, str]:
         what = decide_steal(payload) or decide_secret_read(payload) or decide_mcp_key(payload)
         if what:
             return 0, json.dumps(decision_json(STEAL_REASON.format(what=what))) + "\n"
+        reason = decide_write_content(payload)
+        if reason:
+            return 0, json.dumps(decision_json(reason)) + "\n"
         return 0, ""
     what = recipes_mod.printable(name)
     if payload.get("tool_name") in WRITE_TOOLS:
@@ -609,6 +850,8 @@ def check(stdin_text: str) -> tuple[int, str]:
 # original output.
 
 POST_MATCHER = "Bash"
+# every event `hook install` writes a group of ours into (0.10 adds the prompt)
+HOOK_EVENTS = ("PreToolUse", "PostToolUse", "UserPromptSubmit")
 POST_FIELDS = ("stdout", "stderr")
 POST_NOTE = ("stuntkey hid {n} secret value(s) in this output as [REDACTED]. "
              "Do not try to recover them; if a command needs a key, ask the "
@@ -762,6 +1005,13 @@ def hook_entry(handler: dict | None = None) -> dict:
     return {"matcher": MATCHER, "hooks": [handler or hook_handler()]}
 
 
+def prompt_entry(handler: dict) -> dict:
+    """Our group in hooks -> UserPromptSubmit (no matcher: that event has
+    none). Without onFailure: a broken hook must not stop you typing."""
+    handler = {k: v for k, v in handler.items() if k != "onFailure"}
+    return {"hooks": [handler]}
+
+
 def post_entry(handler: dict) -> dict:
     """Our group in hooks -> PostToolUse: the same program, without
     onFailure (a PostToolUse hook cannot hold output back anyway)."""
@@ -819,7 +1069,7 @@ def is_legacy(handler) -> bool:
 def legacy_handlers(data: dict) -> list:
     """The old handlers of ours in a settings dict (both events)."""
     found = []
-    for event in ("PreToolUse", "PostToolUse"):
+    for event in HOOK_EVENTS:
         try:
             groups = _pretool_list(data, create=False, event=event) or []
         except SettingsError:
@@ -920,14 +1170,16 @@ def merge_install(data: dict, handler: dict | str) -> str:
     "updated" or "unchanged"."""
     if isinstance(handler, str):                    # a bare command string
         handler = dict(hook_handler(shell_form=True), command=handler)
-    _pretool_list(data, create=False)               # check both shapes first
-    _pretool_list(data, create=False, event="PostToolUse")
+    for event in HOOK_EVENTS:                       # check every shape first
+        _pretool_list(data, create=False, event=event)
     pre = _merge_group(_pretool_list(data, create=True), hook_entry(handler))
     post = _merge_group(_pretool_list(data, create=True, event="PostToolUse"),
                         post_entry(handler))
+    prompt = _merge_group(_pretool_list(data, create=True, event=PROMPT_EVENT),
+                          prompt_entry(handler))
     if pre == "added":
         return "added"
-    return "unchanged" if pre == post == "unchanged" else "updated"
+    return "unchanged" if pre == post == prompt == "unchanged" else "updated"
 
 
 def _merge_group(groups: list, desired: dict) -> str:
@@ -945,8 +1197,12 @@ def _merge_group(groups: list, desired: dict) -> str:
     for extra in own[1:]:
         groups.remove(extra)
         changed = True
-    if first.get("matcher") != desired["matcher"] or first.get("hooks") != desired["hooks"]:
-        first["matcher"], first["hooks"] = desired["matcher"], desired["hooks"]
+    if first.get("matcher") != desired.get("matcher") or first.get("hooks") != desired["hooks"]:
+        if "matcher" in desired:
+            first["matcher"] = desired["matcher"]
+        else:
+            first.pop("matcher", None)
+        first["hooks"] = desired["hooks"]
         changed = True
     return "updated" if changed else "unchanged"
 
@@ -954,7 +1210,7 @@ def _merge_group(groups: list, desired: dict) -> str:
 def merge_uninstall(data: dict) -> int:
     """Remove only our handlers (and groups left empty by that). Returns how
     many handlers were removed."""
-    return sum(_uninstall_event(data, event) for event in ("PreToolUse", "PostToolUse"))
+    return sum(_uninstall_event(data, event) for event in HOOK_EVENTS)
 
 
 def _uninstall_event(data: dict, event: str) -> int:
@@ -1105,7 +1361,10 @@ def cmd_hook(args, out=None, err=None, run=subprocess.run) -> int:
                       "commands that would use a stored key or print the environment.\n"
                       "  After a Bash command it also hides stored keys, and text in a "
                       "known key format, in the output before Claude sees it (best effort; "
-                      "if that check fails, the output is shown as it is).\n")
+                      "if that check fails, the output is shown as it is).\n"
+                      "  It also stops a message you send to Claude if an API key is pasted "
+                      "in it, and refuses an Edit or Write that would put a stored key in a "
+                      "file or write a program that prints the environment.\n")
             out.write(_offer_agent_rules(args, out))
             if handler.get("onFailure") == "block":
                 out.write("  If the hook itself breaks or times out, the call is blocked "
@@ -1279,6 +1538,9 @@ def _status(args, out, run) -> int:
         notes = []
         if not list(_our_handlers(_pretool_list(data, create=False, event="PostToolUse") or [])):
             notes.append("it does not hide keys in Bash output yet (`stuntkey hook "
+                         "install` adds that)")
+        if not list(_our_handlers(_pretool_list(data, create=False, event=PROMPT_EVENT) or [])):
+            notes.append("it does not stop keys pasted into a prompt yet (`stuntkey hook "
                          "install` adds that)")
         if group.get("matcher") != MATCHER:
             notes.append("OUTDATED: it does not watch every tool this version does "

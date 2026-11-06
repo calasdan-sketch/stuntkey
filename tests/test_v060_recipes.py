@@ -410,7 +410,7 @@ class TestConnectShowsTheNewFields(unittest.TestCase):
         self.assertNotIn("sk_live_ABCDEFGHIJKLMN", out.getvalue())
 
     def test_the_version_is_075(self):
-        self.assertEqual(stuntkey.__version__, "0.9.0")
+        self.assertEqual(stuntkey.__version__, "0.10.0")
 
 
 if __name__ == "__main__":
