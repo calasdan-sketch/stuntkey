@@ -564,6 +564,12 @@ WRITE_KEY_REASON = (
     "ask the person to run the program with `stuntkey run <service> -- <command>`, "
     "or write a placeholder such as YOUR_KEY_HERE.")
 
+WRITE_SCAN = SCAN_BUDGET      # characters of Edit / Write text checked; more is refused
+WRITE_OVERSIZE_REASON = (
+    "stuntkey blocked this because the text to write is {n} characters long, more "
+    "than the {limit} the hook can check. Write the file in smaller parts, or ask "
+    "the person to write it (or to start Claude Code with STUNTKEY_HOOK_ALLOW_WRITE=1).")
+
 WRITE_DUMP_REASON = (
     "stuntkey blocked this because the program written to {what} would {how}; "
     "when it runs, the keys land in the chat. Print only the names (for example "
@@ -591,6 +597,52 @@ CODE_DUMP_RULES = (
      "print every environment variable"),
 )
 
+# 0.10.0 (panel review): the easy rewrites of the above. An alias (e = os.environ; print(e)),
+# an f-string, a loop that prints each value, process["env"]. Still a speed
+# bump: code built at run time, or a name the alias search does not follow,
+# gets past it.
+_ALIAS_RE = re.compile(r"(?m)(?:^|;)[ \t]*(?:const|let|var)?[ \t]*([A-Za-z_]\w{0,40})[ \t]*=[ \t]*"
+                       r"(?:dict[ \t]*\([ \t]*|\{[ \t]*\.\.\.[ \t]*)?"
+                       r"(?:os\.environ|process\.env|process\[[\"']env[\"']\])(?:\.copy\(\))?[ \t]*[)}]?[ \t]*(?=;|$)")
+_PRINT_CALL = (r"\b(?:print|pprint|pp|puts|logging\.\w+|log(?:ger)?\.\w+|sys\.std(?:out|err)\.write|"
+               r"console\.(?:log|dir|info|warn|error|debug|table))\s*\(")
+CODE_DUMP_EXTRA = (
+    re.compile(_PRINT_CALL + r"\s*f[\"'][^\"'\n]{0,200}\{\s*(?:dict\s*\(\s*)?os\.environ\s*\)?\s*(?:![rsa])?\s*\}"),
+    re.compile(_PRINT_CALL + r"[^\n]{0,40}`[^`\n]{0,200}\$\{\s*(?:JSON\.stringify\s*\(\s*)?process\.env\s*\)?\s*\}"),
+    re.compile(_PRINT_CALL + r"\s*(?:\{\s*\.\.\.\s*)?process\[\s*[\"']env[\"']\s*\]\s*\}?\s*\)"),
+    re.compile(_PRINT_CALL + r"[^\n)]{0,80}\*\s*os\.environ\.(?:items|values)\s*\("),
+    # for k, v in os.environ.items(): print(k, v)   /   for k in os.environ: print(os.environ[k])
+    re.compile(r"\bfor\s+(\w+)\s*,\s*(\w+)\s+in\s+(?:sorted\s*\(\s*)?os\.environ\.items\s*\(\s*\)\s*\)?\s*:"
+               r"(?:[^\n]*\n){0,3}?[^\n]*" + _PRINT_CALL + r"[^\n]*\b\2\b"),
+    re.compile(r"\bfor\s+(\w+)\s+in\s+(?:sorted\s*\(\s*)?os\.environ\s*\)?\s*:"
+               r"(?:[^\n]*\n){0,3}?[^\n]*" + _PRINT_CALL + r"[^\n]*os\.environ\s*(?:\[\s*\1\s*\]|\.get\s*\(\s*\1\b)"),
+    # for (const [k, v] of Object.entries(process.env)) console.log(k, v)
+    re.compile(r"Object\.entries\s*\(\s*process\.env\s*\)[^\n]{0,80}?\[\s*\w+\s*,\s*(\w+)\s*\]"
+               r"(?:[^\n]*\n){0,3}?[^\n]*" + _PRINT_CALL + r"[^\n]*\b\1\b"),
+    re.compile(r"\[\s*\w+\s*,\s*(\w+)\s*\]\s+of\s+Object\.entries\s*\(\s*process\.env\s*\)"
+               r"(?:[^\n]*\n){0,3}?[^\n]*" + _PRINT_CALL + r"[^\n]*\b\1\b"),
+)
+
+
+_PRINTED_NAME_RE = re.compile(_PRINT_CALL + r"\s*(?:dict\s*\(\s*|JSON\.stringify\s*\(\s*)?"
+                              r"([A-Za-z_]\w{0,40})\s*(?:\.(?:items|copy)\s*\(\s*\))?\s*[),]")
+
+
+def _env_dump_rewrite(text: str) -> bool:
+    if any(rx.search(text) for rx in CODE_DUMP_EXTRA):
+        return True
+    names = {m.group(1) for m in _ALIAS_RE.finditer(text)}
+    for m in re.finditer(r"\bfrom\s+os\s+import\s+([^\n;]{1,200})", text):
+        for part in m.group(1).strip("() ").split(","):
+            bits = part.split()
+            if bits and bits[0] == "environ":
+                names.add(bits[2] if len(bits) == 3 and bits[1] == "as" else "environ")
+    if not names:
+        return False
+    # one pass over the print calls, whatever the number of aliases
+    return any(m.group(1) in names for m in _PRINTED_NAME_RE.finditer(text))
+
+
 # Shell and PowerShell scripts: the whole-environment dumps a Bash call is
 # refused for (DUMP_RULES 0 and 3), checked line by line in the script text.
 _SCRIPT_SUFFIX_RE = re.compile(r"\.(?:sh|bash|zsh|ksh|fish|ps1|psm1|bat|cmd)\Z", re.I)
@@ -600,9 +652,31 @@ _SCRIPT_SUFFIX_RE = re.compile(r"\.(?:sh|bash|zsh|ksh|fish|ps1|psm1|bat|cmd)\Z",
 _PRINT_WORD_RE = re.compile(
     r"\b(?:print|pprint|puts|echo|cat|type|console\.\w+|Write-(?:Output|Host)|"
     r"fmt\.(?:Print|Fprint)\w*|System\.(?:out|err)\.print\w*|logging\.\w+|logger\.\w+)\b", re.I)
-_READ_WORD_RE = re.compile(
-    r"\bopen\s*\(|\bread_text\b|\.read\s*\(|\breadFile(?:Sync)?\b|\bFile\.read\b|"
-    r"\bGet-Content\b|\bgc\b|\bReadAllText\b|\bcat\b|\btype\b|\bos\.ReadFile\b|\bfile_get_contents\b", re.I)
+# 0.10.0 (panel review): the .env name must be the ARGUMENT of the read, not just on the
+# same line (`cp .env.example .env; cat <<EOF` and `console.error('no key in
+# .env'); fs.readFileSync(p)` are not refused).
+_CODE_READ_RE = re.compile(
+    r"\b(?:open|readFile(?:Sync)?|File\.read|ReadAllText|ReadFile|file_get_contents|"
+    r"io\.open|codecs\.open)\s*\(\s*(?:[rbuf]{0,2})[\"'`]([^\"'`\n]{1,300})[\"'`]|"
+    r"\bPath\s*\(\s*[rbuf]{0,2}[\"'`]([^\"'`\n]{1,300})[\"'`]\s*\)\s*\.read_(?:text|bytes)\b", re.I)
+_SHELL_READ_RE = re.compile(
+    r"(?:^|[;&|(`]|\$\()\s*(?:sudo\s+)?(?:cat|type|Get-Content|gc|head|tail|less|more|bat|nl|tac)"
+    r"(?:\s+-{1,2}[\w-]+)*\s+[\"']?([^\s\"';&|<>()`]{1,300})", re.I | re.M)
+
+
+def _prints_env_file(line: str, script: bool) -> bool:
+    """Does this line show a real .env file: a print of a read whose argument
+    is .env, or (in a shell script) cat / type / Get-Content .env?"""
+    if script:
+        for m in _SHELL_READ_RE.finditer(line):
+            if find_env_files(m.group(1)):
+                return True
+    if not _PRINT_WORD_RE.search(line):
+        return False
+    for m in _CODE_READ_RE.finditer(line):
+        if find_env_files(m.group(1) or m.group(2) or ""):
+            return True
+    return False
 
 
 def written_text(payload: dict) -> list[str]:
@@ -637,26 +711,28 @@ def _target_name(payload: dict) -> str:
     return recipes_mod.printable(paths[0]) if paths else "a file"
 
 
-# prose, not programs: a README that says "`cat .env` shows the file" is not
-# refused. Only the .env-line rule is skipped for them: the whole-environment
-# rules and the stored-key check still apply (`python notes.txt` runs a .txt
-# file just as well).
-_DOC_SUFFIX_RE = re.compile(r"\.(?:md|markdown|mdx|rst|txt|adoc|org)\Z", re.I)
+# docs, not programs (.md, .rst, ...): a README that shows `print(os.environ)`
+# or `cat .env` is not refused. The stored-key check still applies to them.
+# .txt is NOT treated as docs (`python notes.txt` runs it just as well).
+_DOC_SUFFIX_RE = re.compile(r"\.(?:md|markdown|mdx|rst|adoc|org)\Z", re.I)
 
 
 def _dump_in_code(text: str, script: bool, prose: bool = False) -> str | None:
+    if prose:
+        return None
     text = _collapse_ws(text)
     for rx, how in CODE_DUMP_RULES:
         if rx.search(text):
             return how
+    if _env_dump_rewrite(text):
+        return "print every environment variable"
     if script:
         for rx, how in (DUMP_RULES[0], DUMP_RULES[3]):
             if rx.search(text):
                 return how
-    if not prose and ".env" in text.lower():
+    if ".env" in text.lower():
         for line in text.splitlines():
-            if (len(line) <= 2000 and find_env_files(line) and _PRINT_WORD_RE.search(line)
-                    and _READ_WORD_RE.search(line)):
+            if len(line) <= 2000 and _prints_env_file(line, script):
                 return "print a .env file (that is where keys live)"
     return None
 
@@ -671,6 +747,11 @@ def decide_write_content(payload) -> str | None:
     texts = written_text(payload)
     if not texts:
         return None
+    total = sum(len(t) for t in texts)
+    if total > WRITE_SCAN:
+        # 0.10.0 checked the first WRITE_SCAN characters and let the rest
+        # through unread; a key past that point was written. Fail closed.
+        return WRITE_OVERSIZE_REASON.format(n=total, limit=WRITE_SCAN)
     from . import scrub as scrub_mod
     try:
         prints = scrub_mod.load_fingerprints()
@@ -705,7 +786,8 @@ def decide_write_content(payload) -> str | None:
 # https://code.claude.com/docs/en/hooks#userpromptsubmit
 
 PROMPT_EVENT = "UserPromptSubmit"
-PROMPT_SCAN = 8_000_000      # characters of a prompt checked in full
+_PROMPT_EVENT_RE = re.compile(r'(?<!\\)"hook_event_name"\s*:\s*"' + PROMPT_EVENT + '"')
+PROMPT_SCAN = 4_000_000      # characters of a prompt checked in full (about a second)
 ALLOW_PROMPT_VAR = "STUNTKEY_HOOK_ALLOW_PROMPT"
 PROMPT_REASON = (
     "stuntkey stopped this message before it reached Claude: it holds an API key "
@@ -785,16 +867,26 @@ def check(stdin_text: str) -> tuple[int, str]:
     .env file name and, if one is there, the call is refused. Only when that
     finds nothing is it a non-blocking error (status 1): a broken hook must
     not stop all work unless you installed it with --fail-closed."""
-    is_prompt = re.match(r'\s*\{[^{]{0,2000}?"hook_event_name"\s*:\s*"' + PROMPT_EVENT + '"',
-                         stdin_text) is not None
-    if len(stdin_text) > (PROMPT_SCAN if is_prompt else 2 * SCAN_BUDGET):
+    # the event name anywhere at JSON level (an unescaped quote: inside a
+    # string it would read \"hook_event_name\"), whatever the field order
+    is_prompt = _PROMPT_EVENT_RE.search(stdin_text) is not None
+    limit = PROMPT_SCAN if is_prompt else 2 * SCAN_BUDGET
+    truncated = len(stdin_text) > limit
+    if truncated:
         # only ever look at a bounded amount: the start and the end
-        stdin_text = stdin_text[:SCAN_BUDGET] + " " + stdin_text[-SCAN_BUDGET:]
+        stdin_text = stdin_text[:limit // 2] + " " + stdin_text[-(limit // 2):]
     try:
         payload = json.loads(stdin_text)
     except (ValueError, RecursionError):
-        if re.search(r'"hook_event_name"\s*:\s*"' + PROMPT_EVENT + '"', stdin_text):
+        if is_prompt:
             return 0, _prompt_fallback(stdin_text)
+        if truncated and not re.search(r'(?<!\\)"hook_event_name"\s*:\s*"PostToolUse"', stdin_text):
+            # too big to read whole and too big to parse once cut: nothing in
+            # it was checked, so say no (before 0.10.0 this was a non-blocking
+            # error, which a --fail-open install let through)
+            return 0, json.dumps(decision_json(WRITE_OVERSIZE_REASON.format(
+                n=len(stdin_text), limit=WRITE_SCAN).replace(
+                    "the text to write is", "this tool call is"))) + "\n"
         # undo JSON's escapes so that "cat\t.env" or "...\\.env" still shows its name
         flat = re.sub(r'\\[nrtbf"]', " ", stdin_text.replace("\\\\", "/"))
         hits = find_env_files(flat)
@@ -811,6 +903,11 @@ def check(stdin_text: str) -> tuple[int, str]:
         return 0, post_check(payload)
     if isinstance(payload, dict) and payload.get("hook_event_name") == PROMPT_EVENT:
         return 0, prompt_check(payload)
+    if truncated and isinstance(payload, dict) and payload.get("tool_name") in WRITE_TOOLS:
+        # the middle was cut out yet the rest still parsed: what was dropped
+        # is exactly what was never checked. Fail closed. (0.10.0)
+        return 0, json.dumps(decision_json(WRITE_OVERSIZE_REASON.format(
+            n=len(stdin_text), limit=WRITE_SCAN))) + "\n"
     size = too_long(payload)
     if size is not None:
         return 0, json.dumps(decision_json(

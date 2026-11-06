@@ -338,16 +338,27 @@ by their content too, not only by their path. Refused:
 
 - one of *your stored keys* written into any file: hard-coding it in a test,
   copying it into `.env.example`, a config module or a notebook cell (found by
-  fingerprint only, so a fake key in a test fixture is never refused);
+  fingerprint only, so a fake key in a test fixture is never refused). It is
+  found as a whole word, inside a URL or `user:key@host`, before `#`, `?` or
+  `-`, after Telegram's `bot`, in upper or lower case, and as hex or base64
+  (case and hex since 0.10.0: a key saved earlier gets those forms when it is
+  saved again with `stuntkey rotate`). A key split across separate strings,
+  separate edits or separate files is **not** found: each call is read alone;
 - a program whose output would be the whole environment or a `.env` file:
   `print(os.environ)`, `print(json.dumps(dict(os.environ)))`,
   `console.log(process.env)`, `puts ENV`, `fmt.Println(os.Environ())`,
-  `print_r($_ENV)`, a line that prints a read of `.env`, and, in a `.sh` /
+  `print_r($_ENV)`, the easy rewrites (an alias `e = os.environ; print(e)`,
+  `from os import environ`, an f-string, a loop that prints each value,
+  `process["env"]`), a print of a read whose argument is a `.env` file, and, in a `.sh` /
   `.ps1` / `.bat` script, a bare `env`, `printenv` or `Get-ChildItem env:`.
   One named variable (`os.environ["HOME"]`, `process.env.NODE_ENV`) and the
-  names alone (`sorted(os.environ)`, `Object.keys(process.env)`) are fine. In
-  `.md` / `.txt` / `.rst` files the `.env`-line rule is skipped (docs say
-  `cat .env`), the others are not.
+  names alone (`sorted(os.environ)`, `Object.keys(process.env)`) are fine.
+  Docs (`.md`, `.rst`, `.adoc`, `.org`) are not judged as programs; `.txt` is.
+  A `.env` name merely on the same line as a read (`cp .env.example .env; cat
+  README`) is fine.
+
+Text to write longer than 600,000 characters is refused whole
+(a first 0.10.0 draft read only its start): write a big file in parts.
 
 The text being *replaced* (Edit's `old_string`) is not judged, so taking a key
 out of a file stays possible. `STUNTKEY_HOOK_ALLOW_WRITE=1` turns these checks
@@ -361,7 +372,8 @@ a private key block (header and body) is stopped before Claude receives it;
 the message tells you to take the key out, and to run `stuntkey panic` if the
 key was real. Talking *about* keys (`API_KEY=your-key-here`, a bare `-----BEGIN
 ... PRIVATE KEY-----` line) goes through. A prompt is checked in full up to
-8 million characters, past that its start and end. This hook has no
+4 million characters, past that its start and end. Vendors' published example
+keys (`AKIAIOSFODNN7EXAMPLE` and others marked `EXAMPLE`) go through. This hook has no
 `onFailure: block`: if it breaks, your message goes through. Claude Code still
 writes what you typed to its local transcript and history files; the hook only
 keeps it from the model. `STUNTKEY_HOOK_ALLOW_PROMPT=1` turns it off.

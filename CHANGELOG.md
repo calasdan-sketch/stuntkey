@@ -2,6 +2,33 @@
 
 ## 0.10.0 (unreleased)
 
+### Fixed after a panel review (before release)
+
+- **A big Edit / Write could carry a key past the check.** Text past the first
+  600,000 characters was never read, and a call over 1.2 million characters was
+  cut to its start and end and still parsed. Now text to write over 600,000
+  characters is refused whole, a cut write call is refused, and any cut call
+  that no longer parses is refused instead of being a non-blocking error.
+- **Stored keys are found in more places:** inside a URL path, `user:key@host`,
+  before `#`, `?` or `-`, after Telegram's `bot`, and in upper / lower case and
+  hex (the new forms apply to a key once it is saved again). A key split across
+  separate edits is still not found; the guide says so.
+- **The prompt check stays fast on padded text.** Fingerprints tried per word
+  are capped (24) and runs of split characters are skipped; a prompt is read
+  whole up to 4 million characters (was 8), start and end past that. An 8
+  million-character padded prompt checks in under 1 second (was 4.7).
+- **A prompt is recognised whatever the field order** in Claude Code's JSON.
+- **Fewer false alarms.** The `.env` rule needs the `.env` name to be the
+  argument of the read (`cp .env.example .env; cat <<EOF` passes); docs files
+  (`.md`, `.rst`) are not judged as programs; vendors' published example keys
+  (`AKIAIOSFODNN7EXAMPLE`, ...) in a prompt go through.
+- **Easy rewrites of an environment dump are refused:** an alias
+  (`e = os.environ; print(e)`, `from os import environ`), an f-string, a loop
+  that prints each value, `print(*os.environ.items())`, `process["env"]`,
+  `Object.entries(process.env)` printed in a loop.
+- `suppressOriginalPrompt` was checked against Claude Code's hooks reference
+  (UserPromptSubmit decision control) and is kept.
+
 ### New
 
 - **The hook reads what an Edit or Write puts in a file.** Refused: one of your
