@@ -1,5 +1,74 @@
 # Changelog
 
+## 0.10.0 (unreleased)
+
+### Fixed after a panel review (before release)
+
+- **A big Edit / Write could carry a key past the check.** Text past the first
+  600,000 characters was never read, and a call over 1.2 million characters was
+  cut to its start and end and still parsed. Now text to write over 600,000
+  characters is refused whole, a cut write call is refused, and any cut call
+  that no longer parses is refused instead of being a non-blocking error.
+- **Stored keys are found in more places:** inside a URL path, `user:key@host`,
+  before `#`, `?` or `-`, after Telegram's `bot`, and in upper / lower case and
+  hex (the new forms apply to a key once it is saved again). A key split across
+  separate edits is still not found; the guide says so.
+- **The prompt check stays fast on padded text.** Fingerprints tried per word
+  are capped (24) and runs of split characters are skipped; a prompt is read
+  whole up to 4 million characters (was 8), start and end past that. An 8
+  million-character padded prompt checks in under 1 second (was 4.7).
+- **A prompt is recognised whatever the field order** in Claude Code's JSON.
+- **Fewer false alarms.** The `.env` rule needs the `.env` name to be the
+  argument of the read (`cp .env.example .env; cat <<EOF` passes); docs files
+  (`.md`, `.rst`) are not judged as programs; vendors' published example keys
+  (`AKIAIOSFODNN7EXAMPLE`, ...) in a prompt go through.
+- **Easy rewrites of an environment dump are refused:** an alias
+  (`e = os.environ; print(e)`, `from os import environ`), an f-string, a loop
+  that prints each value, `print(*os.environ.items())`, `process["env"]`,
+  `Object.entries(process.env)` printed in a loop.
+- `suppressOriginalPrompt` was checked against Claude Code's hooks reference
+  (UserPromptSubmit decision control) and is kept.
+
+### New
+
+- **The hook reads what an Edit or Write puts in a file.** Refused: one of your
+  stored keys written into any file (a test, `.env.example`, a config module, a
+  notebook cell; found by fingerprint only, so fake keys in fixtures are never
+  refused), and a program whose output would be the whole environment or a
+  `.env` file (`print(os.environ)`, `console.log(process.env)`, `puts ENV`,
+  `fmt.Println(os.Environ())`, `print_r($_ENV)`, a printed read of `.env`, a
+  bare `env` / `printenv` / `Get-ChildItem env:` in a shell or PowerShell
+  script). Edit's `old_string` is never judged, so removing a key still works.
+  `STUNTKEY_HOOK_ALLOW_WRITE=1` turns these off with the `.env` write check.
+- **A key pasted into a prompt is stopped before Claude gets it.** `hook
+  install` adds a `UserPromptSubmit` hook: a message with a stored key, a key in
+  a well-known vendor format or a private key block (header and body) is
+  blocked, and the block message leaves your text out
+  (`suppressOriginalPrompt`). It fails open and has no matcher;
+  `STUNTKEY_HOOK_ALLOW_PROMPT=1` turns it off. Claude Code still keeps the text
+  in its local history files. Run `stuntkey hook install` again to get it;
+  `hook status` says when it is missing.
+- **leakbench: 5 `key spread` probes** (key written into a test, `.env.example`
+  and a config module; a stored key and a vendor key pasted into a prompt) and a
+  `reaches_model` check. Results on a Linux host: hook 52 blocked / 12 masked /
+  2 leaked (0.9.0 on the same host and its 61 probes: 44 / 12 / 5), hook + caps
+  54 / 12 / 0 (was 46 / 12 / 3). The new probes were written together with the
+  checks that stop them; leakbench/README.md says so next to the numbers.
+
+### Fixed
+
+- **A padded command could outlast the hook.** A Bash command of 5,000 newlines
+  took about 20 seconds to check (the hook's limit is 10): fail-closed installs
+  blocked the call, a `--fail-open` install would have let a padded `cat .env`
+  through. Runs of whitespace are now collapsed before the rules run (also
+  after quotes and variables are taken out); a 100,000-character command of any
+  of the tested shapes checks in under 2 seconds.
+- Long text sent to an MCP tool was checked about 10% short of its budget: the
+  overlap between scan windows was counted twice. The budget now counts new
+  characters only.
+- `tests/test_remote.py` no longer fails on a host that already sets
+  `GIT_CONFIG_COUNT` (the code was right; the test read the host's git config).
+
 ## 0.9.0
 
 ### Renamed

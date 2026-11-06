@@ -11,6 +11,7 @@ from __future__ import annotations
 import base64
 import contextlib
 import hmac
+import itertools
 import json
 import os
 import re
@@ -258,9 +259,13 @@ def fingerprint_path() -> str:
 
 
 def _fingerprint_forms(secret: str) -> set[str]:
+    """The whole-word forms a key is recognised in. 0.10.0 adds upper and
+    lower case and hex (a key saved before 0.10.0 gets them the next time it
+    is saved: `stuntkey rotate` or `get` again)."""
     raw = secret.encode("utf-8", "surrogateescape")
-    return {secret, quote(secret, safe=""), base64.b64encode(raw).decode(),
-            base64.b64encode(raw).decode().rstrip("=")}
+    b64 = base64.b64encode(raw).decode()
+    return {secret, quote(secret, safe=""), b64, b64.rstrip("="),
+            secret.lower(), secret.upper(), raw.hex(), raw.hex().upper()}
 
 
 def _fp(salt: bytes, word: str) -> str:
@@ -325,16 +330,54 @@ def load_fingerprints(path: str | None = None) -> tuple[bytes, frozenset]:
             frozenset(h for hs in data["keys"].values() if isinstance(hs, list) for h in hs))
 
 
+# where a key can sit inside a longer word: NAME=key, user:key@host,
+# https://host/bot<key>/send, key#frag, ?k=key&..., key-prod (0.10.0 adds / @ # ? -)
+_SPLIT_CHARS = frozenset("=:/@#?-")
+MAX_EDGES = 12        # split points tried from each end of a word
+MAX_CANDIDATES = 24   # fingerprints computed per word, whatever its shape
+
+
+def _word_candidates(word: str):
+    """(start, end) pieces of `word` that could be a whole key: the word,
+    and the stretches between split characters (a key may itself hold one,
+    sk-proj-..., so pieces spanning several are tried too). Bounded per word:
+    a word of 512 '=' must not cost 1,000 fingerprints."""
+    n = len(word)
+    yield 0, n
+    cuts = [i for i, ch in enumerate(word) if ch in _SPLIT_CHARS]
+    if not cuts:
+        return
+    if len(cuts) > 2 * MAX_EDGES:
+        cuts = cuts[:MAX_EDGES] + cuts[-MAX_EDGES:]
+    # a piece that starts or ends on a split character is a run of them
+    # ("==", "--"), never the edge of a key: only real stretches count
+    starts = [c + 1 for c in cuts if c + 1 < n and word[c + 1] not in _SPLIT_CHARS]
+    ends = [c for c in cuts if c > 0 and word[c - 1] not in _SPLIT_CHARS]
+    made = 1
+    # the old candidates first (after / before a split), then the pieces between
+    for a, b in itertools.chain(((a, n) for a in starts), ((0, b) for b in ends),
+                                ((a, b) for a in starts for b in ends)):
+        if b - a < MIN_LEN:
+            continue
+        yield a, b
+        made += 1
+        if made >= MAX_CANDIDATES:
+            return
+
+
 def _stored_spans(text: str, salt: bytes, prints: frozenset):
-    """(start, end) of every word, or the part after = or : in it, whose
-    fingerprint is a stored key's."""
+    """(start, end) of every word, or a piece of it between split characters,
+    whose fingerprint is a stored key's. A key split across separate strings
+    or separate edits is not found: this reads one text at a time."""
     for m in _WORD_RE.finditer(text):
         word, base = m.group(), m.start()
-        cands = {(0, len(word))}
-        for i, ch in enumerate(word):
-            if ch in "=:":
-                cands.update(((i + 1, len(word)), (0, i)))
-        for a, b in cands:
+        for a, b in _word_candidates(word):
+            if word.startswith("bot", a) and b - a - 3 >= MIN_LEN:
+                # Telegram's URLs glue the token to "bot": /bot<token>/sendMessage
+                piece = word[a + 3:b].rstrip(".")
+                if _fp(salt, piece) in prints:
+                    yield base + a + 3, base + a + 3 + len(piece)
+                    continue
             piece = word[a:b].rstrip(".")
             if len(piece) >= MIN_LEN and _fp(salt, piece) in prints:
                 yield base + a, base + a + len(piece)
@@ -344,6 +387,47 @@ def has_stored_key(text: str, prints: tuple[bytes, frozenset]) -> bool:
     """Does `text` hold a stored key (by fingerprint only, never by format)?"""
     salt, hashes = prints
     return bool(hashes) and next(_stored_spans(text, salt, hashes), None) is not None
+
+
+def has_pasted_secret(text: str, prints: tuple[bytes, frozenset]) -> bool:
+    """Does text a person typed (a chat prompt) hold a secret? A stored key
+    (fingerprint), a key in a shipped vendor format, or a private key block.
+    Deliberately narrower than mask_secrets(): no "NAME = value", URL
+    password or Bearer guesses, so a prompt that talks about keys passes."""
+    if has_stored_key(text, prints):
+        return True
+    if not _MAYBE_KEY_RE.search(text):
+        return False
+    from . import scan as scan_mod
+    for m in scan_mod.PRIVATE_KEY_RE.finditer(text):
+        # the header alone ("what is -----BEGIN RSA PRIVATE KEY-----?") is not a key:
+        # a body line (or an escaped \n body) must follow
+        after = text[m.end():m.end() + 400]
+        if (scan_mod.ESCAPED_PEM_BODY_RE.match(after)
+                or any(scan_mod.BASE64_LINE_RE.match(line) for line in after.splitlines()[1:3])):
+            return True
+    for rx in _format_rules():
+        for m in rx.finditer(text):
+            if not is_example_key(m.group()):
+                return True
+    return False
+
+
+# Keys vendors print in their own docs: pasting one is not a leak.
+EXAMPLE_KEYS = frozenset({
+    "AKIAIOSFODNN7EXAMPLE",                          # AWS access key id (docs)
+    "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",      # AWS secret key (docs)
+    "AKIAI44QH8DHBEXAMPLE",                          # AWS (docs)
+    "je7MtGbClwBF/2Zp9Utk/h3yCo8nvbEXAMPLEKEY",      # AWS (docs)
+    "sk_" "test_4eC39HqLyjWDarjtT1zdp7dc",           # Stripe docs test key
+})
+
+
+def is_example_key(value: str) -> bool:
+    """A vendor's published example key (or one marked EXAMPLE, as AWS marks
+    them): never treated as a pasted secret."""
+    v = value.strip().strip("\"'`")
+    return v in EXAMPLE_KEYS or "EXAMPLE" in v.upper()
 
 
 _RULES = None

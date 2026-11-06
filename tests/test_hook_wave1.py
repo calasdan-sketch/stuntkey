@@ -175,7 +175,7 @@ class InstallBothEvents(unittest.TestCase):
         self.assertEqual(group["matcher"], "Bash")
         self.assertNotIn("onFailure", group["hooks"][0])
         self.assertEqual(hook_mod.merge_install(data, hook_mod.hook_handler()), "unchanged")
-        self.assertEqual(hook_mod.merge_uninstall(data), 2)
+        self.assertEqual(hook_mod.merge_uninstall(data), 3)
         self.assertEqual(data, {})
 
     def test_an_old_install_gets_the_post_group(self):

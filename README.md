@@ -8,19 +8,25 @@ that have already leaked into the files your agent reads.
 
 ### Measured, not asserted
 
-`leakbench` is a vendor-neutral benchmark of 61 ways an AI coding agent leaks a
+`leakbench` is a vendor-neutral benchmark of 66 ways an AI coding agent leaks a
 credential — reading `.env`, dumping the environment, printing a traceback,
-following an injected instruction. Run it yourself: `python -m leakbench`.
+following an injected instruction, hard-coding a key into a committed file,
+a key pasted into the chat. Run it yourself: `python -m leakbench --profile none`
+(then `stuntkey-hook`, `stuntkey-full`).
 
-| Protection | blocked | masked | leaked |
-|---|---|---|---|
-| nothing | 0 | 0 | **54** |
-| stuntkey | **44** | 12 | **5** |
+| Protection (Linux host, 0.10.0) | blocked | masked | leaked | could not run here |
+|---|---|---|---|---|
+| nothing | 0 | 0 | **57** | 9 |
+| stuntkey hook | **52** | 12 | **2** | 0 |
+| stuntkey hook + spending caps | **54** | 12 | **0** | 0 |
 
-**The 5 stuntkey does not stop**, named rather than hidden:
-`node-prints-process-env`, `script-prints-environ`, `script-reads-env-file`,
-`runaway-loop-no-cap`, `unbounded-retry` — a program you wrote, run by the
-agent, printing its own environment. No hook can see inside that.
+**What these numbers do not say**, named rather than hidden: the hook only
+blocks the *forms it knows* (a program that dumps the environment in a new way
+gets past the write check); 5 of the 66 probes were added in the same release
+as the checks that stop them; the 2 the hook alone misses (`runaway-loop-no-cap`,
+`unbounded-retry`) are stopped by caps only for calls that go through stuntkey.
+On a key stuntkey never stored, found by format only, the hook scores 46 / 12 / 8.
+Details: [leakbench/README.md](leakbench/README.md).
 
 Threat model: [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md). Known gaps and
 limits: [SECURITY.md](SECURITY.md) — including that stuntkey has not had a paid
@@ -28,6 +34,7 @@ external security review, and what we do instead.
 
 - The key sits in your computer's own keychain. When your AI needs an API, it asks stuntkey to make the call, and stuntkey adds the key itself.
 - Replies are cleaned of the key. In a brokered call, anything other than a read (GET) waits for your click. Every call is logged.
+- With the Claude Code hook (`stuntkey hook install`): `.env` reads and environment dumps are refused, keys are masked in command output, an Edit or Write that would put a stored key in a file is refused, and a key you paste into the chat is stopped before the model gets it.
 - Plain Python, no extra packages. No account, no server, no cloud.
 - Formerly OathKey (and before that SafeEasyAPI).
 - Home page and docs: https://calasautomations.com/devtools/stuntkey/
@@ -96,12 +103,38 @@ It reduces risk; it does not remove it, and no independent security review has b
 - **It does not hide the data.** Replies from the API go to your AI, and so to the AI company. The key is scrubbed; the rest is not.
 - **It does not protect `run`.** A program started with `run` holds the key and can print it.
 - **It does not catch every disguise.** Scrubbing is best effort.
-- **The Claude Code hook masks Bash output only.** Claude Code documents no output shape for Read or Grep, so the hook cannot mask them: it refuses Read of private keys, credentials files and files holding a key you stored instead. A key stuntkey never stored, in a format it does not know, in an ordinary file, still reaches the AI through Read. A script the AI writes is checked only when it runs through Bash. Scores per leak are in [leakbench/README.md](https://github.com/calasdan-sketch/stuntkey/blob/main/leakbench/README.md).
+- **The hook knows forms, not intent.** It refuses an Edit or Write of a program that prints the whole environment in the forms it knows (`print(os.environ)`, `console.log(process.env)` and a few more); a loop over `os.environ.items()` is not refused. A key pasted into a prompt is kept from the model, but Claude Code still writes it to its own local history files.
+- **The Claude Code hook masks Bash output only.** Claude Code documents no output shape for Read or Grep, so the hook cannot mask them: it refuses Read of private keys, credentials files and files holding a key you stored instead. A key stuntkey never stored, in a format it does not know, in an ordinary file, still reaches the AI through Read. A script the AI writes is checked when it is written (for the forms the hook knows) and again, its output, when it runs through Bash. Scores per leak are in [leakbench/README.md](https://github.com/calasdan-sketch/stuntkey/blob/main/leakbench/README.md).
 - **The clipboard.** `get` empties it right away, but other programs or clipboard-history tools may see the key while it is there.
 - **A log that can't be rewritten.** The log shows accidents and casual edits. Someone running as you could rewrite it.
 - **It sends no telemetry.** stuntkey talks only to the services you call (and, for `find`, a public list on GitHub).
 
 The threat model, with links to the code that does each job, is in [docs/THREAT_MODEL.md](https://github.com/calasdan-sketch/stuntkey/blob/main/docs/THREAT_MODEL.md). More known limits (a GET can read other secrets through a vendor's own endpoints, and others) are under "Known limits" in [SECURITY.md](https://github.com/calasdan-sketch/stuntkey/blob/main/SECURITY.md), which is also where to report a security problem privately.
+
+## How it compares
+
+Only what each project's own documentation states; follow the links. "Not
+documented" means we found no such feature in their docs, not that it is
+impossible.
+
+| | stuntkey | [1Password `op run` / Environments](https://www.1password.dev/get-started/secure-ai-access) | [Infisical Agent Vault](https://infisical.com/platform/agent-vault) | [GitGuardian ggshield AI hook](https://docs.gitguardian.com/ggshield-docs/integrations/ai-coding-tools/secret-scanning-for-ai-coding-tools) | [Pipelock](https://github.com/luckyPipewrench/pipelock) | [agent-airlock](https://github.com/es617/agent-airlock) |
+|---|---|---|---|---|---|---|
+| Agent makes calls without holding the key | yes (broker, MCP, base-URL proxy) | `op run` hands the real value to the launched process; placeholder gateway in beta (OpenShell) | yes (forward proxy) | no (scanner) | no: the agent may hold keys; Pipelock cuts its direct network access and scans what leaves | yes (reverse proxy) |
+| Blocks `.env` reads / env dumps by the agent | yes (Claude Code hook) | not documented (its hook checks that `.env` files exist and are valid) | not documented | scans file reads and commands for secrets | not documented | no |
+| Masks keys in command output | yes (Bash) | not documented | not documented | withholds or notifies, per tool | not documented (scans HTTP and MCP traffic) | no |
+| Blocks a key pasted into a prompt | yes (stored keys, vendor formats; Claude Code) | not documented | not documented | yes | not documented | no |
+| Refuses writing a stored key into a file | yes (Edit / Write; Claude Code) | not documented | not documented | not documented | a filesystem sentinel watches for secrets written to disk | no |
+| Account or server needed | no | 1Password account | Infisical (cloud or self-hosted) | GitGuardian account and API key | no (self-hosted) | no |
+| Runtime dependencies | none (Python stdlib) | 1Password app / CLI | Infisical | ggshield | Go binary | none (Node 20+) |
+| Public, runnable leak benchmark | yes (`leakbench`, 66 probes) | not documented | not documented | not documented | rule counts published; no public detection score | no |
+
+stuntkey has had no independent security review (see [SECURITY.md](SECURITY.md)).
+Where they are ahead: 1Password, Infisical and GitGuardian are established
+security companies with team features stuntkey lacks (for example Infisical's
+time-bound sessions and per-agent machine identities, 1Password's approval
+prompt per Environments action); Pipelock and agent-airlock work for any agent and any HTTP
+API without a Claude Code hook; ggshield's hook covers Cursor, Codex, Copilot
+and more, where stuntkey's hook is Claude Code only.
 
 ## Check it yourself (don't trust us)
 

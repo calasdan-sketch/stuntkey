@@ -636,9 +636,15 @@ class TestBigAndBrokenInput(unittest.TestCase):
         self.assertEqual(json.loads(out)["hookSpecificOutput"]["permissionDecision"], "deny")
 
     def test_an_innocent_big_payload_passes(self):
-        # a big write (its content is not scanned) is fine ...
+        # a big write the hook can read whole is fine ...
         self.assertEqual(self.run_check(call("Write", file_path="/a/b.txt",
-                                             content="a" * 1_200_000))[:2], (0, ""))
+                                             content="a" * 500_000))[:2], (0, ""))
+        # ... but since the panel review one too big to read whole is refused: the first 0.10.0 draft
+        # read only its start and let a stored key further in through
+        code, out, _ = self.run_check(call("Write", file_path="/a/b.txt",
+                                           content="a" * 1_200_000))
+        self.assertEqual(code, 0)
+        self.assertIn("deny", out)
 
     def test_a_huge_shell_command_is_refused_unread(self):
         # ... but a shell command too long to check safely is refused, not waved through

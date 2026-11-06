@@ -64,6 +64,11 @@ report it, see [SECURITY.md](../SECURITY.md)).
   check, Origin refused, no CORS ([httpd.py](../stuntkey/httpd.py)).
 - **Claude Code reading `.env` files or running key-using stuntkey commands.**
   The optional hook ([hook.py](../stuntkey/hook.py)) refuses those tool calls.
+- **A key spreading from the chat into files, and from you into the chat.**
+  The same hook refuses an Edit / Write that would put one of your stored keys
+  in a file or write a program that prints the environment or a `.env` file
+  (`decide_write_content`), and blocks a prompt with a pasted key before the
+  model gets it (`prompt_check`, UserPromptSubmit). Both read text only.
 
 `stuntkey selftest` runs these rules against simulated attacks
 ([selftest.py](../stuntkey/selftest.py)). It checks the rules, not the live
