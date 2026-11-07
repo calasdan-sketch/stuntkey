@@ -88,10 +88,14 @@ def add_parsers(sub) -> None:
     ov.add_argument("--json", action="store_true", help="Machine-readable output.")
     ov.add_argument("--env-file", default=".env")
     au = sub.add_parser("audit", help="Check the activity log has not been tampered with.")
-    au.add_argument("action", choices=["verify", "show", "reset"],
-                    help="reset: start a fresh log after a problem (the old one is kept)")
+    au.add_argument("action", choices=["verify", "show", "reset", "export"],
+                    help="export: write every entry as CSV (or JSON lines with --json) "
+                         "for a spreadsheet or an auditor; reset: start a fresh log "
+                         "after a problem (the old one is kept)")
     au.add_argument("--json", action="store_true")
     au.add_argument("--last", type=int, default=20, help="how many entries to show")
+    au.add_argument("--out", default=None, metavar="FILE",
+                    help="export: write to FILE (never overwrites) instead of the screen")
     ca = sub.add_parser("call", help="Call a connected service's API; the key is "
                                      "added for you and hidden from the output.")
     ca.add_argument("service")
@@ -150,7 +154,7 @@ def dispatch(args, catalog: dict):
         if cmd == "overview":
             return cmds.cmd_status(catalog, args.env_file, args.json)
         if cmd == "audit":
-            return cmds.cmd_audit(args.action, args.json, args.last)
+            return cmds.cmd_audit(args.action, args.json, args.last, args.out)
         if cmd == "serve":
             return cmds.cmd_serve(catalog, args.port, args.env_file)
         recipe = catalog.get(args.service)

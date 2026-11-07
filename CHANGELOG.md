@@ -1,5 +1,88 @@
 # Changelog
 
+## 0.11.0 (unreleased), expert round 3
+
+Seven roles tried the tool hands-on: a prompt-injection red-teamer, a Windows
+and PowerShell engineer, a performance engineer, an auditor, a first-time
+user following only the README, a competitor's engineer (Infisical Agent
+Vault and Pipelock docs re-read) and a concurrency tester. No version bump
+(0.11.0 is still unreleased).
+
+### New
+
+- **`audit export [--json] [--out FILE]`.** Every log entry as CSV (or JSON
+  lines) with UTC times, for an auditor or a spreadsheet. Control and bidi
+  characters shown as `?`; a cell starting `=`, `+`, `-` or `@` gets a leading
+  quote (formula injection); exits 1 when the log does not check out; `--out`
+  never overwrites.
+- **A mistyped command gets a short answer** (`stuntkey gett` -> "Did you
+  mean: get, forget, selftest?") instead of argparse's list of every command;
+  terminal codes in what was typed are shown as visible escapes.
+- **leakbench 146 -> 156 probes**: backslash escape, `?` and brace wildcards,
+  wrapper programs, `/usr/bin/env`, `bash -lc`, inline Python, Perl and Ruby
+  environment dumps.
+
+### Fixed
+
+- **`cat .\env` was not refused.** Bash drops the backslash, so it reads
+  `.env`; the joined-text check was only tried when a quote was present.
+- **Wildcard spellings of `.env`** (`.?nv`, `.e{n,}v`, `.en[v]`, `.e*` with a
+  reading program, and a Grep `glob`/`path`) are refused; `ls .e*`, `cat *env*`
+  and `cat .eslintrc*` are not. A name joined at run time
+  (`open('.e'+'nv')`, PowerShell `('.e'+'nv')`) and the Windows short name
+  `ENV~1` are refused.
+- **Wrapper programs hid the environment dump**: `timeout 5 env`, `nohup env`,
+  `nice env`, `/usr/bin/env`, `sudo -E env`, `taskset 1 env`, `busybox env`,
+  `bash -lc 'export -p'`. (The wrapper pattern was first written so that a
+  command of `xargs -I ` repeated took minutes to check; every option now
+  starts with `-`, and a test feeds it 100 KB of repeats.)
+- **Inline programs that list the environment or print one key variable**:
+  `python -c` with `os.environ.items()`, `dict(os.environ)`, a comprehension
+  over it, `node -p`/`Object.entries(process.env)`, `ENV.to_h`, `keys %ENV`,
+  `print_r(getenv())`, `Deno.env.toObject()`, `Sys.getenv()`, and printing
+  `$X_API_KEY` as `%X_API_KEY%`, `${env:X_API_KEY}` or `os.environ["X_API_KEY"]`.
+- **Other tools' "show my token" commands**: `gh auth token`, `gcloud auth
+  print-access-token`, `aws configure get aws_secret_access_key`, `az account
+  get-access-token`, `heroku auth:token`, `git credential fill`, `op read`,
+  `bw get password`, `vault kv get`, `kubectl get secret -o yaml`, `kubectl
+  config view --raw`, `sops -d` and a few more. `gh auth status` and `kubectl
+  get secrets` (no contents) stay allowed.
+- **Every audit write read and re-hashed the whole log**: about 40 ms per call
+  at 1,000 entries and growing without limit; building a 5,000-entry log took
+  over five minutes. The `.head` marker now also holds the log's byte size; a
+  write checks size, last line and hash against it, and falls back to the full
+  scan when anything differs (an old marker is upgraded on the next write).
+  About 7 ms per write at 2,000 entries, flat. `audit verify` still checks
+  every line. One behaviour change: an edit in the MIDDLE of the log is now
+  reported by `verify` / `export` / `doctor`, not on the next write.
+
+### Measured
+
+Tests 2,030 passed / 7 timing failures under load before; 2,047 passed after
+(the timing tests, `test_typical_output_is_fast` and
+`test_padded_prompts_check_in_under_two_seconds`, fail on a busy machine
+before and after). leakbench: hook 103/39/4 -> 121/31/4 of 156, hook+caps
+107/39/0 -> 125/31/0, opaque unseen 96/24/22 -> 114/20/18, after `guard`
+103/33/6 -> 121/25/6. The new probes are the author's own, so part of that
+rise is the 10 new probes.
+
+### Not built (and why)
+
+- **A faster `hook check` start-up.** Importing the whole CLI costs about
+  0.1 s per tool call; the console script is pinned to `stuntkey.cli:main` by
+  tests and installs, so a lighter entry would change the installed command.
+- **Blocking `curl -H "Authorization: Bearer $KEY" https://other-host`.** It
+  is what developers do all day; a strict opt-in mode is the right shape and
+  is not written.
+- **Signed audit checkpoints** (Pipelock does this): needs Ed25519, which the
+  standard library lacks.
+- **Time-bound agent sessions and per-agent identities** (Infisical Agent
+  Vault, per its page): a server feature.
+- Renamed imports (`from os import environ as e`), shell functions and
+  `env -u NAME`; `git config --list` / `npm config list` can show a URL with
+  a token and are still allowed (common, and the masker covers stored keys).
+- macOS and Windows paths were read and string-tested only, not run.
+
 ## 0.11.0 (unreleased)
 
 Expert round 2. Six roles tried the tool hands-on: a secrets-management

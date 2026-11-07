@@ -142,25 +142,27 @@ prompt probe's `tool` is `{"hook_event_name": "UserPromptSubmit", "prompt": ...}
 
 ## Results (this repo, this host)
 
-146 probes (0.10 had 66; 0.11 adds 59 `evasion` reads, 19 `agent footprint`
-reads and 2 spend shapes; read the notes below). Run on a Linux host with bash,
-python, node, git and rg, without docker or powershell (hence the `n/a`).
+156 probes (0.10 had 66; 0.11 adds 59 `evasion` reads, 19 `agent footprint`
+reads and 2 spend shapes; the 0.12 line adds 10 more `evasion` reads, written
+by the same author who then wrote the rules that stop them, so they show the
+rules work, not that they generalise). Run on a Linux host with bash, python,
+node, ruby, perl, git and rg, without docker or powershell (hence the `n/a`).
 Reproduce with the commands above.
 
 | profile (vendor-format canary) | blocked | masked | leaked | n/a |
 |--------------|--------:|-------:|-------:|----:|
-| none          |       0 |      0 |    133 |  13 |
-| stuntkey-hook |     103 |     39 |      4 |   0 |
-| stuntkey-hook-unseen |  97 |     39 |     10 |   0 |
-| stuntkey-hook-learned |  103 |     39 |      4 |   0 |
-| stuntkey-full |     107 |     39 |      0 |   0 |
+| none          |       0 |      0 |    143 |  13 |
+| stuntkey-hook |     121 |     31 |      4 |   0 |
+| stuntkey-hook-unseen | 115 |     31 |     10 |   0 |
+| stuntkey-hook-learned |  121 |     31 |      4 |   0 |
+| stuntkey-full |     125 |     31 |      0 |   0 |
 
 | profile (`--canary opaque`) | blocked | masked | leaked | n/a |
 |--------------|--------:|-------:|-------:|----:|
-| none          |       0 |      0 |    130 |  16 |
-| stuntkey-hook-unseen |  96 |     24 |     22 |   4 |
-| stuntkey-hook-learned |  103 |     33 |      6 |   4 |
-| stuntkey-full (after `guard`) |  107 |     33 |      2 |   4 |
+| none          |       0 |      0 |    140 |  16 |
+| stuntkey-hook-unseen | 114 |     20 |     18 |   4 |
+| stuntkey-hook-learned |  121 |     25 |      6 |   4 |
+| stuntkey-full (after `guard`) |  125 |     25 |      2 |   4 |
 
 Profiles: `stuntkey-hook` registers the canary as a key saved with `get`.
 `stuntkey-hook-unseen` does not: a key stuntkey was never told about, found by
@@ -175,7 +177,7 @@ it, and the probes `notes-file-says-key` and `notes-folder-grep` leak under
 every profile with an opaque key. The 59 `evasion` probes were written before
 the hook's code was read; none of them leaked under any stuntkey profile, but
 they are one author's list. Under the "unseen" profile a vendor-format key is
-still masked by its format; the 22 are keys with no format.
+still masked by its format; the 18 are keys with no format.
 
 The five `key spread` probes of 0.10 were written in the same release as the checks that stop them, so they show the feature works, not that it generalises.
 
@@ -184,8 +186,8 @@ Spend: `giant-max-tokens-call` (one request for 1,000,000 output tokens) and
 `stuntkey-full` only (caps `tokens_call` / `tokens_day` and `calls_hour`, new
 in 0.11).
 
-0.10.0 on the same 146 probes: hook (vendor) 103 / 39 / 4, unseen (opaque)
-96 / 23 / 23. Most of what changed in 0.11 is new code for keys the hook was
+0.10.0 on its own 66 probes is not comparable; on the 146 probes of 0.11.0: hook
+(vendor) 103 / 39 / 4, unseen (opaque) 96 / 24 / 22. Most of what changed in 0.11 is new code for keys the hook was
 never told about, not a better hook for keys it was.
 
 **Blocked before the call:** every `.env` read/write and its disguises,

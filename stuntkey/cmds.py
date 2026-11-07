@@ -97,8 +97,66 @@ def cmd_call(recipe: dict, args) -> int:
 
 # ---- audit ----------------------------------------------------------------------
 
-def cmd_audit(action: str, as_json: bool, last: int = 20) -> int:
+_CSV_COLUMNS = ("time_utc", "service", "method", "host", "path", "status", "bytes", "result", "ms")
+
+
+def _csv_cell(value) -> str:
+    """One CSV cell that is safe in a spreadsheet: control characters shown as
+    '?', and a cell that starts with = + - @ (a formula) gets a leading quote."""
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return str(value)
+    text = broker._clean(value, 300)
+    return "'" + text if text[:1] in ("=", "+", "-", "@") else text
+
+
+def _export_audit(log, as_json: bool, out_path: str | None) -> int:
+    import csv
+    import datetime
+    import io
+    intact, n = log.verify()
+    rows = []
+    try:
+        with open(log.path, "rb") as f:
+            for line in f.read().splitlines():
+                try:
+                    rows.append(json.loads(line))
+                except ValueError:
+                    pass
+    except OSError:
+        pass
+    buf = io.StringIO()
+    if as_json:
+        for e in rows:
+            buf.write(json.dumps(e, sort_keys=True) + "\n")
+    else:
+        w = csv.writer(buf, lineterminator="\n")
+        w.writerow(_CSV_COLUMNS)
+        for e in rows:
+            try:
+                when = datetime.datetime.fromtimestamp(
+                    int(e.get("ts", 0)), datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            except (OverflowError, OSError, ValueError, TypeError):
+                when = "?"
+            w.writerow([when] + [_csv_cell(e.get(k, "")) for k in _CSV_COLUMNS[1:]])
+    if out_path:
+        try:
+            with open(out_path, "x", encoding="utf-8", newline="") as f:
+                f.write(buf.getvalue())
+        except OSError as e:
+            print(f"error: could not write {out_path}: {e.strerror or e}", file=sys.stderr)
+            return PROBLEM
+        print(f"wrote {len(rows)} entries to {out_path}", file=sys.stderr)
+    else:
+        sys.stdout.write(buf.getvalue())
+    print("activity log: " + ("intact" if intact else "DOES NOT CHECK OUT - this export may be false")
+          + f" ({n} entries checked)", file=sys.stderr)
+    return OK if intact else PROBLEM
+
+
+def cmd_audit(action: str, as_json: bool, last: int = 20, out_path: str | None = None) -> int:
     log = broker.AuditLog(os.path.join(_home(), "audit.log"))
+    if action == "export":
+        return _export_audit(log, as_json, out_path)
     if action == "reset":
         try:
             kept = log.reset()

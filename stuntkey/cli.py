@@ -38,8 +38,31 @@ def _harden_streams() -> None:
             pass
 
 
+class _Parser(argparse.ArgumentParser):
+    """argparse, except a mistyped command gets a short plain answer instead of
+    a wall listing every command (0.12). Everything else is argparse's own."""
+
+    def error(self, message):
+        import re as _re
+        m = _re.match(r"argument cmd: invalid choice: '(.*?)' \(choose from", message)
+        if m and self.prog == "stuntkey":
+            import difflib
+            from .recipes import printable
+            typed = m.group(1)
+            try:
+                names = list(self._subparsers._group_actions[0].choices)
+            except (AttributeError, IndexError, TypeError):
+                names = []          # argparse changed its insides: say less, not crash
+            close = difflib.get_close_matches(typed, names, n=3, cutoff=0.5)
+            hint = (" Did you mean: " + ", ".join(close) + "?") if close else ""
+            self.exit(2, f"stuntkey: '{printable(typed)[:40]}' is not a command.{hint}\n"
+                         "Run `stuntkey --help` to see them all, or `stuntkey start` "
+                         "for a guided tour.\n")
+        super().error(message)
+
+
 def _build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(
+    p = _Parser(
         prog="stuntkey",
         description="Let your AI use your API keys without holding them: guided "
                     "setup, validated, kept in the OS keychain. The key is "

@@ -1356,7 +1356,7 @@ These commands let an AI use a saved key while only stuntkey ever holds it.
 - `stuntkey serve [--port 8787]`: a local web door for tools that do not speak MCP.
 - `stuntkey remote SERVICE user@host [--as USER] [--ssh-arg ARG] -- COMMAND`: run a command on another machine with the key sent over ssh stdin.
 - `stuntkey deploy user@host --service NAME --dir FOLDER [--as USER] [--then COMMAND]`: trust the server, send the key, `git pull`, optionally restart.
-- `stuntkey audit verify|show|reset [--last N]`: check the activity log has not been tampered with.
+- `stuntkey audit verify|show|reset|export [--last N] [--json] [--out FILE]`: check the activity log has not been tampered with. `export` writes every entry as CSV (JSON lines with `--json`), times in UTC, safe to open in a spreadsheet; `--out FILE` never overwrites; it exits 1 if the log does not check out.
 - `stuntkey selftest [--verbose]`: attack stuntkey with a made-up key; `--verbose` lists every attack.
 - `stuntkey scan-git [--staged] [--install-hook]`: look through git history, or what is about to be committed, for keys.
 - `stuntkey get SERVICE [--no-clipboard]`: one command: open the key page, take the key from your copy, test it, save it in the keychain.

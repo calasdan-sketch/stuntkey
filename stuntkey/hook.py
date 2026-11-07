@@ -133,8 +133,17 @@ STEAL_REASON = (
 # (regex, what it does). They are matched against the whole command text.
 _SAFE = r"(?:^|[\s;&|`(\"'])"
 # the start of a command (not a word in the middle of one), and its end
-_CMD = (r"(?:^|[\n;&|(`{]|\bthen\b|\bdo\b|\bcmd(?:\.exe)?\s+/[ck]|\s-c)\s*(?:[\"']\s*)?"
-        r"(?:sudo\s+|command\s+|builtin\s+)?")
+# 0.12: programs that just run another program (nohup env, timeout 5 env,
+# nice env, /usr/bin/env, bash -lc 'export -p') no longer hide it
+_WRAPPERS = (r"(?:(?:(?:sudo|command|builtin|nohup|time|exec|setsid|chronic)(?:\s+(?:-[-\w=]+|--))*|"
+             r"taskset(?:\s+-\w+)*\s+[\w,]+|busybox|"
+             r"stdbuf(?:\s+-[A-Za-z]\w*)*|nice(?:\s+-n\s*-?\d+)?|ionice(?:\s+-[A-Za-z]\w*)*|"
+             r"timeout(?:\s+-[-\w=]+)*\s+\d+\w*|env\s+-i|xargs(?:\s+(?:-[A-Za-z0-9]+|\{\}))*|"
+             r"watch(?:\s+-[A-Za-z]\w*)*)\s+)*(?:/(?:usr/)?(?:local/)?s?bin/)?")
+# (every option part starts with "-" or is a fixed word, so a long run of
+# wrappers can be read only one way: no catastrophic backtracking)
+_CMD = (r"(?:^|[\n;&|(`{]|\bthen\b|\bdo\b|\bcmd(?:\.exe)?\s+/[ck]|\s-[a-z]*c)\s*(?:[\"']\s*)?"
+        + _WRAPPERS)
 _END = r"(?=$|\s*[\n|;&>)`}\"'])"
 # upper case only: `for key in ...; do echo $key` is not a key
 _SECRET_WORD = r"(?-i:KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL)"
@@ -204,6 +213,40 @@ DUMP_RULES = (
                 r"fgrep|rg|ag|sed|awk|bat|nl|xxd|od|strings|base64|tac|cut|sort|uniq|"
                 r"Select-String|sls)\b[^\n;&|]{0,300}?" + _CRED_FILE, re.I),
      "show a private key or a credentials file"),
+    # 0.12: other tools' "print my login token" commands, and secret managers
+    (re.compile(_SAFE + r"(?:gh\s+auth\s+token|gh\s+auth\s+status\b[^\n;&|]{0,100}\s(?:-t\b|--show-token)|"
+                r"gcloud\s+auth\s+(?:application-default\s+)?print-(?:access|identity|refresh)-token|"
+                r"aws\s+configure\s+(?:get\s+(?:aws_)?(?:secret_access_key|access_key_id|session_token)|export-credentials)|"
+                r"heroku\s+auth:token|fly(?:ctl)?\s+auth\s+token|az\s+account\s+get-access-token|"
+                r"npm\s+config\s+get\s+\S*auth\S*|"
+                r"git\s+credential(?:-\w+)?\s+(?:fill|get)|"
+                r"op\s+(?:read|inject)\b|op\s+item\s+get\b[^\n;&|]{0,100}--reveal|"
+                r"bw\s+get\s+(?:password|item|totp|notes)|vault\s+(?:kv\s+get|read)\b|"
+                r"doppler\s+secrets\b|infisical\s+(?:export|secrets)\b|sops\s+(?:-d|--decrypt)\b|"
+                r"kubectl\s+config\s+view\b[^\n;&|]{0,100}--raw|"
+                r"kubectl\s+get\s+secrets?\b[^\n;&|]{0,200}-o\s*(?:yaml|json|jsonpath))", re.I),
+     "print a login token or secret from another tool (stuntkey makes the call for you instead)"),
+    # whole-environment enumeration in an inline program (python -c, node -e,
+    # ruby -e, perl -e, php -r, awk, deno, R): only the forms that list EVERY
+    # variable; os.environ["NAME"] stays allowed
+    (re.compile(r"\bos\.environ\s*\[\s*(\w+)\s*\][^\n]{0,60}\bfor\s+\1\s+in\s+(?:sorted\s*\(\s*)?os\.environ\b|"
+                r"\bos\.environ\.(?:items|values|copy)\s*\(|\bdict\s*\(\s*os\.environ\s*\)|"
+                r"\bObject\.(?:entries|values)\s*\(\s*(?:process|Bun)\.env\s*\)|"
+                r"\bJSON\.stringify\s*\(\s*process\.env\b|\bnode\b[^\n;&|]{0,40}\s-p\s+[\"']?process\.env[\"']?\s*(?:$|[;&|])|"
+                r"\bconsole\.\w+\s*\(\s*Bun\.env\s*\)|"
+                r"\bENV\.(?:to_h|to_a|each|map|inspect)\b|[\s{(;]p\s+ENV\.to_h\b|"
+                r"\b(?:keys|each|values)\s*\(?\s*%ENV\b|\bfor\s*\(\s*\w+\s+in\s+ENVIRON\s*\)|"
+                r"\b(?:print_r|var_dump|var_export)\s*\(\s*(?:getenv\s*\(\s*\)|\$_ENV|\$_SERVER)|"
+                r"\bDeno\.env\.toObject\b|\bSys\.getenv\s*\(\s*\)|\bprintln\s*\(\s*ENV\s*\)|"
+                r"\bos\.Environ\s*\(\s*\)|\bSystem\.getenv\s*\(\s*\)\s*(?:\)|\.)"),
+     "print every environment variable from an inline program"),
+    # printing ONE key variable from an inline program / cmd.exe / PowerShell
+    (re.compile(r"(?:\b(?:print|puts|say|printf|console\.\w+|echo|(?i:Write-(?:Output|Host)))\b[^\n;&|]{0,120}"
+                r"(?:os\.environ(?:\[\s*|\.get\s*\(\s*)|os\.getenv\s*\(\s*|process\.env(?:\.|\[\s*)|"
+                r"\bENV(?:\[\s*|\.fetch\s*\(\s*)|\$ENV\{\s*|\bgetenv\s*\(\s*)[\"']?\w*" + _SECRET_WORD + r"|"
+                r"%\w*" + _SECRET_WORD + r"\w*%|\$\{env:\w*" + _SECRET_WORD + r"|"
+                r"GetEnvironmentVariable\s*\(\s*[\"']\w*" + _SECRET_WORD + r")"),
+     "print a key from an environment variable"),
 )
 
 
@@ -226,6 +269,9 @@ def _squash(text: str) -> tuple[str, str]:
     plain = re.sub(r"[\'\"`^\\]", "", text)
     return plain, re.sub(r"\$\{[^}]*\}|\$\w+|\$\(\)", "", plain)
 
+
+# '.e' + 'nv', ('.e','nv') -> pieces a program joins at run time (0.12)
+_JOIN_RE = re.compile(r"""(?<=['"`])\s*[+.,]\s*(?=['"`])""")
 
 _DOT_TOKEN = re.compile(r"(?:^|[\s/\\~=:;&|(<>'\"`])(\.[^\s/\\;&|<>()'\"`=]*)")
 
@@ -323,6 +369,65 @@ def _is_template(m: re.Match) -> bool:
     return bool(parts) and parts[-1].lower() in TEMPLATE_SUFFIXES
 
 
+# Windows' short (8.3) name for ".env" is ENV~1 (0.12)
+_SHORT_ENV_RE = re.compile(r"(?<![\w.\-])ENV~\d(?![\w~])", re.I)
+
+# names a wildcard word is tried against (0.12)
+_GLOB_TARGETS = (".env", ".envrc", ".env.local", ".env.production", ".env.development",
+                 ".env.staging", ".env.test", "prod.env", "production.env", "local.env")
+_GLOB_CHARS = re.compile(r"[*?\[{]")
+_READERS_RE = re.compile(
+    r"(?:^|[\s;&|(`])(?:cat|tac|nl|head|tail|less|more|bat|grep|egrep|fgrep|rg|ag|sed|awk|"
+    r"xargs|od|xxd|hexdump|strings|base64|cut|sort|uniq|tr|fold|paste|diff|cp|dd|tee|type|"
+    r"gc|Get-Content|Select-String|sls|findstr|source|\.)\s", re.I)
+
+
+def _brace_expand(word: str, limit: int = 64) -> list[str]:
+    """Expand {a,b} groups (one level at a time, at most `limit` results)."""
+    out = [word]
+    for _ in range(4):
+        nxt = []
+        changed = False
+        for w in out:
+            m = re.search(r"\{([^{}]*,[^{}]*)\}", w)
+            if not m:
+                nxt.append(w)
+                continue
+            changed = True
+            for alt in m.group(1).split(","):
+                nxt.append(w[:m.start()] + alt + w[m.end():])
+        out = nxt[:limit]
+        if not changed:
+            break
+    return out
+
+
+def glob_env_hit(text: str, reading: bool) -> str | None:
+    """A wildcard word (`.?nv`, `.e{n,}v`, `.en[v]`, `.e*`) that could be a
+    .env file. For a shell command it counts only when a reading program is
+    in the command (`ls .e*` is fine); a Read / Grep path or glob is always
+    read. A word that is only wildcards (`*`, `.*`) is left alone. (0.12)"""
+    if not _GLOB_CHARS.search(text):
+        return None
+    if reading and not _READERS_RE.search(text):
+        return None
+    for raw in re.findall(r"[^\s\"'`;&|<>()=]+", text)[:200]:
+        if not _GLOB_CHARS.search(raw) or len(raw) > 200:
+            continue
+        last = re.split(r"[/\\]", raw)[-1]
+        if not last or not re.search(r"[A-Za-z]", re.sub(r"\[[^\]]*\]", "", last)):
+            continue                                  # no literal letter: too general
+        for cand in _brace_expand(last):
+            if not cand.startswith("."):
+                continue              # `*env*` is no more a .env than `environment.py` is
+            try:
+                if any(fnmatch.fnmatchcase(t, cand.lower()) for t in _GLOB_TARGETS):
+                    return raw
+            except re.error:
+                continue
+    return None
+
+
 def find_env_files(text: str) -> list[str]:
     """Every .env-style file name mentioned in a path or a shell command that
     is not a template."""
@@ -330,6 +435,9 @@ def find_env_files(text: str) -> list[str]:
     for m in ENV_NAME_RE.finditer(text.replace("\\", "/")):
         if not _is_template(m):
             found.append(m.group("name"))
+    m = _SHORT_ENV_RE.search(text)
+    if m:
+        found.append(m.group(0))
     return found
 
 
@@ -426,12 +534,19 @@ def decide(payload) -> str | None:
         hits = find_env_files(text)
         if hits:
             return hits[0]
-        if re.search(r"[\'\"`^]", text):
-            # c''at .e''nv: the shell joins the pieces, so look at the joined text too
-            for variant in _squash(text):
+        if re.search(r"[\'\"`^\\]", text):
+            # c''at .e''nv, cat .\env: the shell joins the pieces, so look at the joined text too
+            for variant in _squash(text) + (_squash(_JOIN_RE.sub("", text))[0],):
                 hits = find_env_files(variant)
                 if hits:
                     return hits[0]
+        shell = payload.get("tool_name") in SHELL_TOOLS
+        if len(text) <= CHUNK and (shell or payload.get("tool_name") in ("Read", "Grep")):
+            hit = glob_env_hit(text, reading=shell)
+            if hit is None and (shell or payload.get("tool_name") in ("Read", "Grep")):
+                hit = glob_env_hit(_squash(text)[0], reading=shell)
+            if hit:
+                return hit
     return None
 
 

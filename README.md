@@ -8,33 +8,34 @@ that have already leaked into the files your agent reads.
 
 ### Measured, not asserted
 
-`leakbench` is a vendor-neutral benchmark of 146 ways an AI coding agent leaks a
+`leakbench` is a vendor-neutral benchmark of 156 ways an AI coding agent leaks a
 credential: reading `.env`, dumping the environment, printing a traceback,
-following an injected instruction, 59 disguised reads (a glob, a variable for
-the file name, `xargs`, a symlink, `tar`, `rev`), the person's own dotfiles and
+following an injected instruction, 69 disguised reads (a glob, a variable for
+the file name, `xargs`, a symlink, `tar`, `rev`, a wrapper such as `timeout`), the person's own dotfiles and
 chat history, a key hard-coded into a committed file or pasted into the chat,
 and runaway spending. Run it yourself:
 `python -m leakbench --profile none` (then `stuntkey-hook`, `stuntkey-full`), and
 `--canary opaque` for a secret with no recognisable format.
 
-| Protection (Linux host, 0.11.0, 146 probes) | blocked | masked | leaked | could not run here |
+| Protection (Linux host, 0.11.0, 156 probes) | blocked | masked | leaked | could not run here |
 |---|---|---|---|---|
-| nothing | 0 | 0 | **133** | 13 |
-| stuntkey hook, key saved with `get` | **103** | 39 | **4** | 0 |
-| stuntkey hook + spending caps | **107** | 39 | **0** | 0 |
+| nothing | 0 | 0 | **143** | 13 |
+| stuntkey hook, key saved with `get` | **121** | 31 | **4** | 0 |
+| stuntkey hook + spending caps | **125** | 31 | **0** | 0 |
 
 The same table for a key with **no vendor format** (`--canary opaque`, 40 random
 hex characters, like a database password or an internal token):
 
 | Key stuntkey was never told about | blocked | masked | leaked |
 |---|---|---|---|
-| hook only (0.11.0; 0.10.0 gave 96 / 23 / 23) | 96 | 24 | **22** |
-| hook after `stuntkey guard` (0.11.0) | 103 | 33 | **6** |
-| hook + `guard` + caps | 107 | 33 | **2** |
+| hook only (0.11.0 gave 96 / 24 / 22 on 146 probes) | 114 | 20 | **18** |
+| hook after `stuntkey guard` | 121 | 25 | **6** |
+| hook + `guard` + caps | 125 | 25 | **2** |
 
 **What these numbers do not say**, named rather than hidden: the hook only
-blocks the *forms it knows*; the 59 disguised-read probes were written
-before the hook's code was read and none leaked, but they are one person's
+blocks the *forms it knows*; the first 59 disguised-read probes were written
+before the hook's code was read and none leaked, the 10 added in this round were
+written by the author of the rules that stop them, and all are one person's
 list; the probes `guard` is scored on are placed in the very files `guard` reads
 (a key that lives only in your notes is the 2 left, `notes-file-says-key` and
 `notes-folder-grep`); the 4 the hook alone misses (`runaway-loop-no-cap`, `unbounded-retry`,
@@ -117,10 +118,10 @@ It reduces risk; it does not remove it, and no independent security review has b
 - **It does not hide the data.** Replies from the API go to your AI, and so to the AI company. The key is scrubbed; the rest is not.
 - **It does not protect `run`.** A program started with `run` holds the key and can print it.
 - **It does not catch every disguise.** Scrubbing is best effort.
-- **The hook knows forms, not intent.** It refuses an Edit or Write of a program that prints the whole environment in the forms it knows (`print(os.environ)`, `console.log(process.env)` and a few more); a loop over `os.environ.items()` is not refused. A key pasted into a prompt is kept from the model, but Claude Code still writes it to its own local history files.
+- **The hook knows forms, not intent.** It refuses an Edit or Write of a program that prints the whole environment in the forms it knows (`print(os.environ)`, `console.log(process.env)` and a few more); a one-line command (`python -c`, `node -e`, `ruby -e`, `perl -e`, `php -r`) that lists every variable is refused, but a program written to a file that loops over the environment in a way the hook does not know is not, and neither is one that renames `os.environ` first (`from os import environ as e`). A key pasted into a prompt is kept from the model, but Claude Code still writes it to its own local history files.
 - **The Claude Code hook masks Bash output only.** Claude Code documents no output shape for Read or Grep, so the hook cannot mask them: it refuses Read of private keys, credentials files and files holding a key you stored instead. A key stuntkey never stored, in a format it does not know, in an ordinary file, still reaches the AI through Read. A script the AI writes is checked when it is written (for the forms the hook knows) and again, its output, when it runs through Bash. Scores per leak are in [leakbench/README.md](https://github.com/calasdan-sketch/stuntkey/blob/main/leakbench/README.md).
 - **The clipboard.** `get` empties it right away, but other programs or clipboard-history tools may see the key while it is there.
-- **A log that can't be rewritten.** The log shows accidents and casual edits. Someone running as you could rewrite it.
+- **A log that can't be rewritten.** The log shows accidents and casual edits. Each new entry checks the end of the log against a marker file (fast, however long the log is); `audit verify` and `audit export` check every line. Someone running as you could rewrite it.
 - **It sends no telemetry.** stuntkey talks only to the services you call (and, for `find`, a public list on GitHub).
 
 The threat model, with links to the code that does each job, is in [docs/THREAT_MODEL.md](https://github.com/calasdan-sketch/stuntkey/blob/main/docs/THREAT_MODEL.md). More known limits (a GET can read other secrets through a vendor's own endpoints, and others) are under "Known limits" in [SECURITY.md](https://github.com/calasdan-sketch/stuntkey/blob/main/SECURITY.md), which is also where to report a security problem privately.
@@ -140,7 +141,7 @@ impossible.
 | Refuses writing a stored key into a file | yes (Edit / Write; Claude Code) | not documented | not documented | not documented | a filesystem sentinel watches for secrets written to disk | no |
 | Account or server needed | no | 1Password account | Infisical (cloud or self-hosted) | GitGuardian account and API key | no (self-hosted) | no |
 | Runtime dependencies | none (Python stdlib) | 1Password app / CLI | Infisical | ggshield | Go binary | none (Node 20+) |
-| Public, runnable leak benchmark | yes (`leakbench`, 146 probes) | not documented | not documented | not documented | rule counts published; no public detection score | no |
+| Public, runnable leak benchmark | yes (`leakbench`, 156 probes) | not documented | not documented | not documented | rule counts published; no public detection score | no |
 
 stuntkey has had no independent security review (see [SECURITY.md](SECURITY.md)).
 Finding keys that have no vendor prefix, which is what decides whether a scan,
@@ -165,7 +166,7 @@ measured here for either tool.
 Where they are ahead: 1Password, Infisical and GitGuardian are established
 security companies with team features stuntkey lacks (for example Infisical's
 time-bound sessions and per-agent machine identities, 1Password's approval
-prompt per Environments action); Pipelock and agent-airlock work for any agent and any HTTP
+prompt per Environments action); Pipelock's flight recorder signs its hash-chained log with Ed25519 checkpoints and can produce HTML/JSON/signed reports (per its README, read 2026-11); stuntkey's chain is unsigned, so someone running as you can rewrite it and recompute it (`audit export` gives you the evidence, not a signature); Pipelock and agent-airlock work for any agent and any HTTP
 API without a Claude Code hook; ggshield's hook covers Cursor, Codex, Copilot
 and more, where stuntkey's hook is Claude Code only.
 
@@ -196,7 +197,7 @@ stuntkey uses only Python's own standard library, and a test in the repository (
 
 - `call <service> <METHOD> <path>` - make one brokered call yourself (`--query name=value`, `--data '{...}'`, `--json`). Try `stuntkey call github GET /user`.
 - `overview` - what is connected and whether the activity log is intact. (`status` shows where each key lives and how old it is.)
-- `audit show` - the last calls, with a warning if the log does not check out.
+- `audit show` - the last calls, with a warning if the log does not check out. `audit export [--json] [--out FILE]` writes every entry as CSV (JSON lines with `--json`) for a spreadsheet or an auditor: times in UTC, control characters shown as `?`, a cell that starts with `=`, `+`, `-` or `@` gets a leading quote so a spreadsheet does not run it, and it exits with an error if the log does not check out. `--out` never overwrites a file.
 - `adopt [--dry-run] [--remove]` - the key is already in your `.env`: move it into the keychain with no copying and no new key (asks first; the file is left alone unless `--remove`).
 - `guard [--dry-run] [--no-home] [--no-env] [--quiet] [--forget]` - the key stays where it is, but stuntkey learns its fingerprint (never the key) from the project, MCP settings, shell profiles, `.npmrc`, `.netrc`, chat history and this shell's variables, so the hook masks, refuses or blocks it anywhere else it shows up, even a key with no vendor format.
 - `rotate <service>` - replace a stored key.

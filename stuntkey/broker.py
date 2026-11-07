@@ -640,8 +640,10 @@ class AuditLog:
     def _count(self) -> int:
         return self._scan()[0]
 
-    def _read_anchor(self):
-        """None = no marker file; _BAD = unreadable; else (count, hash)."""
+    def _read_anchor_full(self):
+        """None = no marker file; _BAD = unreadable; else (count, hash, size)
+        where size is the log's byte size when the marker was written (None in
+        a marker written before 0.12)."""
         try:
             with open(self.anchor_path, encoding="utf-8") as f:
                 text = f.read()
@@ -650,16 +652,58 @@ class AuditLog:
         except OSError:
             return _BAD
         try:
-            count, h = text.split()
-            return int(count), h
+            parts = text.split()
+            if len(parts) not in (2, 3):
+                return _BAD
+            return int(parts[0]), parts[1], (int(parts[2]) if len(parts) == 3 else None)
         except ValueError:
             return _BAD
+
+    def _read_anchor(self):
+        """None = no marker file; _BAD = unreadable; else (count, hash)."""
+        a = self._read_anchor_full()
+        return a if a is None or a is _BAD else (a[0], a[1])
+
+    def _fast_state(self):
+        """The same answer as _scan() without reading the whole log, or None
+        when it cannot be sure. Used on the write path only (0.12): the file
+        is exactly as long as when the marker was written, and its last line
+        is a good line whose hash is the marker's. `verify()` still reads and
+        checks every line, so an edit in the middle is found there."""
+        a = self._read_anchor_full()
+        if a is None or a is _BAD or a[2] is None or a[0] < 1:
+            return None
+        try:
+            if os.path.islink(self.path) or os.path.getsize(self.path) != a[2]:
+                return None
+            with open(self.path, "rb") as f:
+                f.seek(max(0, a[2] - 65536))
+                tail = f.read()
+        except OSError:
+            return None
+        if not tail.endswith(b"\n"):
+            return None
+        lines = tail.splitlines()
+        if not lines:
+            return None
+        try:
+            e = json.loads(lines[-1])
+            h = e.pop("hash")
+            if h != self._digest(e) or h != a[1]:
+                return None
+        except (ValueError, KeyError, TypeError, AttributeError):
+            return None
+        return a[0], a[1], True, True, True
 
     def _save_anchor(self, count: int, h: str) -> None:
         tmp = self.anchor_path + ".tmp"
         try:
+            size = os.path.getsize(self.path)
+        except OSError:
+            size = None
+        try:
             with open(tmp, "w", encoding="utf-8") as f:
-                f.write(f"{count} {h}\n")
+                f.write(f"{count} {h}\n" if size is None else f"{count} {h} {size}\n")
             os.replace(tmp, self.anchor_path)
         except OSError:
             pass
@@ -700,7 +744,8 @@ class AuditLog:
         with AuditLog._lock, _file_lock(self.path) as got:   # one writer at a time
             if not got:
                 raise BrokerError("The activity log is busy or locked.", 5)
-            n, last, ok, _exists, anchored = self._scan()
+            state = self._fast_state() or self._scan()
+            n, last, ok, _exists, anchored = state
             a = self._read_anchor()
             reason = self._problem(n, last, ok, a, anchored)
             flagged = self.broken_reason() is not None
