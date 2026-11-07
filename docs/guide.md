@@ -296,6 +296,37 @@ list go to stderr. SARIF is version 2.1.0, with the redacted key in each
 message. The same file reached through a link is reported once, under its
 real path.
 
+## Guard and adopt: keys you already have
+
+Two commands for keys that are already lying around, so there is no trip to the
+vendor's site for a new one.
+
+**`stuntkey adopt`** moves a key from a `.env` file into the OS keychain. It takes
+only a `.env`-style file, a key in the vendor's format and a service with one
+value (AWS has two: use `get`). It lists what it found (keys shortened), asks, stores the key under
+the service's usual variable name, reads it back, and leaves the file alone.
+`--remove` then comments the moved lines out, after a second question; a line is
+found again by its value, so a file edited since is not touched. `--dry-run`
+only lists (`--yes` skips the questions, for a script you run yourself). After a move, start your program with `stuntkey run <service> --
+<command>`. A key that sat in a file may already have been read by an agent:
+`stuntkey rotate <service>` replaces it.
+
+**`stuntkey guard`** keeps the key where it is and teaches stuntkey to recognise
+it. It reads this project (`.env` and agent files), MCP settings, shell profiles,
+shell and Python history, `.npmrc`, `.pypirc`, `.netrc`, `.git-credentials`,
+`~/.aws/credentials`, `gh`'s `hosts.yml`, Docker and kube config, Claude Code's
+settings and chat history, and the variables of the shell you run it from, and
+stores a salted fingerprint of each secret value (never the value). The hook then
+masks it in command output, refuses an Edit or Write that would copy it, and
+blocks a prompt that pastes it, whatever its format. Run it again after you add
+keys; values that have left every place are dropped. `--dry-run` shows what would be learned, `--no-home` skips your home folder's files and history, `--no-env` skips this shell's variables, `--quiet` prints nothing (for a script), and `--forget` drops what guard
+learned and leaves keys saved with `get`. Limits: it cannot know a key that is
+only in free text in a file it does not read (a notes file), or one added after
+its last run; it keeps at most 400 values (the hook reads the file on every
+call); the fingerprint file is as private as your home folder, so keep it out of
+backups you share. Only the person runs either command: the hook refuses them
+from an agent.
+
 ## Hook: stop Claude Code reading `.env`
 
 ```bash
@@ -506,7 +537,9 @@ stuntkey mcp                         # stdio MCP server (for Claude Code)
 stuntkey proxy -- <command>          # run a program whose SDK talks to a local stuntkey address (OPENAI/ANTHROPIC/GROQ/TOGETHER_BASE_URL); its *_API_KEY is a throwaway password
 stuntkey proxy --print-env           # print those variables for a tool you start yourself
 stuntkey caps show                   # spending limits per key and today's usage
-stuntkey caps set <service> --calls-session N --calls-day N --tokens-day N   # limit a key (counted across every program)
+stuntkey caps set <service> --calls-session N --calls-hour N --calls-day N --tokens-day N --tokens-call N   # limit a key (counted across every program)
+#   --tokens-call refuses a request asking for more output tokens than N; --tokens-day also
+#   refuses one asking for more than what is left today; a request naming no limit is not checked
 stuntkey caps set <service> --clear  # remove that key's limits
 stuntkey stop | resume               # kill switch for every brokered and proxied call (resume asks you)
 stuntkey policy show | approve       # stuntkey.policy: allowed methods and paths per service; a new or changed file needs your approval
@@ -1247,7 +1280,7 @@ is UTF-8 bytes regardless of console code page, console output is
 reconfigured to replace unencodable characters instead of crashing, and
 every text file is opened as UTF-8.
 
-## Scope / limits (v0.10.0)
+## Scope / limits (v0.11.0)
 
 - `scan` finds keys by their shape. It misses a key with no recognisable
   prefix under a name that does not end in KEY, TOKEN, SECRET or PASSWORD, and

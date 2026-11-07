@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from . import harness, profiles, report
+from . import harness, profiles, report, sandbox
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -15,12 +15,15 @@ def main(argv: list[str] | None = None) -> int:
                     "against ways an AI coding agent can expose an API key.")
     parser.add_argument("--profile", default="none", choices=profiles.AVAILABLE,
                         help="protection profile to score (default: none)")
+    parser.add_argument("--canary", default="vendor", choices=sandbox.CANARY_STYLES,
+                        help="shape of the planted secret: 'vendor' (sk-canary-...) or "
+                             "'opaque' (40 hex chars, no recognisable format)")
     parser.add_argument("--json", action="store_true",
                         help="emit JSON instead of a table")
     args = parser.parse_args(argv)
 
     try:
-        results = harness.run(args.profile)
+        results = harness.run(args.profile, canary_style=args.canary)
     except ImportError:
         print(f"profile '{args.profile}' unavailable: StuntKey is not importable "
               f"(install it or run from the repo).", file=sys.stderr)

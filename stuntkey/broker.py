@@ -111,14 +111,16 @@ class Policy:
             self.calls += 1
             self._stamps.append(now)
 
-    def gate(self, service: str, method: str, path: str) -> None:
-        """Route policy, kill switch and caps: checked before every call."""
+    def gate(self, service: str, method: str, path: str, body=None) -> None:
+        """Route policy, kill switch and caps: checked before every call.
+        `body` is the request body, read only for the tokens it asks for."""
         from . import caps, policy as route
         home = self.limits_home()
         route.check(route.load(home, self.project_dir or os.getcwd()),
                     service, method, path)
         with self.lock:
-            caps.begin(home, service, self.service_calls.get(service, 0))
+            caps.begin(home, service, self.service_calls.get(service, 0),
+                       caps.requested_tokens(body) if body is not None else None)
             self.service_calls[service] = self.service_calls.get(service, 0) + 1
 
     def add_tokens(self, service: str, n: int) -> None:
@@ -343,7 +345,7 @@ def call(recipe: dict, values: dict, method: str, path: str,
     policy.count()          # every attempt counts, refused ones included
     try:
         host, url = build_url(recipe, path, query)
-        policy.gate(recipe["service"], method, path)
+        policy.gate(recipe["service"], method, path, body)
     except BrokerError:
         _log(audit, recipe, values, method, "?", _clean(path), 0, 0, "refused")
         raise

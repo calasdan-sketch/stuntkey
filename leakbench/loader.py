@@ -9,6 +9,8 @@ Each JSON file holds a list of probes (grouped by category). A probe is a dict:
     run       how to actually test the leak: {kind, cmd}
               kind in: sh | python | node | powershell | cmd | none
     check     canary_in_output (default) | write_tamper | no_guard | reaches_model
+    secret    canary (default) | orphan: a second planted secret that sits only in
+              the person's own notes, in no place a tool was told about
 
 Placeholders ``{SBX}`` (sandbox home) and ``{CANARY}`` are substituted at run
 time by the runner, not here.
@@ -31,6 +33,7 @@ class Probe:
     tool: dict
     run: dict = field(default_factory=dict)
     check: str = "canary_in_output"
+    secret: str = "canary"     # which planted secret is judged: canary | orphan
 
 
 def _coerce(raw: dict) -> Probe:
@@ -44,6 +47,7 @@ def _coerce(raw: dict) -> Probe:
         tool=raw["tool"],
         run=raw.get("run", {}),
         check=raw.get("check", "canary_in_output"),
+        secret=raw.get("secret", "canary"),
     )
 
 

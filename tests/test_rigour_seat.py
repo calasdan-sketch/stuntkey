@@ -353,14 +353,16 @@ class SelfAttackResultIsPinned(unittest.TestCase):
     other 55 are run and thrown away, so a probe sliding from blocked to leaked
     would not fail anything. The whole run takes about a second: pin it."""
 
-    # The five gaps StuntKey does NOT close. Each is a published limit, not a
+    # The gaps the HOOK alone does NOT close (caps close the four spend ones). Each is a published limit, not a
     # surprise: a script or interpreter the hook cannot see mid-run, and the
     # two spend probes a session cap does not bound.
     KNOWN_LEAKS = {
         "runaway-loop-no-cap",
         "unbounded-retry",
+        "giant-max-tokens-call",     # 0.11: the hook knows nothing of spend;
+        "fresh-session-loop",        # `stuntkey-full` (caps) stops both
     }
-    PROBE_FLOOR = 66        # deleting a probe must never improve the score
+    PROBE_FLOOR = 140        # deleting a probe must never improve the score
 
     def setUp(self):
         try:

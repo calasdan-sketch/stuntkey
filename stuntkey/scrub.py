@@ -298,27 +298,65 @@ def _write_fingerprints(path: str, data: dict) -> None:
         raise
 
 
+@contextlib.contextmanager
+def _locked(path: str):
+    """One writer at a time across processes: `get` in one terminal and `guard`
+    in another must not drop each other's fingerprints. Best effort (the lock
+    can be unavailable); the write itself stays atomic either way."""
+    from .broker import _file_lock
+    with contextlib.suppress(OSError):
+        os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+    with _file_lock(path):
+        yield
+
+
 def remember_key(name: str, secret: str, path: str | None = None) -> None:
     """Record the fingerprints of a key just stored or rotated (`name`:
     "service/ENV_VAR"; a second call for the same name replaces the first).
     Call after every keychain / .env save."""
     path = path or fingerprint_path()
-    data = _read_fingerprints(path) or {"salt": secrets_mod.token_hex(32), "keys": {}}
-    salt = bytes.fromhex(data["salt"])
-    data["keys"][name] = (sorted(_fp(salt, f) for f in _fingerprint_forms(secret))
-                          if len(secret) >= MIN_LEN else [])
-    _write_fingerprints(path, data)
+    with _locked(path):
+        data = _read_fingerprints(path) or {"salt": secrets_mod.token_hex(32), "keys": {}}
+        salt = bytes.fromhex(data["salt"])
+        data["keys"][name] = (sorted(_fp(salt, f) for f in _fingerprint_forms(secret))
+                              if len(secret) >= MIN_LEN else [])
+        _write_fingerprints(path, data)
+
+
+def replace_group(prefix: str, secrets_by_name: dict[str, str],
+                  path: str | None = None) -> tuple[int, int]:
+    """Make the fingerprints under names starting with `prefix` exactly those
+    of `secrets_by_name` (name -> secret), in ONE write: what `stuntkey guard`
+    uses, so a hundred values do not mean a hundred file rewrites. Entries
+    under other names (keys saved with `get`) are never touched. Returns
+    (kept_or_added, dropped)."""
+    path = path or fingerprint_path()
+    with _locked(path):
+        data = _read_fingerprints(path) or {"salt": secrets_mod.token_hex(32), "keys": {}}
+        salt = bytes.fromhex(data["salt"])
+        old = [n for n in data["keys"] if n.startswith(prefix)]
+        for n in old:
+            del data["keys"][n]
+        added = 0
+        for name, secret in secrets_by_name.items():
+            if not name.startswith(prefix) or len(secret) < MIN_LEN:
+                continue
+            data["keys"][name] = sorted(_fp(salt, f) for f in _fingerprint_forms(secret))
+            added += 1
+        _write_fingerprints(path, data)
+        return added, len([n for n in old if n not in data["keys"]])
 
 
 def forget_key(name: str, path: str | None = None) -> bool:
     """Drop a forgotten key's fingerprints. True when there were some."""
     path = path or fingerprint_path()
-    data = _read_fingerprints(path)
-    if name not in data.get("keys", {}):
-        return False
-    del data["keys"][name]
-    _write_fingerprints(path, data)
-    return True
+    with _locked(path):
+        data = _read_fingerprints(path)
+        if name not in data.get("keys", {}):
+            return False
+        del data["keys"][name]
+        _write_fingerprints(path, data)
+        return True
 
 
 def load_fingerprints(path: str | None = None) -> tuple[bytes, frozenset]:

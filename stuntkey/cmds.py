@@ -177,7 +177,8 @@ def cmd_start(catalog: dict, env_file: str) -> int:
     if n:
         print(f"\nHeads up: {n} place(s) where a key is lying around in plain "
               "text. Run `stuntkey scan` to see where (it never shows the "
-              "key).")
+              "key), `stuntkey adopt` to move the .env ones into the keychain "
+              "with no copying, or `stuntkey guard` to protect them where they are.")
     else:
         print("\nNo loose keys found nearby. Good.")
     have = [s for s, r in catalog.items() if _have_key(r, env_file)]

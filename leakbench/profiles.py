@@ -60,7 +60,7 @@ def _home(path: str | None):
                 os.environ[k] = v
 
 
-def _load_stuntkey_hook() -> Profile:
+def _load_stuntkey_hook(registered: bool = True, learned: bool = False) -> Profile:
     """Wrap StuntKey's hook. Raises ImportError if StuntKey is not on the path,
     so the harness can mark the profile skipped rather than guess."""
     from stuntkey import hook as hook_mod
@@ -73,8 +73,17 @@ def _load_stuntkey_hook() -> Profile:
         # its fingerprint is in the (sandbox) fingerprint file, as in real use
         state["home"] = sbx.home
         path = os.path.join(sbx.home, ".stuntkey", scrub_mod.FINGERPRINT_FILE)
-        if not os.path.exists(path):
+        if registered and not os.path.exists(path):
             scrub_mod.remember_key(f"{BENCH_SERVICE}/API_KEY", sbx.canary, path)
+        if learned and not os.path.exists(path):
+            # the key was never saved with `get`: `stuntkey guard` reads the
+            # places it already sits in (the sandbox project, dotfiles, chat
+            # history, the shell's variables) and remembers fingerprints
+            from stuntkey import guard as guard_mod
+            from stuntkey import recipes as recipes_mod
+            catalog = recipes_mod.load_recipes(recipes_mod.RECIPES_DIR)
+            res = guard_mod.collect(sbx.home, sbx.home, catalog, sbx.env)
+            scrub_mod.replace_group(guard_mod.PREFIX, res.values, path)
 
     def profile(payload: dict) -> tuple[bool, str | None]:
         stdin_text = json.dumps({"hook_event_name": "PreToolUse", **payload})
@@ -120,14 +129,23 @@ def _load_stuntkey_full() -> Profile:
 
     profile = _load_stuntkey_hook()
 
-    def spend(sbx) -> str | None:  # type: ignore[no-untyped-def]
+    def spend(sbx, run=None) -> str | None:  # type: ignore[no-untyped-def]
         home = os.path.join(sbx.home, ".stuntkey")
         os.makedirs(home, exist_ok=True)
+        shape = (run or {}).get("spend", "loop")
+        limits = {"loop": {"calls_session": BENCH_CAP},
+                  "giant-request": {"tokens_call": 4096, "tokens_day": 100_000},
+                  "fresh-session-loop": {"calls_hour": 5}}[shape]
         with open(caps_mod.caps_path(home), "w", encoding="utf-8") as f:
-            json.dump({BENCH_SERVICE: {"calls_session": BENCH_CAP}}, f)
+            json.dump({BENCH_SERVICE: limits}, f)
         for made in range(LOOP_TRIES):
             try:
-                caps_mod.begin(home, BENCH_SERVICE, made)
+                if shape == "giant-request":
+                    caps_mod.begin(home, BENCH_SERVICE, made, request_tokens=1_000_000)
+                elif shape == "fresh-session-loop":
+                    caps_mod.begin(home, BENCH_SERVICE, 0)   # a new session every time
+                else:
+                    caps_mod.begin(home, BENCH_SERVICE, made)
             except BrokerError as e:
                 return f"cap stopped call {made + 1}: {str(e).split(',')[0]}"
         return None
@@ -143,9 +161,14 @@ def get(name: str) -> Profile:
         return _profile_none
     if name == "stuntkey-hook":
         return _load_stuntkey_hook()
+    if name == "stuntkey-hook-unseen":
+        return _load_stuntkey_hook(registered=False)
+    if name == "stuntkey-hook-learned":
+        return _load_stuntkey_hook(registered=False, learned=True)
     if name == "stuntkey-full":
         return _load_stuntkey_full()
     raise KeyError(name)
 
 
-AVAILABLE = ("none", "stuntkey-hook", "stuntkey-full")
+AVAILABLE = ("none", "stuntkey-hook", "stuntkey-hook-unseen",
+             "stuntkey-hook-learned", "stuntkey-full")

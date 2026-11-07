@@ -149,9 +149,9 @@ STEAL_RULES = (
      "run a command with the key and turn output hiding off"),
     (re.compile(r"(?:(?:^|[\s;&|`(\"'/\\])(?:stuntkey|oathkey)(?:\.exe)?|\s-\w*m\s+(?:stuntkey|oathkey)(?:\.(?:cli|__main__))?)"
                 r"(?:\s+--project-dir(?:\s+|=)\S+)*\s+"
-                r"(?:remote|deploy|trust-server|export|run|serve|call)(?![\w-])", re.I),
+                r"(?:remote|deploy|trust-server|export|run|serve|call|adopt|guard)(?![\w-])", re.I),
      "run a stuntkey command that uses or sends a stored key (remote, deploy, "
-     "trust-server, export, run, serve, call: only the person runs those)"),
+     "trust-server, export, run, serve, call, adopt, guard: only the person runs those)"),
     (re.compile(_SAFE + r"secret-tool\s+(?:lookup|search)\b", re.I), "read the Linux keyring"),
     (re.compile(_SAFE + r"security\s+(?:find-\w+-password|dump-keychain|export)\b", re.I),
      "read the macOS keychain"),

@@ -1,5 +1,77 @@
 # Changelog
 
+## 0.11.0 (unreleased)
+
+Expert round 2. Six roles tried the tool hands-on: a secrets-management
+engineer (scanner recall against detect-secrets), an AI-agent threat modeler
+(80 new leakbench probes), an OS-keychain engineer (read all three keychain
+paths: the key goes by stdin or an OS call, never on a command line; the
+macOS and Windows paths were read, not run, on this Linux host), a FinOps owner
+(caps under 8 racing processes held exactly; one huge request passed them), a
+developer-experience lead (Dan's complaint: the keys already in `.env` had no
+route to the keychain except making new ones) and a skeptical reviewer. What
+they found, and what changed.
+
+### New
+
+- **`stuntkey guard`: protect keys you have not moved yet.** stuntkey could only
+  recognise a key it was told about with `get`. A key already in a `.env`,
+  shell profile, `.npmrc`, `.netrc`, MCP settings, chat history or a shell
+  variable, with no vendor format, passed through every mask, block and
+  refusal. `guard` reads those places and keeps a salted fingerprint of each
+  value (never the key; nothing is moved or changed), so the hook then masks,
+  refuses or blocks it anywhere it turns up. Big history files are read in
+  pieces (up to 64 MB each, 30 seconds in all); at most 400 values are kept so
+  the hook stays fast. `--dry-run`, `--no-home`, `--no-env`, `--quiet`,
+  `--forget`. On leakbench with an opaque key: 22 leaked -> 6.
+- **`stuntkey adopt`: move keys that are in your `.env` into the keychain with
+  no copying.** The old route was a trip to the vendor's site per key. It takes
+  only a `.env`-style file, a key in the vendor's format and a service with
+  one value; stores it under the usual name, reads it back, never shows it,
+  asks first, leaves the file alone unless `--remove` (then it comments the
+  line out, after a second question; a file that changed since the scan is
+  not touched). `--dry-run`, `--yes`. Needs an OS keychain.
+- **Caps: `--calls-hour` and `--tokens-call`.** `tokens_call` refuses a call
+  that asks for more output tokens than N (`max_tokens`, `max_completion_tokens`,
+  `max_output_tokens`, Gemini's `maxOutputTokens`); `tokens_day` now also
+  refuses a call that asks for more than what is left of today, so one huge
+  request can no longer pass the daily cap before usage is reported.
+  `calls_hour` is a fixed clock-hour window (the brake for a loop that
+  restarts the session to reset `calls_session`). A request that names no
+  token limit is not checked.
+- **leakbench 66 -> 146 probes.** 59 `evasion` reads (glob, built file name,
+  `xargs`, symlink, `tar`, `rev`, ...), 19 `agent footprint` reads (shell and
+  chat history, dotfiles with tokens), 2 spend shapes, `--canary opaque`
+  (a secret with no vendor format), profiles `stuntkey-hook-unseen` and
+  `stuntkey-hook-learned`, and an `orphan` secret that only sits in the
+  person's notes, so the benchmark also shows what `guard` does not find.
+  `python -m leakbench.detect_bench` measures how many random keys of each
+  shape a detector finds (stuntkey, the 0.10 rule, and detect-secrets if
+  installed).
+- The hook refuses an agent running `stuntkey adopt` or `stuntkey guard`
+  (only the person runs them). `start` points at both.
+
+### Fixed
+
+- **Hex keys were found by chance.** The scanner's 3.5-bits-per-character test
+  rejected 5% of random 40-digit hex keys, 19% of 32-digit and 78% of
+  20-digit ones (a hex string has only 16 symbols), so a mask or `scan` missed
+  them at random. Hex of 20 or more characters is now judged by how many
+  different characters it uses (and repeated or `ab` patterns are still
+  refused): 32-digit 80.6% -> 100%, 20-digit 20.8% -> 98.8%. A UUID used as a
+  key (95% -> 100%) is found too.
+- **A key ending in `-` or `_` lost its last character.** A base64url key
+  found by `NAME=value` was cut at a trailing `-` or `_`, so its fingerprint
+  and mask did not match the real key. Only a pattern match (which can run
+  into prose) is trimmed that way now.
+- **A nested YAML key escaped masking.** In `github.com:` followed by an indented
+  `oauth_token: ...` the first line's `:` swallowed the next line, so the token
+  was never reported (gh `hosts.yml`, kubeconfig, compose files). A `NAME=value`
+  or `NAME: value` now has to stay on one line (so `api_key:` followed by the
+  value on the NEXT line, YAML block style, is no longer read as a key).
+- The fingerprint file is written under a lock, so `get` in one terminal and
+  `guard` in another cannot drop each other's entries.
+
 ## 0.10.0 (unreleased)
 
 ### Fixed after a panel review (before release)

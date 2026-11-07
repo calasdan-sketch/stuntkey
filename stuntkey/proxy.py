@@ -209,7 +209,7 @@ def make_proxy(catalog: dict, get_values, token: str, policy: broker.Policy,
             if n and method in broker.READ_METHODS:
                 raise broker.BrokerError("GET/HEAD may not have a body", 5)
             body = self.rfile.read(n) if n else None
-            policy.gate(service, method, path)
+            policy.gate(service, method, path, body)
             return host, url, body
 
         def _relay(self, resp, secrets_, service):
@@ -271,8 +271,13 @@ def add_parsers(sub) -> None:
     cs = cps.add_parser("set", help="Set caps for one service (asks you first).")
     cs.add_argument("service")
     cs.add_argument("--calls-session", dest="calls_session", type=int)
+    cs.add_argument("--calls-hour", dest="calls_hour", type=int,
+                    help="Calls per clock hour: a quick brake for a runaway loop.")
     cs.add_argument("--calls-day", dest="calls_day", type=int)
     cs.add_argument("--tokens-day", dest="tokens_day", type=int)
+    cs.add_argument("--tokens-call", dest="tokens_call", type=int,
+                    help="Refuse a call that asks for more output tokens than this "
+                         "(max_tokens and its spellings).")
     cs.add_argument("--clear", action="store_true", help="Remove this service's caps.")
     sub.add_parser("stop", help="Kill switch: no API call is made through stuntkey "
                                 "until `stuntkey resume`.")

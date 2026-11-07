@@ -8,25 +8,39 @@ that have already leaked into the files your agent reads.
 
 ### Measured, not asserted
 
-`leakbench` is a vendor-neutral benchmark of 66 ways an AI coding agent leaks a
-credential — reading `.env`, dumping the environment, printing a traceback,
-following an injected instruction, hard-coding a key into a committed file,
-a key pasted into the chat. Run it yourself: `python -m leakbench --profile none`
-(then `stuntkey-hook`, `stuntkey-full`).
+`leakbench` is a vendor-neutral benchmark of 146 ways an AI coding agent leaks a
+credential: reading `.env`, dumping the environment, printing a traceback,
+following an injected instruction, 59 disguised reads (a glob, a variable for
+the file name, `xargs`, a symlink, `tar`, `rev`), the person's own dotfiles and
+chat history, a key hard-coded into a committed file or pasted into the chat,
+and runaway spending. Run it yourself:
+`python -m leakbench --profile none` (then `stuntkey-hook`, `stuntkey-full`), and
+`--canary opaque` for a secret with no recognisable format.
 
-| Protection (Linux host, 0.10.0) | blocked | masked | leaked | could not run here |
+| Protection (Linux host, 0.11.0, 146 probes) | blocked | masked | leaked | could not run here |
 |---|---|---|---|---|
-| nothing | 0 | 0 | **57** | 9 |
-| stuntkey hook | **52** | 12 | **2** | 0 |
-| stuntkey hook + spending caps | **54** | 12 | **0** | 0 |
+| nothing | 0 | 0 | **133** | 13 |
+| stuntkey hook, key saved with `get` | **103** | 39 | **4** | 0 |
+| stuntkey hook + spending caps | **107** | 39 | **0** | 0 |
+
+The same table for a key with **no vendor format** (`--canary opaque`, 40 random
+hex characters, like a database password or an internal token):
+
+| Key stuntkey was never told about | blocked | masked | leaked |
+|---|---|---|---|
+| hook only (0.11.0; 0.10.0 gave 96 / 23 / 23) | 96 | 24 | **22** |
+| hook after `stuntkey guard` (0.11.0) | 103 | 33 | **6** |
+| hook + `guard` + caps | 107 | 33 | **2** |
 
 **What these numbers do not say**, named rather than hidden: the hook only
-blocks the *forms it knows* (a program that dumps the environment in a new way
-gets past the write check); 5 of the 66 probes were added in the same release
-as the checks that stop them; the 2 the hook alone misses (`runaway-loop-no-cap`,
-`unbounded-retry`) are stopped by caps only for calls that go through stuntkey.
-On a key stuntkey never stored, found by format only, the hook scores 46 / 12 / 8.
-Details: [leakbench/README.md](leakbench/README.md).
+blocks the *forms it knows*; the 59 disguised-read probes were written
+before the hook's code was read and none leaked, but they are one person's
+list; the probes `guard` is scored on are placed in the very files `guard` reads
+(a key that lives only in your notes is the 2 left, `notes-file-says-key` and
+`notes-folder-grep`); the 4 the hook alone misses (`runaway-loop-no-cap`, `unbounded-retry`,
+`giant-max-tokens-call`, `fresh-session-loop`) are spending probes that only
+caps stop, and only for calls that go through stuntkey. Details:
+[leakbench/README.md](leakbench/README.md).
 
 Threat model: [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md). Known gaps and
 limits: [SECURITY.md](SECURITY.md) — including that stuntkey has not had a paid
@@ -126,9 +140,28 @@ impossible.
 | Refuses writing a stored key into a file | yes (Edit / Write; Claude Code) | not documented | not documented | not documented | a filesystem sentinel watches for secrets written to disk | no |
 | Account or server needed | no | 1Password account | Infisical (cloud or self-hosted) | GitGuardian account and API key | no (self-hosted) | no |
 | Runtime dependencies | none (Python stdlib) | 1Password app / CLI | Infisical | ggshield | Go binary | none (Node 20+) |
-| Public, runnable leak benchmark | yes (`leakbench`, 66 probes) | not documented | not documented | not documented | rule counts published; no public detection score | no |
+| Public, runnable leak benchmark | yes (`leakbench`, 146 probes) | not documented | not documented | not documented | rule counts published; no public detection score | no |
 
 stuntkey has had no independent security review (see [SECURITY.md](SECURITY.md)).
+Finding keys that have no vendor prefix, which is what decides whether a scan,
+a mask or a fingerprint can see them: share of 1,000 randomly generated keys
+found in `SERVICE_API_KEY=<key>` (`python -m leakbench.detect_bench --n 1000 --seed 7`;
+[detect-secrets](https://github.com/Yelp/detect-secrets) 1.5.0 with its default
+plugins, measured here; gitleaks and trufflehog were not run: their downloads
+were blocked in the test environment, so no number is claimed for them).
+
+| key shape | stuntkey 0.11 | stuntkey 0.10 rule (entropy only) | detect-secrets |
+|---|---|---|---|
+| 20 hex | 98.8% | 20.8% | 100% |
+| 32 hex | 100% | 80.6% | 100% |
+| 40 hex | 100% | 95.0% | 100% |
+| 36-character UUID | 100% | 95.3% | 0% |
+| 32 / 43 base64url | 99.7% / 100% | 99.7% / 100% | 99.6% / 100% |
+| 24 letters and digits | 99.0% | 99.0% | 100% |
+
+This is recall on one easy case (a clearly named variable). False alarms were not
+measured here for either tool.
+
 Where they are ahead: 1Password, Infisical and GitGuardian are established
 security companies with team features stuntkey lacks (for example Infisical's
 time-bound sessions and per-agent machine identities, 1Password's approval
@@ -164,9 +197,11 @@ stuntkey uses only Python's own standard library, and a test in the repository (
 - `call <service> <METHOD> <path>` - make one brokered call yourself (`--query name=value`, `--data '{...}'`, `--json`). Try `stuntkey call github GET /user`.
 - `overview` - what is connected and whether the activity log is intact. (`status` shows where each key lives and how old it is.)
 - `audit show` - the last calls, with a warning if the log does not check out.
+- `adopt [--dry-run] [--remove]` - the key is already in your `.env`: move it into the keychain with no copying and no new key (asks first; the file is left alone unless `--remove`).
+- `guard [--dry-run] [--no-home] [--no-env] [--quiet] [--forget]` - the key stays where it is, but stuntkey learns its fingerprint (never the key) from the project, MCP settings, shell profiles, `.npmrc`, `.netrc`, chat history and this shell's variables, so the hook masks, refuses or blocks it anywhere else it shows up, even a key with no vendor format.
 - `rotate <service>` - replace a stored key.
 - `panic <service> [--dry-run]` - "I leaked a key": asks first, revokes it (GitHub and Vercel through their official API; others open the revoke page and wait for you), gets a new one with the `get` flow, then shows where the old key is still written (project, .env, MCP configs, git history). Terminal only - never offered to an agent.
-- `caps set openai --calls-day 500 --tokens-day 200000 --calls-session 100` - a spending limit per key, counted across every program using it (`--clear` removes it; `caps show` lists them). The limit can be passed by one call already in flight.
+- `caps set openai --calls-day 500 --tokens-day 200000 --calls-session 100 --calls-hour 60 --tokens-call 4096` - a spending limit per key, counted across every program using it (`--clear` removes it; `caps show` lists them). `--calls-hour` is the quick brake for a runaway loop (a fixed clock hour, so up to twice the number can straddle the change of hour). `--tokens-call` refuses a call that asks for more output tokens than that (`max_tokens` and its spellings), and `--tokens-day` also refuses a call that asks for more than what is left of today; a request that names no limit is not checked. Tokens already spent are counted only when the answer reports them, so the limit can still be passed by calls already in flight.
 - `stop` / `resume` - a kill switch: `stop` refuses every brokered and proxied call at once; `resume` (asks you first) lets them through again.
 - `policy show` / `policy approve` - an `stuntkey.policy` file lists the methods and paths each service may use. A project's file can only narrow your own. A new or changed file is obeyed only after you approve it.
 - `forget <service>` - remove a stored key.

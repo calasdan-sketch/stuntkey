@@ -174,10 +174,30 @@ def is_placeholder(value: str) -> bool:
     return False
 
 
+_HEX_RE = re.compile(r"[0-9a-fA-F]+")
+_UUID_RE = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
+
+
 def looks_random(body: str, minimum: float = 3.0) -> bool:
-    """A real key mixes letters and digits and is not a repeating word."""
-    return (any(c.isdigit() for c in body) and any(c.isalpha() for c in body)
-            and entropy(body) >= minimum)
+    """A real key mixes letters and digits and is not a repeating word.
+
+    A hex string cannot show high entropy per character: it has 16 symbols,
+    so a short random one is often under 3.5 bits (5% of random 40-digit hex
+    keys, 19% of 32-digit and most 20-digit ones were rejected by the plain
+    entropy test, which made a Datadog- or Mailgun-shaped key a coin flip to
+    find). For hex of 20 characters or more the number of different
+    characters is the better evidence, and repeated or counting patterns are
+    still refused."""
+    if not (any(c.isdigit() for c in body) and any(c.isalpha() for c in body)):
+        return False
+    e = entropy(body)
+    if e >= minimum:
+        return True
+    if len(body) >= 20 and _HEX_RE.fullmatch(body):
+        return len(set(body.lower())) >= 9 and e >= 2.9
+    if len(body) == 36 and _UUID_RE.fullmatch(body):
+        return len(set(body.replace("-", "").lower())) >= 9      # a UUID used as a key
+    return False
 
 
 # ------------------------------------------------------------------- patterns
@@ -270,7 +290,7 @@ BASE64_LINE_RE = re.compile(r"^\s*[A-Za-z0-9+/=]{20,}\s*$")
 ESCAPED_PEM_BODY_RE = re.compile(r"(?:\\r)?\\n[A-Za-z0-9+/=]{20,}")
 
 ASSIGN_RE = re.compile(
-    r"""(?<![A-Za-z0-9_.\-])(?P<name>[A-Za-z_][A-Za-z0-9_.\-]*)["']?\s*[=:]\s*["']?"""
+    r"""(?<![A-Za-z0-9_.\-])(?P<name>[A-Za-z_][A-Za-z0-9_.\-]*)["']?[ \t]*[=:][ \t]*["']?"""
     r"""(?P<value>[A-Za-z0-9_\-+/=.~]{8,})""")
 SECRET_NAME_RE = re.compile(
     r"(?i)(?:^|[_.\-])(?:api_?key|key|token|secret)$|"
@@ -586,7 +606,10 @@ def _scan_line(raw: str, nxt: str, number: int, rel: str, rules: list[Rule],
         if len(out) >= room:
             return
         value = raw[start:end]
-        trimmed = value.rstrip(".-_")           # "key sk-...abc." is the key without the "."
+        # "key sk-...abc." is the key without the "."; a base64url key may END in - or _,
+        # so only a pattern match (which can run into prose) loses those
+        trimmed = value.rstrip(".") if rule_name in ("named-assignment", "bare-token") \
+            else value.rstrip(".-_")
         if trimmed and trimmed != value:
             end = start + len(trimmed)
             value = trimmed

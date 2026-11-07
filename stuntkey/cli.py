@@ -98,6 +98,32 @@ def _build_parser() -> argparse.ArgumentParser:
                          ".next/static) or your own public https:// site for "
                          "secret keys sent to every visitor's browser.")
 
+    gd = sub.add_parser(
+        "guard", help="Protect keys you have not moved yet (learns fingerprints only).",
+        description="Read the places keys already sit (this project's .env and agent files, "
+                    "MCP settings, shell profiles, .npmrc, .netrc, chat history, and this "
+                    "shell's variables) and remember a salted fingerprint of each value, so "
+                    "the Claude Code hook can mask, refuse or block it anywhere else it "
+                    "turns up, even a key with no well-known format. Nothing is moved, "
+                    "copied or changed; no key is stored or shown.")
+    gd.add_argument("path", nargs="?", default=".", help="Project folder (default: this folder).")
+    gd.add_argument("--dry-run", action="store_true", help="Show what would be learned; learn nothing.")
+    gd.add_argument("--no-home", action="store_true", help="Do not read dotfiles and chat history in your home folder.")
+    gd.add_argument("--no-env", action="store_true", help="Do not read this shell's variables.")
+    gd.add_argument("--quiet", action="store_true", help="Print nothing (for a script).")
+    gd.add_argument("--forget", action="store_true", help="Drop everything guard learned. Keys saved with `get` stay.")
+
+    ad = sub.add_parser(
+        "adopt", help="Move keys that are already in your .env files into the keychain.",
+        description="No copying and no new key: read a key where it already sits (a .env "
+                    "file of this project), check its format, and store it in the OS keychain "
+                    "under the service's usual name. Files are left alone unless --remove. "
+                    "Asks first; a key is never shown.")
+    ad.add_argument("path", nargs="?", default=".", help="Project folder (default: this folder).")
+    ad.add_argument("--dry-run", action="store_true", help="Show what would move; change nothing.")
+    ad.add_argument("--remove", action="store_true", help="Also comment the moved lines out of the .env file (asks again).")
+    ad.add_argument("--yes", action="store_true", help="Do not ask (for a script run by you).")
+
     wr = sub.add_parser(
         "wrap", help="Move keys out of an MCP server's config into the OS keychain.",
         description="Move the keys in an MCP server's env (Claude Desktop, "
@@ -843,6 +869,13 @@ def _main(argv: list[str] | None = None) -> int:
         catalog = (recipes_mod.load_recipes() if args.my_recipes
                    else recipes_mod.load_recipes(recipes_mod.RECIPES_DIR))
         return scan_mod.cmd_scan(args, catalog)
+    if args.cmd in ("guard", "adopt"):
+        catalog = recipes_mod.load_recipes(recipes_mod.RECIPES_DIR)
+        if args.cmd == "guard":
+            from . import guard as guard_mod
+            return guard_mod.cmd_guard(args, catalog)
+        from . import adopt as adopt_mod
+        return adopt_mod.cmd_adopt(args, catalog)
     if args.cmd == "skill":
         from . import skillcmd
         return skillcmd.cmd_skill(args)

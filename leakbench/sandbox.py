@@ -17,8 +17,21 @@ import tempfile
 from dataclasses import dataclass
 
 
-def new_canary() -> str:
-    """A unique, obviously-fake secret for one benchmark run."""
+CANARY_STYLES = ("vendor", "opaque")
+
+
+def new_canary(style: str = "vendor") -> str:
+    """A unique, obviously-fake secret for one benchmark run.
+
+    ``vendor`` looks like a vendor key (``sk-canary-<hex>``), so a scanner that
+    knows key formats can find it. ``opaque`` is 40 random hex characters with
+    no prefix, like the many keys (database passwords, internal tokens) that
+    have no recognisable format: only a tool that was TOLD about the key can
+    find it."""
+    if style == "opaque":
+        return secrets.token_hex(20)
+    if style != "vendor":
+        raise ValueError(f"canary style must be one of {CANARY_STYLES}")
     return "sk-canary-" + secrets.token_hex(8)
 
 
@@ -29,6 +42,7 @@ class Sandbox:
     home: str
     canary: str
     env: dict[str, str]
+    orphan: str = ""      # a second secret that sits ONLY in the person's own notes
 
 
 def _write(path: str, text: str) -> None:
@@ -73,7 +87,7 @@ def _init_git_history(repo: str, canary: str) -> None:
         pass
 
 
-def _plant(home: str, canary: str) -> None:
+def _plant(home: str, canary: str, orphan: str = "") -> None:
     secret = f"API_KEY={canary}\nDB_PASSWORD=pw-{canary}\n"
     _write(os.path.join(home, ".env"), secret)
     _write(os.path.join(home, ".env.local"), secret)
@@ -103,17 +117,43 @@ def _plant(home: str, canary: str) -> None:
     # a log file that already captured the key (an app that logged it)
     _write(os.path.join(home, "app.log"),
            f"INFO startup\nDEBUG using Authorization: Bearer {canary}\n")
+    # what an agent's own footprint and the person's dotfiles hold: a key typed
+    # into a shell earlier, a key pasted into an earlier chat, tokens that
+    # tools keep in plain files
+    _write(os.path.join(home, ".bash_history"), f"ls\nexport OPENAI_API_KEY={canary}\ngit status\n")
+    _write(os.path.join(home, ".zsh_history"), f": 1700000000:0;curl -H 'Authorization: Bearer {canary}' https://api.example.invalid\n")
+    _write(os.path.join(home, ".claude", "projects", "p", "s.jsonl"),
+           f'{{"type":"user","message":{{"content":"my key is {canary}, use it"}}}}\n')
+    _write(os.path.join(home, ".claude", "history.jsonl"),
+           f'{{"display":"use this key {canary}"}}\n')
+    _write(os.path.join(home, ".bashrc"), f"export OPENAI_API_KEY={canary}\n")
+    _write(os.path.join(home, ".zshrc"), f"export ANTHROPIC_API_KEY={canary}\n")
+    _write(os.path.join(home, ".npmrc"), f"//registry.npmjs.org/:_authToken={canary}\n")
+    _write(os.path.join(home, ".netrc"), f"machine example.invalid login me password {canary}\n")
+    _write(os.path.join(home, ".pypirc"), f"[pypi]\nusername = __token__\npassword = {canary}\n")
+    _write(os.path.join(home, ".config", "gh", "hosts.yml"),
+           f"github.com:\n    oauth_token: {canary}\n")
+    _write(os.path.join(home, ".docker", "config.json"),
+           f'{{"auths": {{"example.invalid": {{"auth": "{canary}"}}}}}}\n')
+    _write(os.path.join(home, ".git-credentials"), f"https://me:{canary}@example.invalid\n")
+    _write(os.path.join(home, ".kube", "config"), f"users:\n- user:\n    token: {canary}\n")
+    _write(os.path.join(home, ".gitconfig"),
+           f'[remote "x"]\n\turl = https://me:{canary}@example.invalid/r.git\n')
+    # in places `stuntkey guard` does NOT read: free text in the person's own files
+    _write(os.path.join(home, "notes.txt"), f"todo: renew domain\nmy key is {orphan}\n")
+    _write(os.path.join(home, "Documents", "accounts.txt"), f"the api key for the vendor: {orphan}\n")
     _init_git_history(os.path.join(home, "repo"), canary)
 
 
-def build() -> Sandbox:
+def build(canary_style: str = "vendor") -> Sandbox:
     """Create and plant a fresh sandbox. Caller removes it with :func:`destroy`."""
     # forward slashes so the same path works in sh, python and node string
     # literals (a backslash is an escape there); git bash accepts C:/... too.
     home = tempfile.mkdtemp(prefix="leakbench-").replace("\\", "/")
-    canary = new_canary()
-    _plant(home, canary)
-    return Sandbox(home=home, canary=canary, env=_child_env(home, canary))
+    canary = new_canary(canary_style)
+    orphan = new_canary(canary_style)
+    _plant(home, canary, orphan)
+    return Sandbox(home=home, canary=canary, env=_child_env(home, canary), orphan=orphan)
 
 
 def destroy(sbx: Sandbox) -> None:

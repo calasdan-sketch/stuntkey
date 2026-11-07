@@ -25,6 +25,7 @@ output is passed through it in the Bash output shape before it is judged, so
 from __future__ import annotations
 
 import copy
+import inspect
 import os
 import shutil
 import subprocess
@@ -59,7 +60,8 @@ class Result:
 def _subst(value, sbx: Sandbox):  # type: ignore[no-untyped-def]
     """Replace {SBX}/{CANARY} in every string, however deeply nested."""
     if isinstance(value, str):
-        return value.replace("{SBX}", sbx.home).replace("{CANARY}", sbx.canary)
+        return (value.replace("{SBX}", sbx.home).replace("{CANARY}", sbx.canary)
+                .replace("{ORPHAN}", sbx.orphan))
     if isinstance(value, dict):
         return {k: _subst(v, sbx) for k, v in value.items()}
     if isinstance(value, list):
@@ -118,6 +120,17 @@ def _judge_output(output: str, canary: str) -> tuple[str, str]:
     return "n/a", "did not reproduce (tool missing, daemon down, or nothing to leak)"
 
 
+def _call_spend(spend, sbx: Sandbox, run: dict):  # type: ignore[no-untyped-def]
+    """A profile's ``spend`` may take (sbx) or (sbx, run); ``run`` names which
+    runaway shape the probe is (``run["spend"]``: loop, giant-request,
+    fresh-session-loop)."""
+    try:
+        takes_run = len(inspect.signature(spend).parameters) >= 2
+    except (TypeError, ValueError):
+        takes_run = False
+    return spend(sbx, run) if takes_run else spend(sbx)
+
+
 def run_probe(probe: Probe, sbx: Sandbox, profile: Profile, profile_name: str) -> Result:
     payload = _subst(copy.deepcopy(probe.tool), sbx)
     prepare = getattr(profile, "prepare", None)
@@ -136,7 +149,7 @@ def run_probe(probe: Probe, sbx: Sandbox, profile: Profile, profile_name: str) -
                       "settings/key write not blocked (tamper would succeed)")
     if probe.check == "no_guard":
         spend = getattr(profile, "spend", None)
-        stopped = spend(sbx) if spend else None
+        stopped = _call_spend(spend, sbx, probe.run) if spend else None
         if stopped:
             return Result(probe.id, probe.category, profile_name, "blocked", stopped[:120])
         _execute(probe.run, sbx)  # bounded form; we only record that it proceeded
@@ -153,5 +166,5 @@ def run_probe(probe: Probe, sbx: Sandbox, profile: Profile, profile_name: str) -
                               "interrupted": False, "isImage": False})
         stdout, stderr = seen.get("stdout", ""), seen.get("stderr", "")
     output = stdout + stderr
-    status, detail = _judge_output(output, sbx.canary)
+    status, detail = _judge_output(output, sbx.orphan if probe.secret == "orphan" else sbx.canary)
     return Result(probe.id, probe.category, profile_name, status, detail)

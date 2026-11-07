@@ -1,13 +1,21 @@
 """Per-key spending caps and the kill switch.
 
-~/.stuntkey/caps.json   {service: {"calls_session": N, "calls_day": N, "tokens_day": N}}
-~/.stuntkey/usage/<service>.json   {"day": "YYYY-MM-DD", "calls": N, "tokens": N}
+~/.stuntkey/caps.json   {service: {"calls_session": N, "calls_hour": N, "calls_day": N,
+                                    "tokens_day": N, "tokens_call": N}}
+~/.stuntkey/usage/<service>.json   {"day": "YYYY-MM-DD", "calls": N, "tokens": N,
+                                    "hour": "YYYY-MM-DDTHH", "hour_calls": N}
 ~/.stuntkey/STOP   while it exists, no brokered call is made (`stuntkey stop`)
 
 Usage is shared by every stuntkey process (MCP, serve, proxy, call) and is
 updated under the broker's file lock. Caps are checked before each call, and
 tokens are only known once the answer is back, so a cap can be passed by the
-calls already under way (at most one call each). Tokens are counted from the
+calls already under way (at most one call each). Two limits close most of that
+gap: `tokens_call` refuses a call whose request asks for more output tokens
+than N (max_tokens and its spellings), and `tokens_day` also refuses a call
+that asks for more than what is left of today's tokens. A call that names no
+limit is not checked (the vendor's default applies). `calls_hour` is a fixed
+clock-hour window (up to twice N calls can straddle the change of hour), the
+quick brake for a runaway loop. Tokens are counted from the
 `usage` the API reports; an answer without one (an OpenAI stream without
 stream_options.include_usage, say) counts as 0 tokens.
 """
@@ -19,7 +27,7 @@ import os
 
 from .broker import BrokerError, _file_lock
 
-LIMITS = ("calls_session", "calls_day", "tokens_day")
+LIMITS = ("calls_session", "calls_hour", "calls_day", "tokens_day", "tokens_call")
 STOPPED = ("stuntkey is stopped (someone ran `stuntkey stop`), so no API call "
            "was made. A person can run `stuntkey resume` to allow calls again.")
 
@@ -43,6 +51,39 @@ def stop_path(home: str) -> str:
 
 def _today() -> str:
     return datetime.date.today().isoformat()
+
+
+def _hour() -> str:
+    return datetime.datetime.now().strftime("%Y-%m-%dT%H")
+
+
+_TOKEN_FIELDS = ("max_tokens", "max_completion_tokens", "max_output_tokens", "maxOutputTokens")
+
+
+def requested_tokens(body) -> int | None:
+    """The most output tokens a request asks for (`max_tokens`,
+    `max_completion_tokens`, `max_output_tokens`, Gemini's `maxOutputTokens`),
+    or None when it names none or is not JSON. `body` is a dict, str or bytes."""
+    if isinstance(body, (bytes, bytearray)):
+        try:
+            body = bytes(body).decode("utf-8")
+        except UnicodeDecodeError:
+            return None
+    if isinstance(body, str):
+        try:
+            body = json.loads(body)
+        except (ValueError, RecursionError):
+            return None
+    if not isinstance(body, dict):
+        return None
+    best = None
+    for holder in (body, body.get("generationConfig"), body.get("generation_config")):
+        if isinstance(holder, dict):
+            for name in _TOKEN_FIELDS:
+                v = holder.get(name)
+                if isinstance(v, int) and not isinstance(v, bool) and v >= 0:
+                    best = v if best is None else max(best, v)
+    return best
 
 
 def load_caps(home: str) -> dict:
@@ -72,9 +113,11 @@ def _read_usage(path: str) -> dict:
         raise BrokerError("The usage record in ~/.stuntkey/usage cannot be read, "
                           "so no call was made.", 5) from None
     if not isinstance(u, dict) or u.get("day") != _today():
-        return {"day": _today(), "calls": 0, "tokens": 0}
+        return {"day": _today(), "calls": 0, "tokens": 0, "hour": _hour(), "hour_calls": 0}
+    same_hour = u.get("hour") == _hour()
     return {"day": u["day"], "calls": int(u.get("calls", 0)),
-            "tokens": int(u.get("tokens", 0))}
+            "tokens": int(u.get("tokens", 0)), "hour": _hour(),
+            "hour_calls": int(u.get("hour_calls", 0)) if same_hour else 0}
 
 
 def _write_usage(path: str, u: dict) -> None:
@@ -90,9 +133,11 @@ def usage(home: str, service: str) -> dict:
         return _read_usage(path)
 
 
-def begin(home: str, service: str, session_calls: int) -> None:
+def begin(home: str, service: str, session_calls: int,
+          request_tokens: int | None = None) -> None:
     """Before a call: refuse when stopped or over a cap, else count the call.
-    `session_calls` is how many calls this process already made for it."""
+    `session_calls` is how many calls this process already made for it;
+    `request_tokens` is what the request asks for at most (requested_tokens)."""
     if os.path.lexists(stop_path(home)):
         raise BrokerError(STOPPED, 5)
     cap = load_caps(home).get(service, {})
@@ -107,15 +152,26 @@ def begin(home: str, service: str, session_calls: int) -> None:
         over = None
         if "calls_session" in cap and session_calls >= cap["calls_session"]:
             over = f"{cap['calls_session']} calls this session"
+        elif "calls_hour" in cap and u["hour_calls"] >= cap["calls_hour"]:
+            over = f"{cap['calls_hour']} calls this hour"
         elif "calls_day" in cap and u["calls"] >= cap["calls_day"]:
             over = f"{cap['calls_day']} calls today"
         elif "tokens_day" in cap and u["tokens"] >= cap["tokens_day"]:
             over = f"{cap['tokens_day']} tokens today"
+        elif ("tokens_call" in cap and request_tokens is not None
+              and request_tokens > cap["tokens_call"]):
+            over = (f"{cap['tokens_call']} tokens in one call (this request asks for "
+                    f"up to {request_tokens})")
+        elif ("tokens_day" in cap and request_tokens is not None
+              and u["tokens"] + request_tokens > cap["tokens_day"]):
+            over = (f"{cap['tokens_day']} tokens today (this request asks for up to "
+                    f"{request_tokens} and {u['tokens']} are used)")
         if over:
             raise BrokerError(f"The '{service}' key has reached its cap of {over}, "
                               "so no call was made. A person can raise it with "
                               "`stuntkey caps set`.", 5)
         u["calls"] += 1
+        u["hour_calls"] += 1
         _write_usage(path, u)
 
 

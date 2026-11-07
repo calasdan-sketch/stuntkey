@@ -7,7 +7,8 @@ from .loader import Probe, load
 from .runner import Result, run_probe
 
 
-def run(profile_name: str, probes: list[Probe] | None = None) -> list[Result]:
+def run(profile_name: str, probes: list[Probe] | None = None,
+        canary_style: str = "vendor") -> list[Result]:
     """Run all probes once under ``profile_name`` in a fresh sandbox.
 
     Raises KeyError for an unknown profile and ImportError when
@@ -15,7 +16,7 @@ def run(profile_name: str, probes: list[Probe] | None = None) -> list[Result]:
     """
     probe_list = probes if probes is not None else load()
     profile = profiles.get(profile_name)
-    sbx = sandbox.build()
+    sbx = sandbox.build(canary_style)
     try:
         return [run_probe(p, sbx, profile, profile_name) for p in probe_list]
     finally:
