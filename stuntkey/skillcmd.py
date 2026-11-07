@@ -13,6 +13,7 @@ import os
 import sys
 import tempfile
 
+from . import fsutil
 from . import recipes as recipes_mod
 
 SKILL_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "skill", "SKILL.md")
@@ -86,7 +87,7 @@ def cmd_skill(args, out=None, ask=input, home: str | None = None, cwd: str | Non
         with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
             f.write(text)
         os.chmod(tmp, 0o644)
-        os.replace(tmp, target)
+        fsutil.replace(tmp, target)
     except BaseException:
         try:
             os.unlink(tmp)

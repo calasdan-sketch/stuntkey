@@ -24,6 +24,7 @@ import os
 import re
 import tempfile
 
+from . import fsutil
 from . import recipes as recipes_mod
 
 FILE_NAME = "stuntkey.json"
@@ -220,7 +221,7 @@ def save(path: str, data: dict) -> None:
             json.dump(data, f, indent=2)
             f.write("\n")
         os.chmod(tmp, 0o644)
-        os.replace(tmp, path)
+        fsutil.replace(tmp, path)
     except BaseException:
         try:
             os.unlink(tmp)

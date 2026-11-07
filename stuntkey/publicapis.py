@@ -16,6 +16,7 @@ import tempfile
 import time
 import urllib.request
 
+from . import fsutil
 from . import __version__
 
 SOURCE_URL = ("https://raw.githubusercontent.com/public-apis/"
@@ -90,7 +91,7 @@ def _save(path: str, text: str) -> None:
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(text)
-        os.replace(tmp, path)
+        fsutil.replace(tmp, path)
     except BaseException:
         try:
             os.unlink(tmp)

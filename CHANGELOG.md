@@ -1,5 +1,52 @@
 # Changelog
 
+## 0.11.0 (unreleased), expert round 4: what a stranger gets from `pip install`
+
+Checked by building the sdist and wheel, installing the wheel into a fresh
+virtual environment (Python 3.11, 3.12 and 3.13 ran; 3.10 was syntax-checked
+only) and running the README's commands from a folder with spaces in its name.
+Latest on PyPI is 0.9.0; this is still the same unreleased 0.11.0 (no new
+version number). Nothing here is breaking.
+
+### Fixed
+
+- **A traceback for an ordinary problem.** With a home folder that cannot be
+  written (a read-only disk, a bad `HOME`), `overview`, `audit show` and `stop`
+  ended in a Python traceback. Now one sentence, exit status 1. Any other
+  unexpected error also ends in one line that names the kind of problem (never
+  its text, which could hold a value); `STUNTKEY_DEBUG=1` brings the traceback
+  back. `hook` keeps its own failure handling.
+- **The key paste prompt could show the key.** On a terminal that will not let
+  a program turn off echo, Python's `getpass` prints a warning and then shows
+  what is pasted. The prompt now refuses and says so (nothing is read). Not
+  affected: a pipe or file on stdin. Windows could not be tested.
+- **`doctor` and `start` called a missing `ssh` or `git` something to fix** and
+  exited 1, although only `remote`, `deploy` and `scan-git` need them. They are
+  now information. The keychain line now says what to install on Linux.
+- **`install` rewrote a config file with owner-only permissions**; it keeps what
+  the file had. A config that is not valid JSON gets a plain sentence instead of
+  the parser's wording, and `install` exits 1 when it had to skip one. After a
+  Claude Code or VS Code install it says those files belong to the folder you
+  ran it in.
+- **`find` printed a terminal code you typed**; shown as text now.
+- **Windows: a rename onto a file another program held open for a moment** (a
+  virus scanner, a backup tool) failed with a permission error. Every place
+  that saves settings or keys now retries for about a second on Windows only
+  (one shared helper, `stuntkey/fsutil.py`). Read, not run, on Windows.
+- **README links** to the benchmark, threat model and SECURITY.md were relative
+  and broken on the PyPI page; they are full addresses now (a test checks).
+  `python -m leakbench` is in the repository and the source download, not in the
+  installed wheel; the README now says so.
+- Unused imports removed from the program (pyflakes finds nothing in
+  `stuntkey/`, `leakbench/` or `scripts/` now; 23 notes remain in tests).
+
+### Measured
+
+Tests 2,047 passed / 6 timing failures before; 2,064 passed, 0 failed after (16 new in
+`tests/test_v011_round4.py`; the timing tests pass only when the shared machine is quiet). leakbench unchanged: hook 121/31/4 of 156, hook plus
+caps 125/31/0. See `docs/ROUND4.md` for the specialists, the 24-row idea table
+and what was not tested.
+
 ## 0.11.0 (unreleased), expert round 3
 
 Seven roles tried the tool hands-on: a prompt-injection red-teamer, a Windows

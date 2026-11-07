@@ -510,9 +510,9 @@ def _cmd_find(args) -> int:
     hits = pa_mod.search(entries, args.query, auth=args.auth,
                          category=args.category, limit=args.limit)
     if not hits:
-        print(f"no public APIs match '{args.query}'.")
+        print(f"no public APIs match '{pa_mod.sanitize_display(args.query)}'.")
         return 0
-    print(f"\n  public APIs matching '{args.query}':\n")
+    print(f"\n  public APIs matching '{pa_mod.sanitize_display(args.query)}':\n")
     for e in hits:
         # All directory strings are community-sourced: sanitize before
         # printing so escape sequences can't execute against the terminal.
@@ -820,10 +820,61 @@ def main(argv: list[str] | None = None) -> int:
         # error and goes on its way.
         if is_closed_pipe(e):
             return _after_broken_pipe()
-        raise
+        if _keeps_traceback(argv):
+            raise
+        return _file_problem(e)
     except KeyboardInterrupt:
         # Any command, the MCP loop and `run` end up here.
         return _interrupted()
+    except Exception as e:
+        # A bug, or a state of the computer nobody planned for. A traceback
+        # tells a newcomer nothing and can show their paths; say what
+        # happened in a line and how to report it. STUNTKEY_DEBUG=1 brings
+        # the traceback back.
+        if _keeps_traceback(argv):
+            raise
+        return _unexpected(e)
+
+
+def _keeps_traceback(argv) -> bool:
+    """`hook` keeps its own failure handling (its exit status is what Claude
+    Code reads), and STUNTKEY_DEBUG=1 asks for the traceback."""
+    if os.environ.get("STUNTKEY_DEBUG"):
+        return True
+    args = sys.argv[1:] if argv is None else list(argv)
+    return "hook" in args[:3]
+
+
+def _file_problem(e: OSError) -> int:
+    """A file or folder stuntkey needs could not be read or written."""
+    from .recipes import printable
+    where = f" ({printable(e.filename)})" if getattr(e, "filename", None) else ""
+    reason = printable(e.strerror or type(e).__name__)
+    try:
+        sys.stderr.write(
+            f"error: stuntkey could not use a file or folder it needs{where}: {reason}.\n"
+            "Check that the folder exists and that you may write to it, then run the "
+            "command again.\n")
+        sys.stderr.flush()
+    except (OSError, ValueError):
+        pass
+    return 1
+
+
+def _unexpected(e: Exception) -> int:
+    """Not a mistake you made: a problem in stuntkey. No key or path is
+    printed; only the kind of problem."""
+    from .recipes import printable
+    try:
+        sys.stderr.write(
+            f"error: stuntkey stopped because of a problem inside the program "
+            f"({printable(type(e).__name__)}).\n"
+            "Run it again with STUNTKEY_DEBUG=1 to see details, and report it at "
+            "https://github.com/calasdan-sketch/stuntkey/issues (do not paste any key).\n")
+        sys.stderr.flush()
+    except (OSError, ValueError):
+        pass
+    return 1
 
 
 def split_remote(argv: list[str]) -> tuple[list[str], list]:

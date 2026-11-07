@@ -14,6 +14,7 @@ import hmac
 import itertools
 import json
 import os
+from . import fsutil
 import re
 import secrets as secrets_mod
 import subprocess
@@ -291,7 +292,7 @@ def _write_fingerprints(path: str, data: dict) -> None:
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(data, f)
-        os.replace(tmp, path)
+        fsutil.replace(tmp, path)
     except BaseException:
         with contextlib.suppress(OSError):
             os.unlink(tmp)

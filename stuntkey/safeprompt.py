@@ -63,9 +63,40 @@ def read_quiet(prompt: str) -> str:
     return line.rstrip("\r\n")
 
 
+def typing_can_be_hidden(stdin=None) -> bool:
+    """False when there is a terminal but the system will not let a program
+    turn its echo off. `getpass` then prints a warning and carries on, which
+    shows the pasted key on screen (and in a screenshot or a recording): for
+    a key that is the one thing not to do. When stdin is a pipe or file
+    nothing is shown, so that is fine. Where this cannot be told (Windows),
+    it says yes, as before; that was read, not run."""
+    stdin = sys.stdin if stdin is None else stdin
+    try:
+        if not (stdin and stdin.isatty()):
+            return True
+        import termios
+    except (OSError, ValueError, ImportError):
+        return True
+    try:
+        termios.tcgetattr(stdin.fileno())
+    except termios.error:
+        return False
+    except (OSError, ValueError):
+        return True
+    return True
+
+
 def read_hidden(prompt: str) -> str:
     """The hidden paste prompt: like getpass, and the rest of a multi-line
-    paste is thrown away afterwards."""
+    paste is thrown away afterwards. Refuses (as EOFError, which the callers
+    treat as "cancelled") when the terminal cannot hide what is typed."""
+    if not typing_can_be_hidden():
+        sys.stderr.write(
+            "\n  This terminal does not let stuntkey hide what you paste, so it would "
+            "be\n  shown on screen. Nothing was read. Use a normal terminal window "
+            "(or `get --clipboard`,\n  where a clipboard tool is installed).\n")
+        sys.stderr.flush()
+        raise EOFError
     try:
         return getpass.getpass(prompt)
     finally:

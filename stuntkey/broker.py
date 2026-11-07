@@ -27,6 +27,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+from . import fsutil
 from . import validate as _v
 from .scrub import Scrubber, loosely_contains, scrub_text
 
@@ -704,7 +705,7 @@ class AuditLog:
         try:
             with open(tmp, "w", encoding="utf-8") as f:
                 f.write(f"{count} {h}\n" if size is None else f"{count} {h} {size}\n")
-            os.replace(tmp, self.anchor_path)
+            fsutil.replace(tmp, self.anchor_path)
         except OSError:
             pass
 
@@ -786,7 +787,7 @@ class AuditLog:
                 while os.path.exists(kept):          # never overwrite an earlier one
                     kept, i = f"{base}-{i}", i + 1
                 try:
-                    os.replace(self.path, kept)
+                    fsutil.replace(self.path, kept)
                 except OSError as e:
                     raise BrokerError("could not move the old log aside "
                                       f"({e.strerror or 'in use'}); close other "

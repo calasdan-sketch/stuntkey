@@ -13,9 +13,11 @@ credential: reading `.env`, dumping the environment, printing a traceback,
 following an injected instruction, 69 disguised reads (a glob, a variable for
 the file name, `xargs`, a symlink, `tar`, `rev`, a wrapper such as `timeout`), the person's own dotfiles and
 chat history, a key hard-coded into a committed file or pasted into the chat,
-and runaway spending. Run it yourself:
-`python -m leakbench --profile none` (then `stuntkey-hook`, `stuntkey-full`), and
-`--canary opaque` for a secret with no recognisable format.
+and runaway spending. Run it yourself
+(it is in the GitHub repository and in the source download from PyPI, not in the
+installed program): from a clone, `python -m leakbench --profile none` (then
+`stuntkey-hook`, `stuntkey-full`), and `--canary opaque` for a secret with no
+recognisable format.
 
 | Protection (Linux host, 0.11.0, 156 probes) | blocked | masked | leaked | could not run here |
 |---|---|---|---|---|
@@ -41,10 +43,10 @@ list; the probes `guard` is scored on are placed in the very files `guard` reads
 `notes-folder-grep`); the 4 the hook alone misses (`runaway-loop-no-cap`, `unbounded-retry`,
 `giant-max-tokens-call`, `fresh-session-loop`) are spending probes that only
 caps stop, and only for calls that go through stuntkey. Details:
-[leakbench/README.md](leakbench/README.md).
+[leakbench/README.md](https://github.com/calasdan-sketch/stuntkey/blob/main/leakbench/README.md).
 
-Threat model: [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md). Known gaps and
-limits: [SECURITY.md](SECURITY.md) — including that stuntkey has not had a paid
+Threat model: [docs/THREAT_MODEL.md](https://github.com/calasdan-sketch/stuntkey/blob/main/docs/THREAT_MODEL.md). Known gaps and
+limits: [SECURITY.md](https://github.com/calasdan-sketch/stuntkey/blob/main/SECURITY.md) — including that stuntkey has not had a paid
 external security review, and what we do instead.
 
 - The key sits in your computer's own keychain. When your AI needs an API, it asks stuntkey to make the call, and stuntkey adds the key itself.
@@ -122,6 +124,7 @@ It reduces risk; it does not remove it, and no independent security review has b
 - **The Claude Code hook masks Bash output only.** Claude Code documents no output shape for Read or Grep, so the hook cannot mask them: it refuses Read of private keys, credentials files and files holding a key you stored instead. A key stuntkey never stored, in a format it does not know, in an ordinary file, still reaches the AI through Read. A script the AI writes is checked when it is written (for the forms the hook knows) and again, its output, when it runs through Bash. Scores per leak are in [leakbench/README.md](https://github.com/calasdan-sketch/stuntkey/blob/main/leakbench/README.md).
 - **The clipboard.** `get` empties it right away, but other programs or clipboard-history tools may see the key while it is there.
 - **A log that can't be rewritten.** The log shows accidents and casual edits. Each new entry checks the end of the log against a marker file (fast, however long the log is); `audit verify` and `audit export` check every line. Someone running as you could rewrite it.
+- **Windows and macOS are lightly tested.** The author's checks ran on Linux. The tests run on Windows and macOS in GitHub Actions on every change, but the Windows and macOS keychain, permission-window and rename code has been read, not run by hand. If something misbehaves there, `stuntkey doctor` and an issue report help most.
 - **It sends no telemetry.** stuntkey talks only to the services you call (and, for `find`, a public list on GitHub).
 
 The threat model, with links to the code that does each job, is in [docs/THREAT_MODEL.md](https://github.com/calasdan-sketch/stuntkey/blob/main/docs/THREAT_MODEL.md). More known limits (a GET can read other secrets through a vendor's own endpoints, and others) are under "Known limits" in [SECURITY.md](https://github.com/calasdan-sketch/stuntkey/blob/main/SECURITY.md), which is also where to report a security problem privately.
@@ -134,16 +137,16 @@ impossible.
 
 | | stuntkey | [1Password `op run` / Environments](https://www.1password.dev/get-started/secure-ai-access) | [Infisical Agent Vault](https://infisical.com/platform/agent-vault) | [GitGuardian ggshield AI hook](https://docs.gitguardian.com/ggshield-docs/integrations/ai-coding-tools/secret-scanning-for-ai-coding-tools) | [Pipelock](https://github.com/luckyPipewrench/pipelock) | [agent-airlock](https://github.com/es617/agent-airlock) |
 |---|---|---|---|---|---|---|
-| Agent makes calls without holding the key | yes (broker, MCP, base-URL proxy) | `op run` hands the real value to the launched process; placeholder gateway in beta (OpenShell) | yes (forward proxy) | no (scanner) | no: the agent may hold keys; Pipelock cuts its direct network access and scans what leaves | yes (reverse proxy) |
+| Agent makes calls without holding the key | yes (broker, MCP, base-URL proxy) | `op run` hands the real value to the launched process; placeholder gateway in beta (OpenShell) | yes (forward proxy; listed as a preview, needs a proxy you enroll) | no (scanner) | no: the agent may hold keys; Pipelock cuts its direct network access and scans what leaves | yes (reverse proxy) |
 | Blocks `.env` reads / env dumps by the agent | yes (Claude Code hook) | not documented (its hook checks that `.env` files exist and are valid) | not documented | scans file reads and commands for secrets | not documented | no |
 | Masks keys in command output | yes (Bash) | not documented | not documented | withholds or notifies, per tool | not documented (scans HTTP and MCP traffic) | no |
 | Blocks a key pasted into a prompt | yes (stored keys, vendor formats; Claude Code) | not documented | not documented | yes | not documented | no |
 | Refuses writing a stored key into a file | yes (Edit / Write; Claude Code) | not documented | not documented | not documented | a filesystem sentinel watches for secrets written to disk | no |
 | Account or server needed | no | 1Password account | Infisical (cloud or self-hosted) | GitGuardian account and API key | no (self-hosted) | no |
 | Runtime dependencies | none (Python stdlib) | 1Password app / CLI | Infisical | ggshield | Go binary | none (Node 20+) |
-| Public, runnable leak benchmark | yes (`leakbench`, 156 probes) | not documented | not documented | not documented | rule counts published; no public detection score | no |
+| Public, runnable leak benchmark | yes (`leakbench`, 156 probes) | not documented | not documented | not documented | rule counts and a public attack corpus (agent-egress-bench) cited; no public detection score found | no |
 
-stuntkey has had no independent security review (see [SECURITY.md](SECURITY.md)).
+stuntkey has had no independent security review (see [SECURITY.md](https://github.com/calasdan-sketch/stuntkey/blob/main/SECURITY.md)).
 Finding keys that have no vendor prefix, which is what decides whether a scan,
 a mask or a fingerprint can see them: share of 1,000 randomly generated keys
 found in `SERVICE_API_KEY=<key>` (`python -m leakbench.detect_bench --n 1000 --seed 7`;

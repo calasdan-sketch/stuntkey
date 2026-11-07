@@ -25,6 +25,7 @@ import datetime
 import json
 import os
 
+from . import fsutil
 from .broker import BrokerError, _file_lock
 
 LIMITS = ("calls_session", "calls_hour", "calls_day", "tokens_day", "tokens_call")
@@ -124,7 +125,7 @@ def _write_usage(path: str, u: dict) -> None:
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(u, f)
-    os.replace(tmp, path)
+    fsutil.replace(tmp, path)
 
 
 def usage(home: str, service: str) -> dict:

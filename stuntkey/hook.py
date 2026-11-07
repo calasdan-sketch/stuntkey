@@ -46,6 +46,7 @@ import sys
 import sysconfig
 import tempfile
 
+from . import fsutil
 from . import recipes as recipes_mod
 
 # Tools that can show a file's contents or run a command that does:
@@ -1494,7 +1495,7 @@ def save_settings(path: str, data: dict, had_file: bool) -> str | None:
                 os.chmod(tmp, os.stat(target).st_mode & 0o777)
             except OSError:
                 pass
-        os.replace(tmp, target)
+        fsutil.replace(tmp, target)
     except BaseException:
         try:
             os.unlink(tmp)

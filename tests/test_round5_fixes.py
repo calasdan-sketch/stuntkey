@@ -909,7 +909,10 @@ class TestClosedPipeOnWindows(unittest.TestCase):
             for argv in (["list"], ["mcp"]):
                 pipe, stdout = self.dead_stdout(unbuffered)
                 stdin = self.mcp_stdin() if argv == ["mcp"] else None
-                with self.assertRaises(OSError) as cm:
+                # STUNTKEY_DEBUG=1: without it main() turns the error into a
+                # plain sentence and exit status 1 (tests/test_v011_round4.py)
+                with mock.patch.dict(os.environ, {"STUNTKEY_DEBUG": "1"}), \
+                        self.assertRaises(OSError) as cm:
                     self.run_main(argv, stdout, False, stdin)
                 self.assertEqual(cm.exception.errno, errno.EINVAL)
                 self.assertNotIsInstance(cm.exception, BrokenPipeError)
@@ -934,7 +937,8 @@ class TestClosedPipeOnWindows(unittest.TestCase):
                 _pipe, stdout = self.dead_stdout()
                 with mock.patch.object(cli_mod, "_ON_WINDOWS", windows), \
                         mock.patch.object(sys, "stdout", stdout), \
-                        mock.patch.object(cli_mod, "_main", side_effect=exc):
+                        mock.patch.object(cli_mod, "_main", side_effect=exc), \
+                        mock.patch.dict(os.environ, {"STUNTKEY_DEBUG": "1"}):
                     with self.assertRaises(OSError) as cm:
                         cli_mod.main(["list"])
                 self.assertIs(cm.exception, exc)

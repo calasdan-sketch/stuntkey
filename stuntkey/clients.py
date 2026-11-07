@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+from . import fsutil
 import shutil
 import sys
 import tempfile
@@ -103,7 +104,16 @@ def plan(path: str, key: str) -> dict:
     if present:
         with open(path, encoding="utf-8-sig") as f:
             text = f.read()
-        existing = json.loads(text) if text.strip() else {}
+        try:
+            existing = json.loads(text) if text.strip() else {}
+        except ValueError as e:
+            # not the parser's wording ("Expecting property name enclosed in
+            # double quotes: line 1 column 3"): say what it means for the file
+            line = getattr(e, "lineno", None)
+            raise ValueError("that file is not valid JSON"
+                             + (f" (a problem near line {line})" if line else "")
+                             + "; not touching it. Fix it or move it aside, then run "
+                             "`stuntkey install` again") from None
         if not isinstance(existing, dict):
             raise ValueError("that file is not a JSON object; not touching it")
     entry = server_entry()
@@ -147,7 +157,12 @@ def apply(p: dict) -> str | None:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(p["new"], f, indent=2)
             f.write("\n")
-        os.replace(tmp, path)
+        if p["present"]:
+            try:                        # mkstemp makes it owner-only; keep what the user had
+                os.chmod(tmp, os.stat(path).st_mode & 0o777)
+            except OSError:
+                pass
+        fsutil.replace(tmp, path)
     except BaseException:
         if os.path.exists(tmp):
             os.unlink(tmp)
@@ -160,6 +175,7 @@ def run(names, yes: bool, ask=input, out=print, **kw) -> int:
     chosen = names or [n for n, (path, _) in tg.items()
                        if os.path.exists(path) or n in ("claude-code",)]
     done = 0
+    problems = 0
     for n in chosen:
         if n not in tg:
             out(f"unknown target '{n}'. Choose from: {', '.join(tg)}")
@@ -169,6 +185,7 @@ def run(names, yes: bool, ask=input, out=print, **kw) -> int:
             p = plan(path, key)
         except (ValueError, OSError) as e:
             out(f"  {n}: skipped - {e}")
+            problems += 1
             continue
         if p["already"]:
             out(f"  {n}: already set up.")
@@ -178,11 +195,11 @@ def run(names, yes: bool, ask=input, out=print, **kw) -> int:
         if p.get("legacy") is not None:
             out(f"    and replace the old '{LEGACY_NAME}' entry (0.8):\n"
                 + legacy_diff(p).rstrip("\n"))
-        if not yes and ask(f"    go ahead? [y/N] ").strip().lower() not in ("y", "yes"):
+        if not yes and ask("    go ahead? [y/N] ").strip().lower() not in ("y", "yes"):
             out("    skipped.")
             continue
         b = apply(p)
-        out(f"    done." + (f" Backup: {b}" if b else ""))
+        out("    done." + (f" Backup: {b}" if b else ""))
         done += 1
     if not chosen:
         out("no AI tools found. Name one: " + ", ".join(tg))
@@ -193,7 +210,10 @@ def run(names, yes: bool, ask=input, out=print, **kw) -> int:
         out("")
         for n in chosen:
             out(f"  {LABELS.get(n, n)}: {'connected' if n in on else 'not connected'}")
-    return 0
+        if any(n in on for n in chosen if n in ("claude-code", "vscode")):
+            out("  (Claude Code and VS Code read a file in the folder you ran this in:"
+                " run `stuntkey install` in each project folder where you want it.)")
+    return 1 if problems else 0
 
 
 def remove(names, yes: bool, ask=input, out=print, **kw) -> int:

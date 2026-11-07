@@ -502,9 +502,9 @@ def next_step_text(f: Finding) -> str:
         base = (f"Rotate it in your {printable(f.provider_name, words=True)} "
                 f"account, then run `stuntkey connect {f.provider}`.")
     else:
-        base = (f"Rotate it in the account of the service that issued it "
-                f"(make a new key, then revoke this one). "
-                f"`stuntkey list` shows the services that have a guided setup.")
+        base = ("Rotate it in the account of the service that issued it "
+                "(make a new key, then revoke this one). "
+                "`stuntkey list` shows the services that have a guided setup.")
     if f.status == "dead":
         who = printable(f.provider_name, words=True) if f.provider else "the service"
         return (f"Rejected by {who}: it may be revoked, or it may not be a "

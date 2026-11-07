@@ -9,7 +9,6 @@ own tools can edit could not be trusted to say the person agreed.
 
 from __future__ import annotations
 
-import os
 import sys
 
 from . import capture as capture_mod

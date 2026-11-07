@@ -58,6 +58,7 @@ import sys
 import tempfile
 import time
 
+from . import fsutil
 from . import procs
 from .recipes import ENV_VAR_RE
 
@@ -599,7 +600,7 @@ def write_private(path: str, text: str) -> bool:
             f.flush()
             os.fsync(f.fileno())
         os.chmod(tmp, OWNER_ONLY)  # mkstemp already did; belt and braces
-        os.replace(tmp, path)
+        fsutil.replace(tmp, path)
     except BaseException:
         try:
             os.unlink(tmp)

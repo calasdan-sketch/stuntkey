@@ -7,7 +7,6 @@ and the destination file.
 
 from __future__ import annotations
 
-import getpass
 import ipaddress
 import os
 import shutil

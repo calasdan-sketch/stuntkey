@@ -18,6 +18,7 @@ import subprocess
 import sys
 import tempfile
 
+from . import fsutil
 from . import recipes as recipes_mod
 
 CLIENTS = ("claude-code", "claude-desktop", "cursor", "codex", "gemini")
@@ -78,7 +79,7 @@ def _atomic_write(path: str, text: str, bom: bool = False) -> None:
     try:
         with os.fdopen(fd, "w", encoding="utf-8-sig" if bom else "utf-8", newline="") as f:
             f.write(text)
-        os.replace(tmp, path)
+        fsutil.replace(tmp, path)
     except BaseException:
         try:
             os.unlink(tmp)

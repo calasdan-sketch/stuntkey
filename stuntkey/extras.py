@@ -5,7 +5,6 @@ uninstall, remote, trust-server, deploy, scan-git, doctor.
 Kept apart from cli.py so the key-capture commands and these stay separate."""
 from __future__ import annotations
 
-import argparse
 import difflib
 import sys
 

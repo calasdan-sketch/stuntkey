@@ -28,6 +28,7 @@ import shlex
 import subprocess
 import sys
 
+from . import fsutil
 from . import dialog as dialog_mod
 from . import keychain as keychain_mod
 from . import recipes as recipes_mod
@@ -112,7 +113,7 @@ def remember_host(host: str, service: str) -> None:
     tmp = _hosts_path() + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)
-    os.replace(tmp, _hosts_path())
+    fsutil.replace(tmp, _hosts_path())
 
 
 def ssh_port(ssh_args: list[str] | None) -> str | None:

@@ -160,6 +160,18 @@ def format_report(result: dict) -> str:
     return "\n".join(lines)
 
 
+def _keychain_fix() -> str:
+    """What to do when no OS keychain can be driven, said for this system."""
+    plain = "Until then keys are kept in a .env file that only you can read."
+    if sys.platform.startswith("linux"):
+        return ("Install `secret-tool` (Debian or Ubuntu: sudo apt install libsecret-tools "
+                "gnome-keyring) and sign in to a desktop session with a keyring, then run "
+                "`stuntkey doctor` again. " + plain)
+    if sys.platform == "darwin":
+        return "The macOS `security` program was not found. " + plain
+    return plain
+
+
 def doctor(env=None, which=shutil.which) -> dict:
     env = os.environ if env is None else env
     from . import keychain as keychain_mod
@@ -172,11 +184,13 @@ def doctor(env=None, which=shutil.which) -> dict:
         "stuntkey needs Python 3.10 or newer.")
     backend = keychain_mod.detect_backend()
     add("keychain", backend is not None, keychain_mod.label(backend) if backend else "none",
-        "Without an OS keychain, keys are kept in a .env file (owner-only).")
-    add("ssh", bool(which("ssh")), "found" if which("ssh") else "missing",
-        "Needed for `remote`/`deploy`. Windows: Settings > Apps > Optional features > OpenSSH Client.")
-    add("git", bool(which("git")), "found" if which("git") else "missing",
-        "Needed for `deploy` and git-based updates.")
+        _keychain_fix())
+    # ssh and git are only needed for a few optional commands: not having
+    # them is not something to fix before the first `stuntkey get`.
+    add("ssh", True, "found" if which("ssh") else "not found (only `remote` and `deploy` need it)",
+        "Windows: Settings > Apps > Optional features > OpenSSH Client.")
+    add("git", True, "found" if which("git") else "not found (only `scan-git` and `deploy` need it)",
+        "Install git from https://git-scm.com if you want those.")
     proxy = env.get("HTTPS_PROXY") or env.get("https_proxy")
     if proxy:           # only worth a line when set; stuntkey ignores it for AI calls
         add("proxy", True, "set (stuntkey ignores it for AI calls)", "")
