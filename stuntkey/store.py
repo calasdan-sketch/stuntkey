@@ -488,7 +488,17 @@ def _lock_once(path: str, lock_path: str, deadline: float):
     """Open and lock the lock file; return its fd, or None when the file was
     swapped for a new one while waiting (the caller tries again)."""
     flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
-    fd = os.open(lock_path, flags, 0o600)
+    try:
+        fd = os.open(lock_path, flags, 0o600)
+    except PermissionError:
+        # Windows: the last holder is deleting the lock file right now
+        # ("delete pending"), and opening it fails until that finishes.
+        if not _windows():
+            raise
+        if time.monotonic() > deadline:
+            raise EnvFileBusy(path) from None
+        time.sleep(0.05)
+        return None                     # the caller tries again
     try:
         if _windows():
             import msvcrt
@@ -568,6 +578,21 @@ def file_lock(path: str, timeout: float | None = None):
                 pass
 
 
+def _replace(tmp: str, path: str, tries: int = 40) -> None:
+    """os.replace, retried briefly on Windows, where a reader (another
+    stuntkey, an editor, a virus scanner) holding `path` open for a moment
+    makes the rename fail with PermissionError."""
+    for _ in range(tries - 1):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:
+            if not _windows():
+                raise
+            time.sleep(0.05)
+    os.replace(tmp, path)
+
+
 def write_private(path: str, text: str) -> bool:
     """Atomically replace `path` with `text`, private from the start.
 
@@ -599,7 +624,7 @@ def write_private(path: str, text: str) -> bool:
             f.flush()
             os.fsync(f.fileno())
         os.chmod(tmp, OWNER_ONLY)  # mkstemp already did; belt and braces
-        os.replace(tmp, path)
+        _replace(tmp, path)
     except BaseException:
         try:
             os.unlink(tmp)
