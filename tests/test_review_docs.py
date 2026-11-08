@@ -72,7 +72,7 @@ class DocsMatch(unittest.TestCase):
         hero = readme.split("## ")[0]
         self.assertNotIn("not independently security-reviewed", hero)
         # The gaps must be named on the front page, not just the wins.
-        for gap in ("node-prints-process-env", "script-reads-env-file"):
+        for gap in ("runaway-loop-no-cap", "unbounded-retry"):
             self.assertIn(gap, readme, f"the front page must name the gap {gap}")
 
     def test_readme_front_page_still_has_the_install_path(self):

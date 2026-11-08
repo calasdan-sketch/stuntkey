@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.9.1
+
+### Added
+
+- **`stuntkey get` takes any site.** `stuntkey get example.com` (or a name) opens a
+  search for the site's key page, takes the key when you click Copy, and saves it
+  in the keychain with a recipe that sends it only to that site's `api.` host.
+  The key is saved untested, and stuntkey says so.
+
+### Fixed
+
+- **The hook now reads code before it is saved.** A Write, Edit, MultiEdit or
+  NotebookEdit whose new text would print the environment (`print(os.environ)`,
+  `console.log(process.env)`) or open a `.env` file is blocked, because a
+  saved script's output cannot be masked afterwards. Prose and ignore files
+  (`.md`, `.rst`, `.gitignore`, `.dockerignore`) are not scanned. A `.env`
+  name counts only on a line that also prints or dumps a file, so
+  `load_dotenv('.env')`, `cp .env.example .env` and `COPY .env .` stay
+  writable. A `.env` read into a variable that a later line prints is caught
+  too. Environment dumps are recognised in Python (`environ`, `.items()`,
+  `pprint`, `logging`), JavaScript (`JSON.stringify(process.env)`,
+  `process["env"]`), Go (`os.Environ()`), Ruby (`puts ENV`) and code that
+  runs `env`/`printenv`. Code that hides what it does can still get past it.
+- A write larger than 2,000,000 characters is refused, so padding a file can
+  not carry code past the scan.
+- The hook no longer crashes on a `tool_name` that is not text.
+- leakbench: `stuntkey-hook` 47 blocked / 12 masked / 2 leaked (was 44/12/5);
+  `stuntkey-full` 49/12/0 (was 46/12/3).
+
 ## 0.9.0
 
 ### Renamed

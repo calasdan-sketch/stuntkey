@@ -1195,7 +1195,7 @@ is UTF-8 bytes regardless of console code page, console output is
 reconfigured to replace unencodable characters instead of crashing, and
 every text file is opened as UTF-8.
 
-## Scope / limits (v0.9.0)
+## Scope / limits (v0.9.1)
 
 - `scan` finds keys by their shape. It misses a key with no recognisable
   prefix under a name that does not end in KEY, TOKEN, SECRET or PASSWORD, and

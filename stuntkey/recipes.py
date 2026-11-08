@@ -601,6 +601,11 @@ def _check_extras(data: dict) -> None:
     if un is not None and not (isinstance(un, list) and all(
             isinstance(x, str) and x for x in un)):
         raise RecipeError("unverified must be a list of text")
+    # "untested": true - made by `stuntkey get <any site>`: the key is saved
+    # without a check call, because nobody knows the site's API yet. It can
+    # only make stuntkey send the key LESS, never somewhere new.
+    if not isinstance(data.get("untested", False), bool):
+        raise RecipeError("untested must be true or false")
 
 
 def validate_recipe(data: dict) -> dict:

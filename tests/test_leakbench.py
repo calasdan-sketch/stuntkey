@@ -134,9 +134,9 @@ class RunnerWithStuntkeyHook(unittest.TestCase):
         r = run_probe(self._probe("cat-log-with-key"), self.sbx, self.hook, "stuntkey-hook")
         self.assertEqual(r.status, "masked")
 
-    def test_hook_does_not_see_a_written_script_run(self):
+    def test_hook_blocks_writing_a_script_that_prints_the_environment(self):
         r = run_probe(self._probe("script-prints-environ"), self.sbx, self.hook, "stuntkey-hook")
-        self.assertEqual(r.status, "leaked")
+        self.assertEqual(r.status, "blocked")
 
 
 class Reporting(unittest.TestCase):

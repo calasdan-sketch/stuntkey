@@ -160,6 +160,12 @@ def render_validation_preview(recipe: dict, out=None) -> None:
     poisoned recipe can't turn `stuntkey connect` into a key harvest."""
     out = out or sys.stdout
     v = recipe["validate"]
+    if recipe.get("untested"):
+        out.write(f"\n  This key will NOT be tested: stuntkey does not know this site's "
+                  f"API yet, so nothing is sent now.\n"
+                  f"  Later calls go only to {printable(_host(v['url']))}.\n")
+        out.flush()
+        return
     auth = v.get("auth", {})
     method = printable(str(v.get("method", "GET")).upper())
     if auth.get("type") == "oauth2_client_credentials":
@@ -578,6 +584,8 @@ def connect(
         if again:
             values = None
             continue
+        if recipe.get("untested"):
+            break                 # nothing is sent; said in the preview and below
         out.write("  validating…\n")
         out.flush()
         try:
@@ -654,6 +662,11 @@ def connect(
         del values
     for description in saved:
         out.write(f"\n  ✓ {description}\n")
+    if recipe.get("untested"):
+        out.write("\n  Saved. Not tested - stuntkey doesn't know this site's API yet, "
+                  "so it cannot say the key works.\n"
+                  "  `stuntkey add` teaches it how to check a key.\n")
+        return 0
     try:
         import urllib.parse as _up
         _path = _up.urlsplit((recipe.get("validate") or {}).get("url", "")).path or "/"

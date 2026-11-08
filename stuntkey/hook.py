@@ -69,6 +69,7 @@ MAX_COMMAND = 100_000
 CHUNK = 20_000
 OVERLAP = 2_000
 SCAN_BUDGET = 600_000        # characters of non-shell text checked per call
+WRITE_SCAN_BUDGET = 2_000_000  # code an agent writes is scanned whole, up to this
 MAX_STRINGS = 2_000
 MAX_DEPTH = 20
 WRITE_TOOLS = frozenset({"Edit", "Write", "MultiEdit", "NotebookEdit"})
@@ -125,6 +126,27 @@ STEAL_REASON = (
     "out of the chat. Do not try another way. Call the stuntkey tool "
     "`capture_key` (or `needs_keys`); if capture is unavailable, ask the person "
     "to run the command themselves.")
+
+CODE_REASON = (
+    "stuntkey blocked this write because the code would {what} once it runs - "
+    "even though you are only writing it now, not running it. A file's output "
+    "cannot be masked after the fact the way a command's can, so this is "
+    "caught before it is saved. Do not try another way or write it somewhere "
+    "else. If you need a key, call the stuntkey tool `capture_key`, or ask "
+    "the person to run `stuntkey run <service> -- <command>`.")
+
+BIG_WRITE_REASON = (
+    "stuntkey blocked this write because it is too large to check whole for "
+    "code that would print secret keys. Write it in smaller parts.")
+
+_WRITE_TOOL_RE = re.compile(r'"tool_name"\s*:\s*"(?:Write|Edit|MultiEdit|NotebookEdit)"')
+
+CODE_ENV_REASON = (
+    "stuntkey blocked this write because the code names {what}, a .env file "
+    "that holds secret API keys, and would read it once it runs. Do not "
+    "write code that opens a .env file. If you only need to know which "
+    "variables exist, read .env.example instead; if you need a key, call "
+    "the stuntkey tool `capture_key`.")
 
 # Ways a shell can pull a stored key out, or print it unredacted. Each is
 # (regex, what it does). They are matched against the whole command text.
@@ -193,9 +215,23 @@ DUMP_RULES = (
                 r"\bdocker\s+(?:container\s+|image\s+)?inspect\b[^\n;&|]{0,300}"
                 r"(?:\bEnv\b|\.Config\s*\}\}|\{\{\s*json\s+\.\s*\}\})", re.I),
      "print a container's settings, its environment (keys) among them"),
-    (re.compile(r"\bprint\s*\(\s*(?:dict\s*\(\s*)?os\.environ\b(?!\s*[\[.])|"
-                r"\bconsole\.(?:log|dir)\s*\(\s*process\.env\s*\)|"
-                r"\bjson\.dumps\s*\(\s*(?:dict\s*\(\s*)?os\.environ\b", re.I),
+    (re.compile(
+        # Python: print/pprint/logging of os.environ or a bare `environ`,
+        # whole or as .items()/.values()/.copy() - not os.environ["X"]/.get()
+        r"\b(?:p?print|pp|json\.dumps|log(?:ging|ger)?\.\w+|sys\.std(?:out|err)\.write)"
+        r"\s*\(\s*(?:\*\s*|(?:dict|str|repr|list|sorted)\s*\(\s*)?(?:os\.)?environ\b"
+        r"(?:\s*\.\s*(?:items|values|copy)\s*\(\s*\))?\s*[),]|"
+        # JS: console.* / JSON.stringify of process.env, process["env"], Deno.env
+        r"\b(?:console\.\w+|JSON\.stringify|process\.stdout\.write)\s*\(\s*"
+        r"(?:JSON\.stringify\s*\(\s*|Object\.(?:entries|values)\s*\(\s*)?"
+        r"(?:process\s*(?:\.\s*env|\[\s*['\"]env['\"]\s*\])|Deno\.env\.toObject\s*\(\s*\))\s*[),]|"
+        # Go: fmt.Print*(os.Environ())
+        r"\bfmt\.\w*Print\w*\s*\([^)\n]*os\.Environ\s*\(\s*\)|"
+        # Ruby: puts/p/pp ENV (whole)
+        r"(?:^|[\s;(])(?:puts|pp?|print)\s*\(?\s*ENV(?:\.to_h)?\s*(?:\)|$|;)|"
+        # running env/printenv/set from code
+        r"\b(?:system|popen|run|call|check_output|getoutput|exec\w*|spawn\w*)\s*\(\s*\[?\s*"
+        r"['\"](?:env|printenv|set|Get-ChildItem\s+Env:)['\"]", re.I | re.M),
      "print every environment variable from code"),
     (re.compile(_CMD + r"(?:sudo\s+)?(?:cat|type|Get-Content|gc|less|more|head|tail|grep|egrep|"
                 r"fgrep|rg|ag|sed|awk|bat|nl|xxd|od|strings|base64|tac|cut|sort|uniq|"
@@ -431,6 +467,125 @@ def decide_steal(payload) -> str | None:
     return None
 
 
+# Files whose text is never run: prose and ignore lists. A .gitignore that
+# lists .env, or a README that says "copy .env.example to .env", must stay
+# writable - blocking them would push people away from the safe setup.
+# ponytail: by file name only; `python notes.md` would still run unscanned
+# text, but its output goes through the Bash PostToolUse masking.
+_NOT_CODE_RE = re.compile(
+    r"(?:\.(?:md|markdown|mdx|rst|adoc)|(?:^|/)\.[a-z]*ignore|(?:^|/)\.gitattributes)\Z",
+    re.I)
+
+# Code names .env files all the time for safe reasons: load_dotenv('.env'),
+# `cp .env.example .env`, `COPY .env .`, `env_file: .env`. The leak is OUTPUT,
+# so a .env name counts only on a line that also prints or dumps a file, or
+# when it is read into a variable that another line prints.
+# ponytail: one hop of data flow only; passing the text through a second
+# variable or a function gets past this, and the Bash PostToolUse mask is
+# what still covers that run.
+_OUTPUTS_RE = re.compile(
+    r"print|console\.|\bputs\b|\bp\s|Write-(?:Host|Output)|stdout|"
+    r"\b(?:cat|head|tail|more|less|Get-Content|log(?:ger|ging)?\.\w+)\b", re.I)
+
+# `name = <read of a file>` (Python, JS, PowerShell, Ruby, Go, shell).
+_READ_INTO_RE = re.compile(
+    r"^\s*(?:(?:const|let|var|my|local)\s+)?\$?(\w+)\s*:?=\s*.*?"
+    r"(?:\bopen\b|read|Get-Content|\bcat\b|\bgc\b|File\.)", re.I)
+
+# JavaScript objects that look like a `<name>.env` file name.
+_CODE_ENV_OBJECTS = {"process.env", "meta.env", "import.meta.env", "deno.env", "bun.env", "os.env"}
+
+
+def _env_names(line: str) -> list[str]:
+    return [n for n in find_env_files(line) if n.lower() not in _CODE_ENV_OBJECTS]
+
+
+def _printed_env_files(text: str) -> list[str]:
+    """.env-style names in written code that end up printed: on a line that
+    also outputs, or read into a variable that a later line outputs."""
+    lines = text.splitlines()
+    for i, line in enumerate(lines):
+        names = _env_names(line)
+        if not names:
+            continue
+        if _OUTPUTS_RE.search(line):
+            return names
+        m = _READ_INTO_RE.match(line)
+        if m:
+            var = re.compile(r"(?<![\w.])\$?" + re.escape(m.group(1)) + r"\b")
+            if any(_OUTPUTS_RE.search(ln) and var.search(ln) for ln in lines[i + 1:]):
+                return names
+    return []
+
+
+def _write_content_strings(payload: dict) -> list[str]:
+    """The new text a Write / Edit / MultiEdit / NotebookEdit call is about to
+    put on disk - not the path (touched_text's job), the content itself.
+    Nothing is written yet when this runs (PreToolUse): this is the one
+    chance to see it before it lands. Only the NEW text matters - Edit's
+    old_string and MultiEdit's old_string are what is already on disk, not
+    what the agent is adding, so they are left out."""
+    if not isinstance(payload, dict):
+        return []
+    tool = payload.get("tool_name")
+    args = payload.get("tool_input")
+    if tool not in WRITE_TOOLS or not isinstance(args, dict):
+        return []
+    target = args.get("file_path") or args.get("notebook_path")
+    if isinstance(target, str) and _NOT_CODE_RE.search(target.replace("\\", "/")):
+        return []
+    if tool == "Write":
+        return _strings(args.get("content"))
+    if tool == "Edit":
+        return _strings(args.get("new_string"))
+    if tool == "MultiEdit":
+        edits = args.get("edits")
+        out = []
+        if isinstance(edits, list):
+            for e in edits:
+                if isinstance(e, dict):
+                    out += _strings(e.get("new_string"))
+        return out
+    if tool == "NotebookEdit":
+        return _strings(args.get("new_source"))
+    return []
+
+
+def decide_code_leak(payload) -> tuple[str, str] | None:
+    """Would the CODE an agent is about to write leak a secret once it runs
+    LATER, as its own separate command? ("kind", "what"): kind "env" means
+    the code names a .env-style file (`what` is that name, CODE_ENV_REASON
+    fits); kind "dump" means it matches one of the DUMP_RULES/STEAL_RULES
+    patterns, such as `print(os.environ)` or `console.log(process.env)`
+    (`what` is the rule's own words, CODE_REASON fits). None otherwise.
+
+    This exists because a Write/Edit/MultiEdit/NotebookEdit call has no
+    documented PostToolUse output shape (only Bash does - see post_check), so
+    a secret a saved script would print cannot be masked after the fact the
+    way a Bash command's output can. The file path is checked by decide()
+    and decide_protected_write() already; this is the one place the CONTENT
+    being written is scanned too, so a script that merely dumps the
+    environment or opens a .env file is caught before it is ever saved, not
+    only when something later happens to run it under a wrapped shell."""
+    texts = _write_content_strings(payload)
+    if not texts:
+        return None
+    total = sum(len(t) for t in texts)
+    if total > WRITE_SCAN_BUDGET:
+        # padding a file past what is scanned must not be a way around it
+        return "big", str(total)
+    budget = [WRITE_SCAN_BUDGET]
+    for text in texts:
+        hits = _printed_env_files(text)
+        if hits:
+            return "env", hits[0]
+        for piece in _pieces(text, budget):
+            what = steals_key(piece, shell=True)
+            if what:
+                return "dump", what
+    return None
+
+
 _PROTECTED_RE = re.compile(
     r"(?:^|/)(?:\.claude/settings(?:\.local)?\.json|\.mcp\.json|\.claude\.json)\Z", re.I)
 
@@ -553,8 +708,12 @@ def check(stdin_text: str) -> tuple[int, str]:
     .env file name and, if one is there, the call is refused. Only when that
     finds nothing is it a non-blocking error (status 1): a broken hook must
     not stop all work unless you installed it with --fail-closed."""
-    if len(stdin_text) > 2 * SCAN_BUDGET:
-        # only ever look at a bounded amount: the start and the end
+    oversized_write = False
+    if len(stdin_text) > 2 * WRITE_SCAN_BUDGET:
+        # only ever look at a bounded amount: the start and the end. A write
+        # this big cannot be scanned whole, so it is refused below rather
+        # than let padding carry code past the scan.
+        oversized_write = bool(_WRITE_TOOL_RE.search(stdin_text[:SCAN_BUDGET]))
         stdin_text = stdin_text[:SCAN_BUDGET] + " " + stdin_text[-SCAN_BUDGET:]
     try:
         payload = json.loads(stdin_text)
@@ -570,7 +729,11 @@ def check(stdin_text: str) -> tuple[int, str]:
             what = steals_key(piece)
             if what:
                 return 0, json.dumps(decision_json(STEAL_REASON.format(what=what))) + "\n"
+        if oversized_write:
+            return 0, json.dumps(decision_json(BIG_WRITE_REASON)) + "\n"
         return 1, ""
+    if isinstance(payload, dict) and not isinstance(payload.get("tool_name", ""), str):
+        return 1, ""  # not a shape Claude Code sends; a list would crash the set lookups
     if isinstance(payload, dict) and payload.get("hook_event_name") == "PostToolUse":
         return 0, post_check(payload)
     size = too_long(payload)
@@ -584,6 +747,16 @@ def check(stdin_text: str) -> tuple[int, str]:
             what = recipes_mod.printable(target)
             return 0, json.dumps(decision_json(
                 PROTECTED_REASON.format(what=f"'{what}'"))) + "\n"
+        leak = decide_code_leak(payload)
+        if leak:
+            kind, what = leak
+            if kind == "big":
+                return 0, json.dumps(decision_json(BIG_WRITE_REASON)) + "\n"
+            if kind == "env":
+                what = recipes_mod.printable(what)
+                return 0, json.dumps(decision_json(
+                    CODE_ENV_REASON.format(what=f"'{what}'"))) + "\n"
+            return 0, json.dumps(decision_json(CODE_REASON.format(what=what))) + "\n"
         what = decide_steal(payload) or decide_secret_read(payload) or decide_mcp_key(payload)
         if what:
             return 0, json.dumps(decision_json(STEAL_REASON.format(what=what))) + "\n"

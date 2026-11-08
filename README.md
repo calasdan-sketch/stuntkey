@@ -1,7 +1,7 @@
 # stuntkey
 
 **Keep your API keys out of your coding agent's context.** Your agent calls the
-API; it never sees the key. A leaked transcript leaks nothing.
+API; it never sees the key, so the key is not in the transcript.
 
 Secretless credential brokering for AI coding agents, plus a scanner for keys
 that have already leaked into the files your agent reads.
@@ -15,12 +15,17 @@ following an injected instruction. Run it yourself: `python -m leakbench`.
 | Protection | blocked | masked | leaked |
 |---|---|---|---|
 | nothing | 0 | 0 | **54** |
-| stuntkey | **44** | 12 | **5** |
+| stuntkey hook | **47** | 12 | **2** |
+| stuntkey hook + spending caps | **49** | 12 | **0** |
 
-**The 5 stuntkey does not stop**, named rather than hidden:
-`node-prints-process-env`, `script-prints-environ`, `script-reads-env-file`,
-`runaway-loop-no-cap`, `unbounded-retry` — a program you wrote, run by the
-agent, printing its own environment. No hook can see inside that.
+**The 2 the hook alone does not stop**, named rather than hidden:
+`runaway-loop-no-cap` and `unbounded-retry` — a loop that keeps making paid
+calls. The spending caps stop those; the hook cannot.
+
+Zero on this benchmark is not zero everywhere. The hook now reads code before
+it is saved and blocks obvious leaks (`print(os.environ)`,
+`console.log(process.env)`, opening `.env`). A script that hides what it does
+can still get past that check.
 
 Threat model: [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md). Known gaps and
 limits: [SECURITY.md](SECURITY.md) — including that stuntkey has not had a paid
@@ -96,7 +101,7 @@ It reduces risk; it does not remove it, and no independent security review has b
 - **It does not hide the data.** Replies from the API go to your AI, and so to the AI company. The key is scrubbed; the rest is not.
 - **It does not protect `run`.** A program started with `run` holds the key and can print it.
 - **It does not catch every disguise.** Scrubbing is best effort.
-- **The Claude Code hook masks Bash output only.** Claude Code documents no output shape for Read or Grep, so the hook cannot mask them: it refuses Read of private keys, credentials files and files holding a key you stored instead. A key stuntkey never stored, in a format it does not know, in an ordinary file, still reaches the AI through Read. A script the AI writes is checked only when it runs through Bash. Scores per leak are in [leakbench/README.md](https://github.com/calasdan-sketch/stuntkey/blob/main/leakbench/README.md).
+- **The Claude Code hook masks Bash output only.** Claude Code documents no output shape for Read or Grep, so the hook cannot mask them: it refuses Read of private keys, credentials files and files holding a key you stored instead. A key stuntkey never stored, in a format it does not know, in an ordinary file, still reaches the AI through Read. A script the AI writes is checked when it is saved, for obvious leaks only (printing the environment, opening `.env`); a script that hides what it does is checked only when it runs through Bash. Scores per leak are in [leakbench/README.md](https://github.com/calasdan-sketch/stuntkey/blob/main/leakbench/README.md).
 - **The clipboard.** `get` empties it right away, but other programs or clipboard-history tools may see the key while it is there.
 - **A log that can't be rewritten.** The log shows accidents and casual edits. Someone running as you could rewrite it.
 - **It sends no telemetry.** stuntkey talks only to the services you call (and, for `find`, a public list on GitHub).
@@ -119,7 +124,7 @@ stuntkey uses only Python's own standard library, and a test in the repository (
 
 **Start**
 
-- `get <service>` - one command: opens the key page, takes the key when you click Copy (then empties the clipboard), tests it, saves it in the keychain. `--no-clipboard` uses hidden typing instead.
+- `get <service>` - one command: opens the key page, takes the key when you click Copy (then empties the clipboard), tests it, saves it in the keychain. `--no-clipboard` uses hidden typing instead. Any site works too: `stuntkey get example.com` saves the key untested (stuntkey does not know that site's API yet; `stuntkey add` teaches it).
 - `install` / `uninstall` - plug stuntkey into (or remove it from) Claude Desktop, Cursor, Claude Code and VS Code.
 - `doctor` - the health check above.
 - `start` - a short guided tour: what is connected and what to do next.

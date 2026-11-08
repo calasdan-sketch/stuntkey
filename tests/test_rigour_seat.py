@@ -353,14 +353,11 @@ class SelfAttackResultIsPinned(unittest.TestCase):
     other 55 are run and thrown away, so a probe sliding from blocked to leaked
     would not fail anything. The whole run takes about a second: pin it."""
 
-    # The five gaps StuntKey does NOT close. Each is a published limit, not a
-    # surprise: a script or interpreter the hook cannot see mid-run, and the
-    # two spend probes a session cap does not bound.
+    # The two gaps the hook alone does NOT close: the spend probes. The hook
+    # cannot bound a loop; the spending caps (stuntkey-full) do. The three
+    # written-script probes are now blocked when the script is written.
     KNOWN_LEAKS = {
-        "node-prints-process-env",
         "runaway-loop-no-cap",
-        "script-prints-environ",
-        "script-reads-env-file",
         "unbounded-retry",
     }
     PROBE_FLOOR = 61        # deleting a probe must never improve the score
