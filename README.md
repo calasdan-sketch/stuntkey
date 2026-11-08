@@ -8,7 +8,7 @@ that have already leaked into the files your agent reads.
 
 ### Measured, not asserted
 
-`leakbench` is a vendor-neutral benchmark of 156 ways an AI coding agent leaks a
+`leakbench` is a vendor-neutral benchmark of 159 ways an AI coding agent leaks a
 credential: reading `.env`, dumping the environment, printing a traceback,
 following an injected instruction, 69 disguised reads (a glob, a variable for
 the file name, `xargs`, a symlink, `tar`, `rev`, a wrapper such as `timeout`), the person's own dotfiles and
@@ -19,20 +19,20 @@ installed program): from a clone, `python -m leakbench --profile none` (then
 `stuntkey-hook`, `stuntkey-full`), and `--canary opaque` for a secret with no
 recognisable format.
 
-| Protection (Linux host, 0.11.0, 156 probes) | blocked | masked | leaked | could not run here |
+| Protection (Linux host, 0.11.0, 159 probes) | blocked | masked | leaked | could not run here |
 |---|---|---|---|---|
-| nothing | 0 | 0 | **143** | 13 |
-| stuntkey hook, key saved with `get` | **121** | 31 | **4** | 0 |
-| stuntkey hook + spending caps | **125** | 31 | **0** | 0 |
+| nothing | 0 | 0 | **146** | 13 |
+| stuntkey hook, key saved with `get` | **124** | 31 | **4** | 0 |
+| stuntkey hook + spending caps | **128** | 31 | **0** | 0 |
 
 The same table for a key with **no vendor format** (`--canary opaque`, 40 random
 hex characters, like a database password or an internal token):
 
 | Key stuntkey was never told about | blocked | masked | leaked |
 |---|---|---|---|
-| hook only (0.11.0 gave 96 / 24 / 22 on 146 probes) | 114 | 20 | **18** |
-| hook after `stuntkey guard` | 121 | 25 | **6** |
-| hook + `guard` + caps | 125 | 25 | **2** |
+| hook only (0.11.0 gave 96 / 24 / 22 on 146 probes) | 117 | 20 | **18** |
+| hook after `stuntkey guard` | 124 | 25 | **6** |
+| hook + `guard` + caps | 128 | 25 | **2** |
 
 **What these numbers do not say**, named rather than hidden: the hook only
 blocks the *forms it knows*; the first 59 disguised-read probes were written
@@ -72,6 +72,8 @@ stuntkey doctor                # health check; "AI tools: plugged into ..." mean
 When a key page asks which permissions to give, pick read-only or the minimum it offers.
 
 Now ask your AI: *"Who am I on GitHub?"* The AI asks stuntkey for `GET /user`; stuntkey makes the call with your key and hands back only the answer. The first time, a window asks you to allow GitHub reads for this session. To see what it did: `stuntkey audit show`.
+
+**A service that is not on the list** (`stuntkey list` shows about 40): `stuntkey keep ACME_API_KEY` asks for the key (hidden), saves it in the keychain and reads it back. It cannot test the key or let the AI make calls with it; use it with `stuntkey run acme -- your-command` (`--env-var NAME` sets the variable name if the program wants a different one). It never writes the key to a file, and stops if there is no keychain.
 
 > No `pipx`? `pip install stuntkey` works too. Or download `stuntkey.pyz` from the latest release and run `python stuntkey.pyz doctor`. Latest unreleased code: `pipx install git+https://github.com/calasdan-sketch/stuntkey`.
 > Needs Python 3.10 or newer. On Linux the keychain needs `secret-tool` (package `libsecret-tools`). If your computer says `stuntkey` is not found, close the window and open a new one, or run `python -m stuntkey`.
@@ -138,13 +140,13 @@ impossible.
 | | stuntkey | [1Password `op run` / Environments](https://www.1password.dev/get-started/secure-ai-access) | [Infisical Agent Vault](https://infisical.com/platform/agent-vault) | [GitGuardian ggshield AI hook](https://docs.gitguardian.com/ggshield-docs/integrations/ai-coding-tools/secret-scanning-for-ai-coding-tools) | [Pipelock](https://github.com/luckyPipewrench/pipelock) | [agent-airlock](https://github.com/es617/agent-airlock) |
 |---|---|---|---|---|---|---|
 | Agent makes calls without holding the key | yes (broker, MCP, base-URL proxy) | `op run` hands the real value to the launched process; placeholder gateway in beta (OpenShell) | yes (forward proxy; listed as a preview, needs a proxy you enroll) | no (scanner) | no: the agent may hold keys; Pipelock cuts its direct network access and scans what leaves | yes (reverse proxy) |
-| Blocks `.env` reads / env dumps by the agent | yes (Claude Code hook) | not documented (its hook checks that `.env` files exist and are valid) | not documented | scans file reads and commands for secrets | not documented | no |
+| Blocks `.env` reads / env dumps by the agent | yes (Claude Code hook) | not documented (its hook checks that `.env` files exist and are valid) | not documented | scans file reads and commands for secrets (per its docs, lets the call through with a warning when it cannot scan) | not documented | no |
 | Masks keys in command output | yes (Bash) | not documented | not documented | withholds or notifies, per tool | not documented (scans HTTP and MCP traffic) | no |
 | Blocks a key pasted into a prompt | yes (stored keys, vendor formats; Claude Code) | not documented | not documented | yes | not documented | no |
 | Refuses writing a stored key into a file | yes (Edit / Write; Claude Code) | not documented | not documented | not documented | a filesystem sentinel watches for secrets written to disk | no |
 | Account or server needed | no | 1Password account | Infisical (cloud or self-hosted) | GitGuardian account and API key | no (self-hosted) | no |
 | Runtime dependencies | none (Python stdlib) | 1Password app / CLI | Infisical | ggshield | Go binary | none (Node 20+) |
-| Public, runnable leak benchmark | yes (`leakbench`, 156 probes) | not documented | not documented | not documented | rule counts and a public attack corpus (agent-egress-bench) cited; no public detection score found | no |
+| Public, runnable leak benchmark | yes (`leakbench`, 159 probes) | not documented | not documented | not documented | rule counts and a public attack corpus (agent-egress-bench) cited; no public detection score found | no |
 
 stuntkey has had no independent security review (see [SECURITY.md](https://github.com/calasdan-sketch/stuntkey/blob/main/SECURITY.md)).
 Finding keys that have no vendor prefix, which is what decides whether a scan,

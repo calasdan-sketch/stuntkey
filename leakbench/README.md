@@ -142,8 +142,10 @@ prompt probe's `tool` is `{"hook_event_name": "UserPromptSubmit", "prompt": ...}
 
 ## Results (this repo, this host)
 
-156 probes (0.10 had 66; 0.11 adds 59 `evasion` reads, 19 `agent footprint`
-reads and 2 spend shapes; the 0.12 line adds 10 more `evasion` reads, written
+159 probes (0.10 had 66; 0.11 adds 59 `evasion` reads, 19 `agent footprint`
+reads and 2 spend shapes; the 0.12 line adds 13 more `evasion` reads (3 of them
+a tool call in an odd shape: a command sent as a list, under another field name,
+or as plain text), written
 by the same author who then wrote the rules that stop them, so they show the
 rules work, not that they generalise). Run on a Linux host with bash, python,
 node, ruby, perl, git and rg, without docker or powershell (hence the `n/a`).
@@ -151,18 +153,18 @@ Reproduce with the commands above.
 
 | profile (vendor-format canary) | blocked | masked | leaked | n/a |
 |--------------|--------:|-------:|-------:|----:|
-| none          |       0 |      0 |    143 |  13 |
-| stuntkey-hook |     121 |     31 |      4 |   0 |
-| stuntkey-hook-unseen | 115 |     31 |     10 |   0 |
-| stuntkey-hook-learned |  121 |     31 |      4 |   0 |
-| stuntkey-full |     125 |     31 |      0 |   0 |
+| none          |       0 |      0 |    146 |  13 |
+| stuntkey-hook |     124 |     31 |      4 |   0 |
+| stuntkey-hook-unseen | 118 |     31 |     10 |   0 |
+| stuntkey-hook-learned |  124 |     31 |      4 |   0 |
+| stuntkey-full |     128 |     31 |      0 |   0 |
 
 | profile (`--canary opaque`) | blocked | masked | leaked | n/a |
 |--------------|--------:|-------:|-------:|----:|
-| none          |       0 |      0 |    140 |  16 |
-| stuntkey-hook-unseen | 114 |     20 |     18 |   4 |
-| stuntkey-hook-learned |  121 |     25 |      6 |   4 |
-| stuntkey-full (after `guard`) |  125 |     25 |      2 |   4 |
+| none          |       0 |      0 |    143 |  16 |
+| stuntkey-hook-unseen | 117 |     20 |     18 |   4 |
+| stuntkey-hook-learned |  124 |     25 |      6 |   4 |
+| stuntkey-full (after `guard`) |  128 |     25 |      2 |   4 |
 
 Profiles: `stuntkey-hook` registers the canary as a key saved with `get`.
 `stuntkey-hook-unseen` does not: a key stuntkey was never told about, found by

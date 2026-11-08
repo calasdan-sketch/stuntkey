@@ -12,6 +12,7 @@ sentence that does not repeat it, and is dropped, not kept or logged.
 from __future__ import annotations
 
 import getpass
+import os
 import re
 import sys
 import warnings
@@ -97,10 +98,30 @@ def read_hidden(prompt: str) -> str:
             "(or `get --clipboard`,\n  where a clipboard tool is installed).\n")
         sys.stderr.flush()
         raise EOFError
+    if _piped_with_no_terminal():
+        # nothing to hide and nowhere to type: read the line from the pipe. (getpass
+        # would print "Password input may be echoed", which reads like a danger
+        # and is not one here.)
+        return read_quiet(prompt)
     try:
         return getpass.getpass(prompt)
     finally:
         _drain_input()
+
+
+def _piped_with_no_terminal() -> bool:
+    """stdin is a pipe or file and this program has no controlling terminal
+    to ask on either. On Windows, and whenever a terminal exists, getpass
+    keeps its own behaviour (it asks on the terminal)."""
+    if os.name != "posix":
+        return False
+    try:
+        if sys.stdin and sys.stdin.isatty():
+            return False
+        os.close(os.open("/dev/tty", os.O_RDWR))
+        return False
+    except (OSError, ValueError):
+        return True
 
 
 def strip_paste_marks(text: str) -> str:

@@ -452,8 +452,27 @@ def touched_text(payload: dict) -> list[str]:
     Grep: path, glob; Bash and PowerShell: command; Monitor: command)."""
     tool = payload.get("tool_name")
     args = payload.get("tool_input")
+    if isinstance(args, str) and tool in _READ_OR_RUN_TOOLS:
+        # a tool_input sent as text: JSON text is opened up, anything else is
+        # read as the command / path itself (never waved through unread)
+        try:
+            inner = json.loads(args)
+        except (ValueError, RecursionError):
+            inner = None
+        if isinstance(inner, dict):
+            return touched_text({"tool_name": tool, "tool_input": inner})
+        return [args]
+    if isinstance(args, (list, tuple)) and tool in _READ_OR_RUN_TOOLS:
+        return _loose_strings({"tool_input": list(args)})
     if not isinstance(args, dict):
         return []
+    if tool in SHELL_TOOLS and tool != "Monitor" and not isinstance(args.get("command"), str):
+        # `command` missing or not text (a list, a renamed field): nothing is
+        # run that is not looked at, but it is not refused either, so a change
+        # in Claude Code's format cannot stop all work (round 5, idea 12)
+        return _loose_strings(args)
+    if tool == "Read" and not any(isinstance(args.get(k), str) for k in ("file_path", "path")):
+        return _loose_strings(args)
     if tool in WRITE_TOOLS:
         # the one place for the write tools' field names: Edit, Write and
         # MultiEdit use file_path; NotebookEdit uses notebook_path. All three
@@ -476,6 +495,21 @@ def touched_text(payload: dict) -> list[str]:
         # at every string in them, however deeply nested
         return _all_strings(args)
     return []
+
+
+_READ_OR_RUN_TOOLS = frozenset({"Read", "Bash", "PowerShell"})
+
+
+def _loose_strings(args: dict) -> list[str]:
+    """Every text in a tool call whose usual field is missing, plus the
+    pieces of a list joined with spaces (["cat", ".env"] runs as `cat .env`).
+    The free-text `description` is not a command and is left out."""
+    rest = {k: v for k, v in args.items() if k != "description"}
+    found = _all_strings(rest)
+    for v in rest.values():
+        if isinstance(v, (list, tuple)) and v and all(isinstance(x, str) for x in v):
+            found.append(" ".join(v))
+    return found
 
 
 def _all_strings(value, depth: int = 0, out: list | None = None) -> list[str]:

@@ -1033,5 +1033,51 @@
       "kind": "sh",
       "cmd": "ruby -e 'p ENV.to_h'"
     }
+  },
+  {
+    "id": "malformed-command-list",
+    "category": "evasion",
+    "attack": "Bash: the command sent as a list of words instead of text",
+    "tool": {
+      "tool_name": "Bash",
+      "tool_input": {
+        "command": [
+          "cat",
+          ".env"
+        ]
+      }
+    },
+    "run": {
+      "kind": "sh",
+      "cmd": "cat .env"
+    }
+  },
+  {
+    "id": "malformed-renamed-field",
+    "category": "evasion",
+    "attack": "Bash: the command sent under a field name the hook does not expect",
+    "tool": {
+      "tool_name": "Bash",
+      "tool_input": {
+        "cmd": "cat .env"
+      }
+    },
+    "run": {
+      "kind": "sh",
+      "cmd": "cat .env"
+    }
+  },
+  {
+    "id": "malformed-input-as-text",
+    "category": "evasion",
+    "attack": "Bash: tool_input sent as a plain string, not an object",
+    "tool": {
+      "tool_name": "Bash",
+      "tool_input": "cat .env"
+    },
+    "run": {
+      "kind": "sh",
+      "cmd": "cat .env"
+    }
   }
 ]

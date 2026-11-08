@@ -256,6 +256,19 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="The .env file to remove the entry from (default: the "
                          "manifest's env_file, else .env).")
 
+    kp = sub.add_parser(
+        "keep", help="Save any key in the keychain, even for a service stuntkey has no "
+                     "recipe for.",
+        description="Save a key for a service stuntkey does not know: "
+                    "stuntkey keep ACME_API_KEY. Asks for the key (hidden), saves it in "
+                    "the OS keychain, never writes it to a file and cannot test it. Use "
+                    "it with `stuntkey run acme -- COMMAND`.")
+    kp.add_argument("name", nargs="?", default=None,
+                    help="The variable name (ACME_API_KEY) or a short service name (acme).")
+    kp.add_argument("--env-var", default=None,
+                    help="Name the program expects, if different from the one made from NAME.")
+    kp.add_argument("--list", action="store_true", help="Show the names you kept (never keys).")
+
     aa = sub.add_parser("allow-agent", help="Allow an AI agent to capture a service's key "
                                             "from the clipboard (you type yes, once).")
     aa.add_argument("service", nargs="?", help="Service slug (built-in services only).")
@@ -1056,8 +1069,14 @@ def _main(argv: list[str] | None = None) -> int:
             print("error: no known service in stuntkey.json.", file=sys.stderr)
             return 1
         return _cmd_run(chosen, [args.service] + list(args.command), env_file, args.redact, prefer)
+    if args.cmd == "keep":
+        from . import keep as keep_mod
+        return keep_mod.cmd_keep(args, catalog)
     if args.cmd in ("connect", "rotate", "run", "forget"):
         recipe = catalog.get(args.service)
+        if not recipe and args.cmd in ("run", "forget"):
+            from . import keep as keep_mod
+            recipe = keep_mod.recipe(args.service)
         if not recipe:
             # exit 3 and the short "Did you mean" line; only a short plain
             # name is echoed back (a long or odd one could be a key typed in
@@ -1089,6 +1108,9 @@ def _main(argv: list[str] | None = None) -> int:
             if code == 0:
                 from . import ledger as ledger_mod
                 ledger_mod.forget(_project_root(), recipe["service"])
+                if recipe.get("kept"):
+                    from . import keep as keep_mod
+                    keep_mod.forget_entry(recipe["service"])
             return code
         if args.cmd == "rotate":
             print(f"\n  rotating "

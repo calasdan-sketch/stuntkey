@@ -150,6 +150,23 @@ def _secret_tool(op: str, service: str, account: str, key: str | None, run,
 
 CRED_TYPE_GENERIC = 1
 CRED_PERSIST_LOCAL_MACHINE = 2
+# wincred.h: CRED_MAX_CREDENTIAL_BLOB_SIZE = 5 * 512 bytes. The blob is UTF-16,
+# so 1280 characters. Documented by Microsoft on the CREDENTIAL structure page;
+# not run on a real Windows machine from here.
+WIN_MAX_BLOB_BYTES = 2560
+_WIN_HINTS = {
+    1312: " - Windows has no sign-in session to keep it in; run stuntkey from "
+          "your normal signed-in desktop, not a service or scheduled task",
+    5: " - Windows refused access to the Credential Manager",
+}
+
+
+def _wipe(ct, buf) -> None:
+    """Overwrite our own copy of the key bytes (best effort)."""
+    try:
+        ct.memset(buf, 0, len(buf))
+    except Exception:  # noqa: BLE001 - a fake or old ctypes: nothing to do
+        pass
 
 
 def _win_structs(ctypes_mod):
@@ -203,9 +220,14 @@ def _windows(op: str, service: str, account: str, key: str | None,
         cred.Attributes = None
         cred.TargetAlias = None
         cred.UserName = account
-        if not advapi32.CredWriteW(ct.byref(cred), 0):
-            raise KeychainError("CredWriteW failed "
-                                f"(error {ct.GetLastError()})")
+        try:
+            ok = advapi32.CredWriteW(ct.byref(cred), 0)
+            code = 0 if ok else ct.GetLastError()
+        finally:
+            _wipe(ct, buf)      # the key must not linger in this copy
+        if not ok:
+            raise KeychainError(f"CredWriteW failed (error {code})"
+                                + _WIN_HINTS.get(code, ""))
         return None
     if op == "read":
         pcred = ct.POINTER(CREDENTIAL)()
@@ -216,7 +238,15 @@ def _windows(op: str, service: str, account: str, key: str | None,
             blob = ct.string_at(c.CredentialBlob, c.CredentialBlobSize)
         finally:
             advapi32.CredFree(pcred)
-        return blob.decode("utf-16-le")
+        try:
+            return blob.decode("utf-16-le")
+        except UnicodeDecodeError:
+            # some other program wrote this entry in another encoding. It
+            # exists, so this is not "nothing stored" (KeychainUnavailable)
+            raise KeychainUnavailable(
+                "the Windows Credential Manager entry for this service is "
+                "not in the form stuntkey writes (save the key again with "
+                "`stuntkey rotate`)") from None
     ok = advapi32.CredDeleteW(target, CRED_TYPE_GENERIC, 0)
     return None if ok else ""
 
@@ -251,6 +281,30 @@ def _dispatch(op: str, backend: str, service: str, account: str,
     raise KeychainError(f"no keychain backend: {backend!r}")
 
 
+def check_storable(backend: str, key: str) -> None:
+    """Refuse, in plain words and before anything is sent to the OS tool, a
+    value this keychain cannot hold faithfully. Fail closed: the macOS tool is
+    driven by commands on stdin, so a line break inside the value would start
+    a second command; Windows keeps at most 1280 characters per entry."""
+    if not isinstance(key, str) or not key:
+        raise KeychainError("there is no key to save")
+    if "\x00" in key:
+        raise KeychainError("the key contains a NUL character, which no keychain keeps")
+    try:
+        key.encode("utf-8")
+    except UnicodeEncodeError:
+        raise KeychainError("the key contains a character that is not text "
+                            "(a lone surrogate)") from None
+    if backend == MACOS and ("\n" in key or "\r" in key):
+        raise KeychainError(
+            "the macOS Keychain tool cannot take a value with line breaks "
+            "(a multi-line key such as a PEM file); nothing was saved")
+    if backend == WINDOWS and len(key.encode("utf-16-le")) > WIN_MAX_BLOB_BYTES:
+        raise KeychainError(
+            f"this key is {len(key)} characters; the Windows Credential Manager "
+            f"keeps at most {WIN_MAX_BLOB_BYTES // 2}. Nothing was saved")
+
+
 def store(service: str, env_var: str, key: str, backend: str | None = None,
           run=subprocess.run, ctypes_mod=None) -> str:
     """Store the key. Returns the backend used. Raises KeychainError when
@@ -258,6 +312,7 @@ def store(service: str, env_var: str, key: str, backend: str | None = None,
     backend = backend or detect_backend()
     if backend is None:
         raise KeychainError("no OS keychain available on this system")
+    check_storable(backend, key)
     _dispatch("store", backend, service, env_var, key, run, ctypes_mod)
     # Trust nothing until it has been read back: a keychain that answers
     # "ok" and keeps a different value (or nothing) would lose the key for

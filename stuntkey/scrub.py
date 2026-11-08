@@ -270,7 +270,13 @@ def _fingerprint_forms(secret: str) -> set[str]:
 
 
 def _fp(salt: bytes, word: str) -> str:
-    return hmac.digest(salt, word.encode("utf-8", "surrogateescape"), "sha256").hex()
+    try:
+        data = word.encode("utf-8", "surrogateescape")
+    except UnicodeEncodeError:
+        # a lone surrogate that is not one of Python's escaped bytes (JSON can
+        # carry "\ud800"): it cannot be a stored key, but the hook must not crash
+        data = word.encode("utf-8", "surrogatepass")
+    return hmac.digest(salt, data, "sha256").hex()
 
 
 def _read_fingerprints(path: str) -> dict:

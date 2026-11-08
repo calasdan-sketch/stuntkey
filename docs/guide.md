@@ -530,6 +530,8 @@ stuntkey rotate <service>            # replace a stored key
 stuntkey panic <service> [--dry-run] [--env-file FILE] [--no-browser]   # leaked key: revoke (API or page), get a new one, find the old one (terminal only)
 stuntkey forget <service>            # remove the key: OS keychain entry + .env line(s)
 stuntkey add                         # capture a new service recipe interactively
+stuntkey keep ACME_API_KEY           # save any key (no recipe, no test); then: stuntkey run acme -- COMMAND
+stuntkey keep --list                 # names you kept (never keys); --env-var NAME sets a different variable name
 stuntkey find <query>                # find free public APIs for a task
 stuntkey find <query> --category <name>   # only that category (part of its name)
 stuntkey find <query> --refresh      # download the directory again now

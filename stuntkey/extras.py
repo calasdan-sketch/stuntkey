@@ -120,7 +120,7 @@ def unknown_service(catalog: dict, name: str) -> int:
     msg = f"unknown service '{recipes_mod.printable(name)}'."
     if close:
         msg += " Did you mean: " + ", ".join(close) + "?"
-    print(msg + "  (`stuntkey list` shows all; `stuntkey add` makes your own.)",
+    print(msg + "  (`stuntkey list` shows all; `stuntkey keep NAME` saves any key; `stuntkey add` makes a full recipe.)",
           file=sys.stderr)
     return 3
 

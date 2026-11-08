@@ -1,5 +1,59 @@
 # Changelog
 
+## 0.11.0 (unreleased), expert round 5: saving any key, and never ignoring an odd-shaped call
+
+Four specialists (a secrets-management engineer, a credential-leak responder, a
+designer for non-programmers, a Windows credential-store specialist) plus a
+property-testing and a mutation pass; one author played them in turn, as in
+round 4. Latest on PyPI is still 0.9.0, so 0.11.0 stays the number. Nothing is
+breaking. See `docs/ROUND5.md` for the commands that proved each finding.
+
+### New
+
+- **`stuntkey keep NAME`.** Saves a key for a service stuntkey has no recipe
+  for (there are about 40): `stuntkey keep ACME_API_KEY`, hidden paste, keychain,
+  read back, fingerprints for the hook. `keep --list` shows the names (never
+  keys). `run` and `forget` accept a kept name; `connect` and `call` do not
+  (no recipe, no test). With no keychain it stops: it never writes a key to a
+  file. Names only are kept in `~/.stuntkey/kept.json` (owner-only).
+- **The hook now reads a tool call in an odd shape instead of ignoring it**
+  (round 4's open "idea 12"). The call is not refused for being odd: a hook that
+  refused everything it did not recognise would stop all work the day Claude Code
+  renames a field. Instead a Bash/PowerShell call whose `command` is missing or
+  not text (a list such as `["cat", ".env"]`, another field name), a `tool_input`
+  sent as text, and a Read without `file_path` have every string in them judged.
+  A call with nothing to run is still let through. leakbench 156 -> 159 probes
+  (the three new ones leaked before).
+
+### Fixed
+
+- **macOS: a line break inside a key started a second `security` command.** The
+  key travels on stdin to `security -i`; a pasted value with a line break ran
+  its second line as a command (read-back then failed, but the command had
+  run). Now refused before the tool starts. Windows: a key over 1,280
+  characters (the Credential Manager's 2,560-byte limit) gets a plain sentence
+  instead of "CredWriteW failed (error N)"; error 1312 (a service or scheduled
+  task has no sign-in session) says what to do; an entry in another encoding is
+  "unreadable", not "not stored"; the key's write buffer is zeroed. Read, not
+  run, on Windows or macOS.
+- **The hook crashed on a lone surrogate** (`"\ud800"` in JSON) in a Write once
+  any key was stored; found by the seeded fuzz. A crash is a block, or, with
+  `--fail-open`, an unchecked write.
+- **A piped key printed "Password input may be echoed".** Nothing was echoed;
+  the warning only frightened. With no terminal at all the line is now read from
+  the pipe quietly (a terminal still asks on the terminal).
+- `unknown service` now points at `keep`.
+
+### Measured
+
+Tests: 2,063 passed / 3 timing failures before (load average 6-12 on 2 cores);
+after, 2,106 passed / 2 timing failures (same two tests, same load): 43 new tests
+in `tests/test_v011_round5.py` (seeded property tests, goldens, the Windows and
+macOS keychain edge cases, `keep`). `scripts/mutation_check.py`: 19 of 19
+deliberate breakages are caught (2 were not until tests were added).
+leakbench: hook 121 -> 124 blocked of 159 (the 3 new probes), hook plus
+caps 125 -> 128; masked and leaked unchanged (31 / 4, 31 / 0).
+
 ## 0.11.0 (unreleased), expert round 4: what a stranger gets from `pip install`
 
 Checked by building the sdist and wheel, installing the wheel into a fresh
