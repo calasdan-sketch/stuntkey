@@ -26,6 +26,8 @@
 - A write larger than 2,000,000 characters is refused, so padding a file can
   not carry code past the scan.
 - The hook no longer crashes on a `tool_name` that is not text.
+- `scan` no longer reports MCP tool names in a settings allow-list
+  (`mcp__plugin__tool`) or AWS's documented sample key pair as keys.
 - leakbench: `stuntkey-hook` 47 blocked / 12 masked / 2 leaked (was 44/12/5);
   `stuntkey-full` 49/12/0 (was 46/12/3).
 
