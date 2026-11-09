@@ -163,6 +163,15 @@ _CRED_FILE = (r"(?:[\w.\-]*\.(?:pem|key|p12|pfx|jks|keystore)|id_(?:rsa|dsa|ecds
               r"\.aws[/\\](?:credentials|config)|\.docker[/\\]config\.json|"
               r"\.kube[/\\]config|credentials\.json|application_default_credentials\.json|"
               r"service[-_]account[\w.\-]*\.json)(?=$|[\s\"'`;&|)>*])")
+# Bash text that writes, edits or removes the files that decide which hooks
+# and MCP servers run. Pattern-based: a script (python -c ...) gets past it.
+# The one STEAL_RULE also applied to an MCP tool's arguments (decide_steal).
+_SETTINGS_WRITE_RULE = (
+    re.compile(r"(?:>>?|\btee\b|\b(?:cp|mv|rm)\b|\bsed\b[^\n;&|]*?\s(?:-[A-Za-z]*i\b|--in-place))"
+               r"[^\n;&|]*?(?:\.claude[/\\]settings(?:\.local)?\.json|\.mcp\.json|\.claude\.json)"
+               r"(?![\w.-])", re.I),
+    "change the Claude settings files that decide which hooks and tools run "
+    "(only the person may)")
 STEAL_RULES = (
     (re.compile(r"(?:stuntkey|oathkey)\b(?:(?!\s--\s)[^\n;&|]){0,300}\s--no-r\w*", re.I),
      "run a command with the key and turn output hiding off"),
@@ -175,13 +184,7 @@ STEAL_RULES = (
      "its protection off (remote, deploy, trust-server, export, run, serve, call, "
      "forget, stop, resume, rotate, caps set/--clear, policy approve, uninstall, hook uninstall: "
      "only the person runs those)"),
-    # Bash text that writes, edits or removes the files that decide which hooks
-    # and MCP servers run. Pattern-based: a script (python -c ...) gets past it.
-    (re.compile(r"(?:>>?|\btee\b|\b(?:cp|mv|rm)\b|\bsed\b[^\n;&|]*?\s(?:-[A-Za-z]*i\b|--in-place))"
-                r"[^\n;&|]*?(?:\.claude[/\\]settings(?:\.local)?\.json|\.mcp\.json|\.claude\.json)"
-                r"(?![\w.-])", re.I),
-     "change the Claude settings files that decide which hooks and tools run "
-     "(only the person may)"),
+    _SETTINGS_WRITE_RULE,
     (re.compile(_SAFE + r"secret-tool\s+(?:lookup|search)\b", re.I), "read the Linux keyring"),
     (re.compile(_SAFE + r"security\s+(?:find-\w+-password|dump-keychain|export)\b", re.I),
      "read the macOS keychain"),
@@ -444,9 +447,16 @@ def too_long(payload) -> int | None:
     return None
 
 
+def _is_mcp(payload) -> bool:
+    tool = payload.get("tool_name") if isinstance(payload, dict) else None
+    return isinstance(tool, str) and tool.startswith("mcp__")
+
+
 def decide(payload) -> str | None:
-    """None to stay out of the way, or the name of the .env file refused."""
-    if not isinstance(payload, dict):
+    """None to stay out of the way, or the name of the .env file refused.
+    An MCP tool's arguments are data (a memory note that says ".env" opens
+    no file), so they get only the stored-key check (decide_mcp_key)."""
+    if not isinstance(payload, dict) or _is_mcp(payload):
         return None
     if payload.get("tool_name") in WRITE_TOOLS and writes_allowed():
         return None
@@ -470,8 +480,18 @@ def decide_steal(payload) -> str | None:
         return None
     budget = [SCAN_BUDGET]
     shell = payload.get("tool_name") in SHELL_TOOLS
+    mcp = _is_mcp(payload)
+    settings_rx, settings_what = _SETTINGS_WRITE_RULE
     for text in touched_text(payload):
         for piece in _pieces(text, budget):
+            if mcp:
+                # an MCP tool's arguments are data, not a command: a note that
+                # mentions `stuntkey run` or ~/.stuntkey/ is fine. Only the
+                # settings-file rule still applies; stored keys are
+                # decide_mcp_key's job.
+                if any(settings_rx.search(v) for v in (piece, *_squash(piece))):
+                    return settings_what
+                continue
             what = steals_key(piece, shell)
             if what:
                 return what
@@ -785,14 +805,16 @@ def check(stdin_text: str) -> tuple[int, str]:
 # Claude Code runs the same `hook check` after a tool call (PostToolUse) with
 # the call's result in tool_response. The answer `hookSpecificOutput.
 # updatedToolOutput` replaces what the model sees; it must have the tool's
-# own output shape or Claude Code ignores it and uses the original. Only Bash
-# has a documented shape ({stdout, stderr, interrupted, isImage}); Read, Grep
-# and every other tool are left alone (https://code.claude.com/docs/en/hooks).
+# own output shape or Claude Code ignores it and uses the original. Bash has
+# a documented shape ({stdout, stderr, interrupted, isImage}); MCP tool output
+# is "passed through without schema validation", so it is masked string by
+# string in whatever shape it came. Read, Grep and every other tool are left
+# alone (https://code.claude.com/docs/en/hooks).
 # Fail-OPEN by Claude Code's design: a PostToolUse hook that breaks or times
 # out cannot hold the output back, so an error here means the model sees the
 # original output.
 
-POST_MATCHER = "Bash"
+POST_MATCHER = "Bash|mcp__.*"
 POST_FIELDS = ("stdout", "stderr")
 POST_NOTE = ("stuntkey hid {n} secret value(s) in this output as [REDACTED]. "
              "Do not try to recover them; if a command needs a key, ask the "
@@ -803,7 +825,9 @@ def post_check(payload: dict, err=None) -> str:
     """The PostToolUse answer for one tool call: "" (show the output as it
     is) or the JSON that replaces it with the secrets masked."""
     try:
-        if payload.get("tool_name") != POST_MATCHER:
+        if _is_mcp(payload):
+            return _post_mcp(payload.get("tool_response"))
+        if payload.get("tool_name") != "Bash":
             return ""
         resp = payload.get("tool_response")
         if not isinstance(resp, dict):
@@ -826,6 +850,38 @@ def post_check(payload: dict, err=None) -> str:
         (err or sys.stderr).write(f"stuntkey hook: could not check the output "
                                   f"({type(e).__name__}); it is shown unmasked.\n")
         return ""
+
+
+def _mask_all(value, prints, depth: int = 0):
+    """(a copy of value with every string in it masked, how many were
+    hidden). The shape stays: dicts, lists, numbers and keys as they were."""
+    from . import scrub as scrub_mod
+    if isinstance(value, str):
+        return scrub_mod.mask_secrets(value, prints)
+    if depth > MAX_DEPTH:
+        return value, 0
+    if isinstance(value, dict):
+        done = {k: _mask_all(v, prints, depth + 1) for k, v in value.items()}
+        return {k: v for k, (v, _n) in done.items()}, sum(n for _v, n in done.values())
+    if isinstance(value, list):
+        done = [_mask_all(v, prints, depth + 1) for v in value]
+        return [v for v, _n in done], sum(n for _v, n in done)
+    return value, 0
+
+
+def _post_mcp(resp) -> str:
+    """An MCP tool's result (a string, content blocks or an object) with your
+    stored keys masked. Sent as updatedToolOutput (the field the docs prefer)
+    and as updatedMCPToolOutput (the MCP-only field)."""
+    from . import scrub as scrub_mod
+    new, total = _mask_all(resp, scrub_mod.load_fingerprints())
+    if not total:
+        return ""
+    return json.dumps({"hookSpecificOutput": {
+        "hookEventName": "PostToolUse",
+        "updatedToolOutput": new,
+        "updatedMCPToolOutput": new,
+        "additionalContext": POST_NOTE.format(n=total)}}) + "\n"
 
 
 def cmd_check(stdin=None, out=None, err=None) -> int:

@@ -196,7 +196,7 @@ class TestInstall(Settings):
         self.assertEqual(data["permissions"], {"allow": ["Bash(ls)"]})
         self.assertEqual(data["model"], "opus")
         self.assertEqual(data["hooks"]["PostToolUse"][0], other)
-        self.assertEqual(data["hooks"]["PostToolUse"][1]["matcher"], "Bash")
+        self.assertEqual(data["hooks"]["PostToolUse"][1]["matcher"], "Bash|mcp__.*")
         self.assertEqual(data["hooks"]["PreToolUse"][0], mine)
         self.assertEqual(len(data["hooks"]["PreToolUse"]), 2)
 

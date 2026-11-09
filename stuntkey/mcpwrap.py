@@ -9,8 +9,9 @@ the OS keychain and rewrites the entry so the client starts the server
 through `stuntkey run`, which hands the keys over at start. It shows the
 change (keys masked), backs the file up under ~/.stuntkey/wrap-backups (the
 backup still holds the old key, so it is kept out of project folders), asks
-y, and `--undo` puts the backup back. A key passed on the command line or in
-a header cannot be handed over that way; it is reported for a move by hand.
+y, and `--undo` puts that one server entry back from the backup (the rest of
+the file stays as it is now). A key passed on the command line or in a header
+cannot be handed over that way; it is reported for a move by hand.
 
 How `run` finds the key: by a recipe. A key whose variable is the variable of
 a built-in recipe (OPENAI_API_KEY) is saved under that service. Any other key
@@ -21,6 +22,7 @@ cannot be tested and is never sent anywhere.
 
 from __future__ import annotations
 
+import copy
 import dataclasses
 import difflib
 import json
@@ -642,6 +644,46 @@ def wrap_one(server: Server, text: str, strict: bool, catalog: dict, *, dry_run:
     return 0
 
 
+def _at(data, keys: tuple):
+    for k in keys:
+        data = data.get(k) if isinstance(data, dict) else None
+    return data
+
+
+def _undo_text(path: str, name: str, cur_t: str, old_t: str) -> str | None:
+    """The current file with only the `name` entry put back as the backup has
+    it, so servers added since, numStartups and every other key stay. None
+    when nothing else changed since the wrap: then the backup's own bytes go
+    back. WrapError when that cannot be done safely."""
+    if not cur_t.strip():
+        return None
+    kind = "toml" if path.lower().endswith(".toml") else "json"
+    try:
+        old, _ = parse(old_t, kind)
+        cur, strict = parse(cur_t, kind)
+    except ValueError as e:
+        raise WrapError(f"the config file cannot be read ({e})") from None
+    kinds = ("toml",) if kind == "toml" else ("claude.json", "servers", "context_servers")
+    spots = {keys for k in kinds for keys, group in containers(old, k)
+             if name in group and (_at(cur, keys) or {}).get(name) != group[name]}
+    if len(spots) != 1 or not isinstance(_at(cur, next(iter(spots))), dict):
+        raise WrapError(f"the '{name}' entry is not where `stuntkey wrap` left it")
+    keys = spots.pop()
+    entry = _at(old, keys)[name]
+    put_back = copy.deepcopy(cur)
+    _at(put_back, keys)[name] = entry
+    if put_back == old:
+        return None
+    if not strict:
+        raise WrapError("the file now has comments or trailing commas, which "
+                        "a rewrite would lose; put the entry back by hand")
+    server = Server("", path, kind, keys, name, _at(cur, keys).get(name) or {}, [])
+    try:
+        return (rewrite_toml if kind == "toml" else rewrite_json)(cur_t, server, entry)
+    except KeyError:
+        raise WrapError("could not change the file safely; put the entry back by hand") from None
+
+
 def undo(client: str, out, ask=None, only_path: str | None = None,
          catalog: dict | None = None) -> int:
     items = [i for i in _index() if i.get("client") == client
@@ -659,14 +701,25 @@ def undo(client: str, out, ask=None, only_path: str | None = None,
         return 1
     cur_t, old_t = (b.decode("utf-8-sig", "replace").replace("\r\n", "\n")
                     for b in (current, old))
+    name = str(item.get("server"))
+    try:
+        new_t = _undo_text(item["path"], name, cur_t, old_t)
+    except WrapError as e:
+        out.write(f"  Not restored: {printable(e)}. The backup is "
+                  f"{printable(item['backup'])}.\n")
+        return 1
     values = _secrets_in(cur_t + "\n" + old_t, catalog or recipes_mod.load_recipes())
-    out.write(f"\n  Put back {printable(item['path'])} as it was before "
-              f"`stuntkey wrap` ({item.get('time')}):\n")
-    out.write(diff(cur_t, old_t, item["path"], values) + "\n")
+    out.write(f"\n  Put back the '{printable(name)}' entry in {printable(item['path'])} "
+              f"as it was before `stuntkey wrap` ({item.get('time')}):\n")
+    out.write(diff(cur_t, old_t if new_t is None else new_t, item["path"], values) + "\n")
     if not _ask("  Restore it? [y/N]: ", out, ask):
         out.write("  Nothing was changed.\n")
         return 1
-    agentsetup._atomic_write(item["path"], old.decode("utf-8"))
+    if new_t is None:
+        agentsetup._atomic_write(item["path"], old.decode("utf-8"))
+    else:
+        _orig, bom, eol = agentsetup._read_text(item["path"])
+        agentsetup._atomic_write(item["path"], new_t.replace("\n", eol), bom)
     os.unlink(item["backup"])
     _write_index([i for i in _index() if i != item])
     out.write("  Restored. The key is back in that file in plain text; the copy in "

@@ -309,8 +309,13 @@ stuntkey hook uninstall          # take it out again
 
 This adds a Claude Code "PreToolUse hook": a small check Claude Code runs
 before every Read, Grep, Bash, PowerShell, Monitor, Edit, Write, MultiEdit
-and NotebookEdit call, and every MCP tool call (`mcp__...`, where it looks at
-every text in the call's arguments). If the call touches a `.env` file (`.env`,
+and NotebookEdit call, and every MCP tool call (`mcp__...`). An MCP tool's
+arguments are data, not a command (a memory note may well say ".env" or
+"`stuntkey run`"), so for those only two checks apply: one of your stored keys
+in any text of the arguments, and a shell-style write to the settings files
+below. After an MCP tool runs, your stored keys in its result are hidden as
+`[REDACTED]`, the same way Bash output is (`hook install` again to add this to
+an older install). If the call touches a `.env` file (`.env`,
 `.env.local`, `prod.env`, `.envrc`) it says no and tells the agent why, in
 plain words. Templates (`.env.example`, `.env.sample`, `.env.template`) are
 allowed, for reading and writing.

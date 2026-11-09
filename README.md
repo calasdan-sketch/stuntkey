@@ -165,7 +165,7 @@ stuntkey uses only Python's own standard library, and a test in the repository (
 - `mcp` - the MCP server your AI app starts for you. Besides brokered calls it has `capture_key`: your AI opens the key page, you click Copy, and stuntkey takes the key from the clipboard without passing it to the AI. You allow this per service with `allow-agent <service>`.
 - `init` / `setup` - write `stuntkey.json` for a project, then connect every service it needs.
 - `remote`, `trust-server`, `deploy` - use a key on your own server over ssh.
-- `wrap <client> <server>` - move a key out of an MCP server's settings into the keychain; the server is then started through `stuntkey run`. `--all --dry-run` previews every server, `--undo` restores the old settings, `--file` picks a config file.
+- `wrap <client> <server>` - move a key out of an MCP server's settings into the keychain; the server is then started through `stuntkey run`. `--all --dry-run` previews every server, `--undo` puts that server's old entry back (the rest of the file stays as it is), `--file` picks a config file.
 - `proxy -- <command>` - see "When your AI writes normal code".
 - `add` - make your own service recipe. `find` - look for free public APIs.
 

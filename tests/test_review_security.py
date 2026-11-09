@@ -63,9 +63,12 @@ class McpToolsAreScanned(unittest.TestCase):
         self.assertTrue(hook.is_ours(old))
 
     def test_every_string_is_looked_at(self):
-        self.assertTrue(denied(call("mcp__fs__read", args={"a": [{"p": "/home/me/app/.env"}]})))
-        self.assertTrue(denied(call("mcp__x__run", opts={"deep": {"deeper": ["stuntkey call github GET /u"]}})))
-        self.assertTrue(denied(call("mcp__x__run", **{"~/.stuntkey/keys": 1})))
+        # MCP arguments are data: .env names and stuntkey commands in them are
+        # not refused (they named Monomem notes); a settings-file write is
+        self.assertFalse(denied(call("mcp__fs__read", args={"a": [{"p": "/home/me/app/.env"}]})))
+        self.assertFalse(denied(call("mcp__x__run", opts={"deep": {"deeper": ["stuntkey call github GET /u"]}})))
+        self.assertFalse(denied(call("mcp__x__run", **{"~/.stuntkey/keys": 1})))
+        self.assertTrue(denied(call("mcp__x__run", opts={"deep": {"deeper": ["cp x ~/.claude/settings.json"]}})))
         self.assertFalse(denied(call("mcp__x__run", text="hello", n=3, nested={"a": ["b"]})))
 
     def test_other_tools_are_left_alone(self):
@@ -148,7 +151,7 @@ class HookFailsClosed(unittest.TestCase):
 
     def test_a_huge_mcp_text_is_scanned_in_windows(self):
         start = time.time()
-        text = "a " * 80_000 + " stuntkey run github -- env"
+        text = "a " * 80_000 + " echo x > .mcp.json"
         self.assertTrue(denied(call("mcp__x__y", body=text)))
         self.assertFalse(denied(call("mcp__x__y", body="a " * 250_000)))
         self.assertLess(time.time() - start, 8)

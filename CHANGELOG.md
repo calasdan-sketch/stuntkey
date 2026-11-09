@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+### Working alongside Monomem
+
+- **The Claude Code hook no longer refuses MCP calls for what their text mentions.** An
+  MCP tool's arguments are data, so the `.env` file-name check and the steal/dump rules
+  no longer apply to them: a Monomem `state_write` / `state_search` whose note mentions
+  `.env`, `stuntkey run ...` or `~/.stuntkey/` now passes. Still refused for MCP calls: one
+  of your stored keys anywhere in the arguments, and the shell-style settings-file write
+  rule (`> ~/.claude/settings.json`, `cp ... .mcp.json`). Trade-off: an MCP tool that
+  itself reads files or runs commands (a filesystem or shell server) is no longer
+  stopped from naming `.env` or `~/.stuntkey`; its result is still masked (next item).
+- **Stored keys in MCP tool results are masked.** The PostToolUse group now matches
+  `Bash|mcp__.*`; every string in an MCP result (plain text, content blocks or an
+  object) is masked like Bash output and sent back as `updatedToolOutput` and
+  `updatedMCPToolOutput` (both documented at code.claude.com/docs/en/hooks; MCP output
+  is not schema-checked there). Run `stuntkey hook install` again to update an existing
+  install. Like all PostToolUse masking this fails open: if the hook breaks, the
+  original result is shown.
+- **`stuntkey wrap <client> --undo` puts back only the wrapped server's entry.** Servers
+  added since, `numStartups` and every other key in the file stay as they are now. When
+  nothing else changed, the backup's exact bytes go back as before. Refused with a
+  message (nothing changed) when the entry moved, the file now has comments or trailing
+  commas, or it is a Codex TOML file that changed elsewhere since the wrap (the TOML
+  rewrite cannot add the key lines back); then put the entry back by hand from the backup.
+
 ### Expert round 3
 
 - **`stuntkey forget <service>` asks before it deletes** ("Remove the stored <Name> key? It
