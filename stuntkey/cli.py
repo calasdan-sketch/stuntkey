@@ -344,6 +344,8 @@ def _build_parser() -> argparse.ArgumentParser:
     extras.add_parsers(sub)
     from . import panic as panic_mod
     panic_mod.add_parser(sub)
+    from . import mint as mint_mod
+    mint_mod.add_parser(sub)
     from . import proxy as proxy_mod
     proxy_mod.add_parsers(sub)
     return p
@@ -916,6 +918,9 @@ def _main(argv: list[str] | None = None) -> int:
         args.env_file = _project_env_file()
         if args.env_file is None:
             return 1
+    if args.cmd == "mint":
+        from . import mint as mint_mod
+        return mint_mod.cmd_mint(args, catalog)
     if args.cmd == "panic":
         from . import panic as panic_mod
         env_file = args.env_file or _project_env_file()

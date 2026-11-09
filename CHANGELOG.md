@@ -4,6 +4,11 @@
 
 ### Added
 
+- **`stuntkey mint <service>`** makes a fresh key at the vendor by API, checks it and saves it
+  in the keychain: no copy, no paste, never shown. Cloudflare only. It needs a one-time
+  key-maker token (`stuntkey get cloudflare-keymaker`, new built-in recipe) that may only
+  create API tokens, and goes only to api.cloudflare.com. A recipe's `"mint"` block names
+  the permissions and account. A re-mint deletes the key made last time.
 - **`stuntkey get` takes any site.** `stuntkey get example.com` (or a name) opens a
   search for the site's key page, takes the key when you click Copy, and saves it
   in the keychain with a recipe that sends it only to that site's `api.` host.

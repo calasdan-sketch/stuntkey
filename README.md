@@ -164,7 +164,7 @@ Many commands accept `--json` (try `list`, `overview`, `selftest`, `doctor`, `au
 
 ## Services
 
-36 services are built in, from GitHub and Stripe to OpenAI and AWS. `stuntkey list` shows them all.
+37 services are built in, from GitHub and Stripe to OpenAI and AWS. `stuntkey list` shows them all.
 
 Not listed? `stuntkey add` makes a recipe in a minute. A recipe cannot send a built-in service's key to a different server. To share a recipe with everyone, see [CONTRIBUTING.md](https://github.com/calasdan-sketch/stuntkey/blob/main/CONTRIBUTING.md).
 

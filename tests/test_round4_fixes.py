@@ -596,7 +596,7 @@ class TestShippedCatalog(unittest.TestCase):
     EXPECTED = {"paypal-sandbox", "github", "stripe", "resend", "openrouter", "openai", "anthropic",
                 "google-gemini", "groq", "mistral", "cohere", "huggingface",
                 "together", "elevenlabs", "deepgram", "assemblyai", "replicate",
-                "supabase", "vercel", "netlify", "cloudflare", "sendgrid", "mailgun",
+                "supabase", "vercel", "netlify", "cloudflare", "cloudflare-keymaker", "sendgrid", "mailgun",
                 "postmark", "notion", "airtable", "pinecone", "tavily",
                 "brave-search", "discord",
                 # 0.4.0: two-value credentials and the other check types

@@ -1,0 +1,51 @@
+{
+  "display": "Cloudflare key-maker (lets StuntKey make keys for you)",
+  "docs": "https://developers.cloudflare.com/fundamentals/api/how-to/create-via-api/",
+  "env_var": "CLOUDFLARE_KEYMAKER_TOKEN",
+  "key_url": "https://dash.cloudflare.com/profile/api-tokens?permissionGroupKeys=%5B%7B%22key%22%3A+%22api_tokens%22%2C+%22type%22%3A+%22edit%22%7D%5D&name=StuntKey+key-maker",
+  "scopes": [],
+  "service": "cloudflare-keymaker",
+  "steps": [
+    "Sign in to Cloudflare if it asks; the token form opens filled in (API Tokens: Edit)",
+    "Scroll down, click 'Continue to summary', then 'Create Token'",
+    "Click Copy next to the token - you only do this once; after that `stuntkey mint` makes Cloudflare keys for you"
+  ],
+  "validate": {
+    "auth": {
+      "type": "bearer"
+    },
+    "expect": [
+      200
+    ],
+    "method": "GET",
+    "reject": [
+      400,
+      401,
+      403
+    ],
+    "url": "https://api.cloudflare.com/client/v4/user/tokens/verify"
+  },
+  "fields": [
+    {
+      "env_var": "CLOUDFLARE_KEYMAKER_TOKEN",
+      "label": "API token",
+      "name": "key",
+      "detect": "cfut_[A-Za-z0-9_-]{16,}",
+      "detect_confidence": "known"
+    }
+  ],
+  "unverified": [
+    "key_url prefill key 'api_tokens' (if the form opens empty, add the permission 'User - API Tokens - Edit' by hand)"
+  ],
+  "least_privilege": {
+    "summary": "This token can only create and delete other API tokens. StuntKey uses it to make narrow keys (for example read-only analytics) and never shows it."
+  },
+  "revoke": {
+    "page": "https://dash.cloudflare.com/profile/api-tokens",
+    "steps": [
+      "Sign in; this is My Profile > API Tokens",
+      "Open the menu (...) next to 'StuntKey key-maker' and choose Delete",
+      "Confirm"
+    ]
+  }
+}
