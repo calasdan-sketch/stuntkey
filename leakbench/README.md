@@ -70,6 +70,7 @@ because the sandbox keyring is empty — under `stuntkey-hook` the same probes a
   as PreToolUse on the tool call, then as PostToolUse on its output. The
   PostToolUse mask applies to `Bash` only (the one output shape Claude Code
   documents), so Read, Write, PowerShell and MCP outputs are not masked.
+  `leaked=0` counts Bash output only; PowerShell and Monitor output is not masked.
   **How the canary is recognised:** before each run the canary is registered
   with `scrub.remember_key` in the sandbox's `~/.stuntkey/fingerprints.json`,
   simulating a key saved with `stuntkey get` / `connect`. Key-format patterns

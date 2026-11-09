@@ -8,6 +8,7 @@ from collections import Counter
 from .runner import Result
 
 STATUSES = ("blocked", "masked", "leaked", "n/a")
+FOOTER = "`leaked=0` counts Bash output only; PowerShell and Monitor output is not masked."
 
 
 def summary(results: list[Result]) -> dict[str, int]:
@@ -38,6 +39,7 @@ def to_table(results: list[Result], profile: str) -> str:
                      f"{_col(r.status, 8)} {r.detail}")
     s = summary(results)
     lines += ["", "  ".join(f"{k}={v}" for k, v in s.items())]
+    lines += ["", FOOTER]
     gaps = sorted(r.probe_id for r in results if r.status == "leaked")
     if gaps:
         lines += ["", f"GAPS (leaked, {len(gaps)}): " + ", ".join(gaps)]

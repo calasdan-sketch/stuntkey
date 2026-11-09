@@ -57,16 +57,17 @@ def record(project_dir: str, service: str, store: str, rotated: bool = False,
            index_path: str | None = None, now: datetime.datetime | None = None) -> None:
     """Remember that `service` was just connected (or rotated)."""
     stamp = (now or _now()).replace(microsecond=0).isoformat()
-    projects = load(index_path)
-    entry = projects.setdefault(_project_key(project_dir), {}).get(service) or {}
-    entry = {"created_at": entry.get("created_at") or stamp, "store": store,
-             "updated_at": stamp, **({"events": entry["events"]}
-                                     if isinstance(entry.get("events"), list) else {})}
-    if rotated:
-        entry["rotated_at"] = stamp
-    projects[_project_key(project_dir)][service] = entry
     try:
-        _save(projects, index_path)
+        with store_mod.file_lock(index_path or path()):
+            projects = load(index_path)
+            entry = projects.setdefault(_project_key(project_dir), {}).get(service) or {}
+            entry = {"created_at": entry.get("created_at") or stamp, "store": store,
+                     "updated_at": stamp, **({"events": entry["events"]}
+                                             if isinstance(entry.get("events"), list) else {})}
+            if rotated:
+                entry["rotated_at"] = stamp
+            projects[_project_key(project_dir)][service] = entry
+            _save(projects, index_path)
     except OSError:
         pass            # the record is a convenience; the key is already safe
 
@@ -79,13 +80,14 @@ def event(project_dir: str, service: str, step: str, result: str,
     """Note one step (e.g. a `panic` revoke) for the service: words only,
     never a key. The newest MAX_EVENTS are kept."""
     stamp = (now or _now()).replace(microsecond=0).isoformat()
-    projects = load(index_path)
-    entry = dict(projects.setdefault(_project_key(project_dir), {}).get(service) or {})
-    old = entry.get("events") if isinstance(entry.get("events"), list) else []
-    entry["events"] = (old + [{"at": stamp, "step": step, "result": result}])[-MAX_EVENTS:]
-    projects[_project_key(project_dir)][service] = entry
     try:
-        _save(projects, index_path)
+        with store_mod.file_lock(index_path or path()):
+            projects = load(index_path)
+            entry = dict(projects.setdefault(_project_key(project_dir), {}).get(service) or {})
+            old = entry.get("events") if isinstance(entry.get("events"), list) else []
+            entry["events"] = (old + [{"at": stamp, "step": step, "result": result}])[-MAX_EVENTS:]
+            projects[_project_key(project_dir)][service] = entry
+            _save(projects, index_path)
     except OSError:
         pass
 
@@ -97,12 +99,13 @@ def events(project_dir: str, service: str, index_path: str | None = None) -> lis
 
 
 def forget(project_dir: str, service: str, index_path: str | None = None) -> None:
-    projects = load(index_path)
-    if projects.get(_project_key(project_dir), {}).pop(service, None) is not None:
-        try:
-            _save(projects, index_path)
-        except OSError:
-            pass
+    try:
+        with store_mod.file_lock(index_path or path()):
+            projects = load(index_path)
+            if projects.get(_project_key(project_dir), {}).pop(service, None) is not None:
+                _save(projects, index_path)
+    except OSError:
+        pass
 
 
 def get(project_dir: str, service: str, index_path: str | None = None) -> dict | None:

@@ -20,6 +20,28 @@
 
 ### Fixed
 
+- **A second copy of a stored key glued inside a word was left in Bash output** when
+  another copy of it matched whole in the same word (`<KEY>=bot<KEY>/x`,
+  `https://h/<KEY>/a?t=<KEY>`). The inside-a-word search now always runs.
+- **Two stuntkey runs at once could drop a key's fingerprints or a record.**
+  `fingerprints.json` and the `index.json` record are now updated under the same file lock
+  the `.env` writer uses, and the fingerprint file's rename is retried a few times on
+  Windows when antivirus or an indexer holds it briefly.
+- `get --store` help said `.env` was the default; `get` defaults to the keychain
+  (`connect` to `.env`; `rotate` keeps the key where it is).
+- `stuntkey` with no command prints the four steps and exits 0 instead of an argparse
+  error. A mistyped command gets a "Did you mean" line (still exit 2).
+- `install` / `uninstall --help` now say it in their own description (Claude Code and
+  VS Code per folder, Claude Desktop and Cursor once for all projects); `start --help`
+  says to run it in your project folder; `install` with an unknown target points at
+  `stuntkey setup-agent codex` (or gemini).
+- `tools/list` has short descriptions again for `capture_key` `timeout_seconds` and
+  `wait_seconds`, `needs_keys` `project`, and `find_public_apis` `auth` (now an enum:
+  `No`, `apiKey`, `OAuth`); the list is 2,910 characters, still under the 3,000 cap.
+  The server already clamps both numbers to their ranges.
+
+### Fixed (earlier in this release)
+
 - **Caps fail closed.** `caps.json` with a value that is not a whole number (text,
   decimal, true/false), a negative number or a limit name stuntkey does not know now
   refuses calls ("so no call was made") naming the service, instead of silently
@@ -29,8 +51,10 @@
   `/v1/<KEY>/x`, `id-<KEY>`, `<KEY>+x`). `fingerprints.json` records each stored key's
   length (not the key) for this; a file from an older version works as before until the
   key is saved again. It searches up to 8 distinct key lengths, and only the key as
-  typed (not its URL-encoded or base64 form). A 1 MB output of ordinary text masks in
-  about 0.03 s; 1 MB of unbroken 512-character words took about 2.4 s in a test.
+  typed (not its URL-encoded or base64 form). With one stored key, 1 MB of
+  ordinary prose masked in 0.02-0.04 s; 1 MB of token- or path-like text in
+  0.7-1.8 s; 1 MB of 512-character words in 2.4-2.8 s (measured on one PC, timings
+  vary). A hook that times out fails open: the output is shown unmasked.
 - `stuntkey install` / `uninstall` with no terminal to answer on now says "no terminal
   to answer on; re-run with --yes" and exits 1, instead of a traceback.
 - The README, `install --help` and `doctor` say that Claude Code and VS Code are set up
@@ -39,6 +63,16 @@
 
 ### Docs
 
+- SECURITY.md and the README now say what the Bash output mask does not detect (changed
+  case, reversed text, hex, URL-safe base64, keys split across lines, keys inside a `Basic`
+  header) and that stuntkey's file protection covers `.env`, `.pem`/`.key` and `~/.ssh`
+  shapes plus a named list of other tools' files by name only (`.netrc`, `.npmrc`, Docker
+  `config.json`, `.kube/config`, `.aws/credentials`: plain Read, `cat`, `head`, `type`
+  refused; copies and scripts pass), and not GitHub CLI's `hosts.yml` or `gh auth token`.
+  Each was checked with a temp key or temp home. The leakbench report footer and the
+  README say `leaked=0` counts Bash output only; PowerShell and Monitor output is not
+  masked.
+- README: after `install`, restart the AI app; the permission window's title is shown.
 - SECURITY.md named "5 leaks"; the measured numbers are `stuntkey-hook` 2 (named) and
   `stuntkey-full` 0. The documented command is now `python -m leakbench --profile
   stuntkey-hook` (the default profile `none` is the unprotected baseline). Known limits

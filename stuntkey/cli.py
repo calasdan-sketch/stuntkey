@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import difflib
 import errno
 import json
 import os
+import re
 import subprocess
 import sys
 
@@ -38,8 +40,36 @@ def _harden_streams() -> None:
             pass
 
 
+NEXT_STEPS = """stuntkey: let your AI use your API keys without holding them.
+
+Four steps:
+  1. stuntkey get github     opens the key page; you click Copy; stuntkey tests and saves the key
+  2. stuntkey install        plug stuntkey into Claude, Cursor or VS Code
+  3. stuntkey doctor         health check
+  4. Ask your AI: "Who am I on GitHub?"
+Restart the AI app after install.
+
+`stuntkey --help` for all commands."""
+
+
+class _Parser(argparse.ArgumentParser):
+    def error(self, message):
+        m = re.search(r"invalid choice: '([^']*)'", message)
+        if m and message.startswith("argument cmd:"):
+            near = difflib.get_close_matches(m.group(1), list(self._subparsers_choices()), n=1)
+            if near:
+                message += f"\nDid you mean: stuntkey {near[0]}?"
+        super().error(message)
+
+    def _subparsers_choices(self):
+        for a in self._actions:
+            if isinstance(a, argparse._SubParsersAction):
+                return a.choices
+        return ()
+
+
 def _build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(
+    p = _Parser(
         prog="stuntkey",
         description="Let your AI use your API keys without holding them: guided "
                     "setup, validated, kept in the OS keychain. The key is "
@@ -53,7 +83,7 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="Work as if started in DIR (where stuntkey.json and "
                         ".env live). Without it, stuntkey.json is looked for "
                         "here and up to the git project's top folder, no further.")
-    sub = p.add_subparsers(dest="cmd", required=True)
+    sub = p.add_subparsers(dest="cmd")
 
     sc = sub.add_parser(
         "scan", help="Find API keys that leaked into files an AI agent can read.",
@@ -168,8 +198,9 @@ def _build_parser() -> argparse.ArgumentParser:
         c.add_argument("--no-clipboard", action="store_true",
                        help="(get) Use the hidden paste prompt instead of copy-and-go.")
         c.add_argument("--store", choices=["env", "keychain"], default=None,
-                       help="env: owner-only .env file (default). keychain: "
-                            "the OS keychain (macOS Keychain, Windows "
+                       help="keychain (default for get) or env (owner-only .env file, "
+                            "default for connect; rotate keeps the key where it is). "
+                            "keychain: the OS keychain (macOS Keychain, Windows "
                             "Credential Manager, secret-tool on Linux), "
                             "asking before it falls back to the plain-text .env "
                             "file when none works; use `stuntkey run` to "
@@ -828,6 +859,9 @@ def _main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     argv, tail = split_remote(argv)
     args = parser.parse_args(argv)
+    if args.cmd is None:
+        print(NEXT_STEPS)
+        return 0
     if args.cmd == "remote":
         args.command = tail
     if args.project_dir:

@@ -190,7 +190,8 @@ def _run(names, yes, ask, out, **kw) -> int:
     done = 0
     for n in chosen:
         if n not in tg:
-            out(f"unknown target '{n}'. Choose from: {', '.join(tg)}")
+            out(f"unknown target '{n}'. Choose from: {', '.join(tg)}\n"
+                "codex and gemini: run `stuntkey setup-agent codex` (or gemini)")
             return 2
         path, key = tg[n]
         try:

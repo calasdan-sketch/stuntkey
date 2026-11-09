@@ -22,6 +22,8 @@ following an injected instruction. Run it yourself: `python -m leakbench --profi
 `runaway-loop-no-cap` and `unbounded-retry` — a loop that keeps making paid
 calls. The spending caps stop those; the hook cannot.
 
+`leaked=0` counts Bash output only; PowerShell and Monitor output is not masked.
+
 Zero on this benchmark is not zero everywhere. The hook now reads code before
 it is saved and blocks obvious leaks (`print(os.environ)`,
 `console.log(process.env)`, opening `.env`). A script that hides what it does
@@ -55,6 +57,8 @@ Run `stuntkey install` in your project folder. Claude Code and VS Code are set u
 When a key page asks which permissions to give, pick read-only or the minimum it offers.
 
 Now ask your AI: *"Who am I on GitHub?"* The AI asks stuntkey for `GET /user`; stuntkey makes the call with your key and hands back only the answer. The first time, a window asks you to allow GitHub reads for this session. To see what it did: `stuntkey audit show`.
+
+Restart the AI app after `install`, then ask. A window titled "stuntkey - permission needed" appears; click Yes for reads like `GET /user`, and read the full request before approving anything that changes data. See [The permission windows](#the-permission-windows).
 
 > No `pipx`? `pip install stuntkey` works too. Or download `stuntkey.pyz` from the latest release and run `python stuntkey.pyz doctor`. Latest unreleased code: `pipx install git+https://github.com/calasdan-sketch/stuntkey`.
 > Needs Python 3.10 or newer. On Linux the keychain needs `secret-tool` (package `libsecret-tools`). If your computer says `stuntkey` is not found, close the window and open a new one, or run `python -m stuntkey`.

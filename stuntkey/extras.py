@@ -15,6 +15,11 @@ COMMANDS = {"remote", "trust-server", "deploy", "install", "uninstall", "start",
             "overview", "audit", "call", "serve", "selftest", "scan-git", "doctor"}
 
 
+PER_FOLDER_NOTE = ("Run this in your project folder. claude-code and vscode are set up for "
+                   "this folder only (.mcp.json, .vscode/mcp.json); claude-desktop and "
+                   "cursor once for all projects.")
+
+
 def add_parsers(sub) -> None:
     rm = sub.add_parser("remote", help="Use a stored key on another machine over "
                                        "ssh (key goes over stdin, never on a command line).",
@@ -74,16 +79,19 @@ def add_parsers(sub) -> None:
                                          "the change and asks first. Run it in your "
                                          "project folder: Claude Code and VS Code are "
                                          "set up per folder; Claude Desktop and Cursor "
-                                         "once for all projects.")
+                                         "once for all projects.",
+                         description=PER_FOLDER_NOTE)
     ins.add_argument("targets", nargs="*", help="claude-desktop, cursor, claude-code, vscode "
                                                 "(default: the ones found)")
-    ins.add_argument("--yes", action="store_true", help="Do not ask.")
+    ins.add_argument("--yes", action="store_true", help="Do not ask (for scripts)")
     un = sub.add_parser("uninstall", help="Remove stuntkey from your AI tools' settings "
-                                          "(your saved keys are not touched).")
+                                          "(your saved keys are not touched).",
+                          description=PER_FOLDER_NOTE)
     un.add_argument("targets", nargs="*")
-    un.add_argument("--yes", action="store_true", help="Do not ask.")
+    un.add_argument("--yes", action="store_true", help="Do not ask (for scripts)")
     st = sub.add_parser("start", help="First run: check this computer, look for loose "
-                                      "keys, and say what to do next.")
+                                      "keys, and say what to do next.",
+                      description="Run it in your project folder.")
     st.add_argument("--simple", action="store_true",
                     help="Plain-English setup, one question at a time, for apps "
                          "made with Lovable, Bolt, Replit or Vercel.")
