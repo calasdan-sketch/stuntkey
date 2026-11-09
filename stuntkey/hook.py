@@ -814,7 +814,9 @@ def check(stdin_text: str) -> tuple[int, str]:
 # out cannot hold the output back, so an error here means the model sees the
 # original output.
 
-POST_MATCHER = "Bash|mcp__.*"
+# Claude Code reads a matcher with anything beyond letters, digits, "_" and "|"
+# as a regular expression, so this is anchored: Bash, or a tool named mcp__*.
+POST_MATCHER = "^(Bash|mcp__.*)$"
 POST_FIELDS = ("stdout", "stderr")
 POST_NOTE = ("stuntkey hid {n} secret value(s) in this output as [REDACTED]. "
              "Do not try to recover them; if a command needs a key, ask the "
@@ -1530,9 +1532,14 @@ def _status(args, out, run) -> int:
         if tested is None:
             tested = self_test(expected, run)
         notes = []
-        if not list(_our_handlers(_pretool_list(data, create=False, event="PostToolUse") or [])):
-            notes.append("it does not hide keys in Bash output yet (`stuntkey hook "
-                         "install` adds that)")
+        post = list(_our_handlers(_pretool_list(data, create=False, event="PostToolUse") or []))
+        if not post:
+            notes.append("it does not hide keys in Bash or MCP tool output yet "
+                         "(`stuntkey hook install` adds that)")
+        elif post[0][0].get("matcher") != POST_MATCHER:
+            notes.append("OUTDATED: its output masking does not cover every tool "
+                         "this version does (MCP tools among them; run "
+                         "`stuntkey hook install` to update it)")
         if group.get("matcher") != MATCHER:
             notes.append("OUTDATED: it does not watch every tool this version does "
                          "(MCP tools among them; run `stuntkey hook install` to update it)")

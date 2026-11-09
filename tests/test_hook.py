@@ -196,7 +196,7 @@ class TestInstall(Settings):
         self.assertEqual(data["permissions"], {"allow": ["Bash(ls)"]})
         self.assertEqual(data["model"], "opus")
         self.assertEqual(data["hooks"]["PostToolUse"][0], other)
-        self.assertEqual(data["hooks"]["PostToolUse"][1]["matcher"], "Bash|mcp__.*")
+        self.assertEqual(data["hooks"]["PostToolUse"][1]["matcher"], "^(Bash|mcp__.*)$")
         self.assertEqual(data["hooks"]["PreToolUse"][0], mine)
         self.assertEqual(len(data["hooks"]["PreToolUse"]), 2)
 
@@ -301,6 +301,29 @@ class TestUninstallAndStatus(Settings):
         code, out, _ = self.hook("status")
         self.assertEqual(code, 0)
         self.assertIn("blocks a test read", out)
+
+    def test_status_flags_an_old_post_matcher_as_outdated(self):
+        self.hook("install")
+        data = self.get()
+        data["hooks"]["PostToolUse"][0]["matcher"] = "Bash"
+        self.put(data)
+        code, out, _ = self.hook("status")
+        self.assertIn("OUTDATED", out)
+        self.assertIn("stuntkey hook install", out)
+        self.assertNotIn("Bash output", out)
+        self.hook("install")
+        self.assertEqual(self.get()["hooks"]["PostToolUse"][0]["matcher"],
+                         hook_mod.POST_MATCHER)
+        self.assertNotIn("OUTDATED", self.hook("status")[1])
+
+    def test_status_with_no_post_group_says_install_adds_it(self):
+        self.hook("install")
+        data = self.get()
+        del data["hooks"]["PostToolUse"]
+        self.put(data)
+        out = self.hook("status")[1]
+        self.assertIn("stuntkey hook install", out)
+        self.assertNotIn("Bash output", out)
 
     def test_status_with_unreadable_settings_does_not_crash(self):
         self.put("{oops")

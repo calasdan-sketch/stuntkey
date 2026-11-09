@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Hook status
+
+- **`stuntkey hook status` flags an old output-masking matcher.** An install made before MCP
+  masking (PostToolUse matcher `Bash`) is now reported as OUTDATED with the fix
+  (`stuntkey hook install`, which replaces the matcher in place). The "not installed yet"
+  wording no longer says Bash only. The matcher is anchored (`^(Bash|mcp__.*)$`), so it
+  cannot match a tool that merely contains those letters. A test that was meant to prove
+  plain-string MCP results are masked passed on the old code too; it now fails there.
+
 ### Working alongside Monomem
 
 - **The Claude Code hook no longer refuses MCP calls for what their text mentions.** An
@@ -13,7 +22,7 @@
   itself reads files or runs commands (a filesystem or shell server) is no longer
   stopped from naming `.env` or `~/.stuntkey`; its result is still masked (next item).
 - **Stored keys in MCP tool results are masked.** The PostToolUse group now matches
-  `Bash|mcp__.*`; every string in an MCP result (plain text, content blocks or an
+  `^(Bash|mcp__.*)$` (anchored); every string in an MCP result (plain text, content blocks or an
   object) is masked like Bash output and sent back as `updatedToolOutput` and
   `updatedMCPToolOutput` (both documented at code.claude.com/docs/en/hooks; MCP output
   is not schema-checked there). Run `stuntkey hook install` again to update an existing

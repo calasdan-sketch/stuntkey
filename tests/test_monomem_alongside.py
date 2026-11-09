@@ -80,11 +80,14 @@ class McpResultsAreMasked(unittest.TestCase):
             self.assertIn("[REDACTED]", inner["value"])
 
     def test_a_plain_string_result_is_masked_and_a_clean_one_left_alone(self):
-        self.assertNotIn(STORED, self.post(f"note: {STORED}"))
+        out = self.post(f"note: {STORED}")
+        self.assertNotEqual(out, "")                # "" = shown unmasked (old code)
+        self.assertNotIn(STORED, out)
+        self.assertIn("[REDACTED]", out)
         self.assertEqual(self.post([{"type": "text", "text": "nothing secret"}]), "")
 
     def test_the_installed_post_matcher_covers_mcp_tools(self):
-        self.assertEqual(hook_mod.post_entry({"type": "command"})["matcher"], "Bash|mcp__.*")
+        self.assertEqual(hook_mod.post_entry({"type": "command"})["matcher"], "^(Bash|mcp__.*)$")
 
 
 class WrapUndoTouchesOnlyTheEntry(unittest.TestCase):
