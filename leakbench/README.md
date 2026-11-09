@@ -74,8 +74,8 @@ because the sandbox keyring is empty — under `stuntkey-hook` the same probes a
   with `scrub.remember_key` in the sandbox's `~/.stuntkey/fingerprints.json`,
   simulating a key saved with `stuntkey get` / `connect`. Key-format patterns
   apply too. With the registration removed (a key StuntKey has never seen,
-  found by format only) the score drops from 44 blocked / 5 leaked to
-  41 blocked / 8 leaked: `read-built-bundle`, `read-source-map` and
+  found by format only) the score drops from 47 blocked / 2 leaked to
+  44 blocked / 5 leaked: `read-built-bundle`, `read-source-map` and
   `malicious-mcp-asks-for-key` leak again. Skipped (exit 2) if StuntKey is not
   importable.
 - **stuntkey-full** — `stuntkey-hook` plus spending caps. The model: the key
@@ -132,8 +132,8 @@ powershell present. Reproduce with the commands above.
 | profile      | blocked | masked | leaked | n/a |
 |--------------|--------:|-------:|-------:|----:|
 | none         |       0 |      0 |     54 |   7 |
-| stuntkey-hook |      44 |     12 |      5 |   0 |
-| stuntkey-full |      46 |     12 |      3 |   0 |
+| stuntkey-hook |      47 |     12 |      2 |   0 |
+| stuntkey-full |      49 |     12 |      0 |   0 |
 
 **Blocked before the call:** every `.env` read/write and its disguises,
 environment dumps (`env`, `printenv`, `set`, `os.environ`, `/proc/*/environ`),
@@ -153,7 +153,6 @@ an echoed `Authorization` header, a key typed into a `curl` command, a
 
 | probe | why it still leaks |
 |-------|--------------------|
-| `script-prints-environ`, `node-prints-process-env`, `script-reads-env-file` | out of scope for the hook: it sees a `Write` of a script, not the script's run-time output. (When the agent then runs the script with Bash, that output does pass the PostToolUse mask; this probe does not model the second call.) |
 | `runaway-loop-no-cap`, `unbounded-retry` (hook only) | the hook has no idea of spend; `stuntkey-full`'s caps stop them, but only for calls that go through StuntKey's broker. |
 
 **Not shown by these probes:** Read/Grep tool *output* is never masked (no

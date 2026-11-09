@@ -137,7 +137,9 @@ PLACEHOLDER_WORD_RE = re.compile(
     r"|(?<![a-z0-9])(?:" + "|".join(re.escape(w) for w in PLACEHOLDER_WHOLE)
     + r")(?![a-z0-9])")
 # Keys printed in vendors' own documentation: public, never secret.
-DOC_KEYS = frozenset({"sk_" "test_4eC39HqLyjWDarjtT1zdp7dc"})
+DOC_KEYS = frozenset({"sk_" "test_4eC39HqLyjWDarjtT1zdp7dc",
+                      # AWS's documented sample access key pair
+                      "AKIA" "IOSFODNN7EXAMPLE", "wJalrXUtnFEMI/K7MDENG/bPxRfiCY" "EXAMPLEKEY"})
 TRIVIAL_PASSWORDS = frozenset({
     "password", "passw0rd", "password1", "postgres", "admin", "administrator",
     "root", "secret", "changeme", "example", "test", "testing", "default",
@@ -295,6 +297,8 @@ CODE_REF_RE = re.compile(r"^(?:[A-Z][A-Z0-9_]*|[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+)$
 VERSIONED_RE = re.compile(r"\d+\.\d+\.\d+")
 # an identifier written in lower case: get_password_from_env, not a password
 SNAKE_RE = re.compile(r"^[a-z][a-z0-9]*(?:_[a-z0-9]+)+$")
+# an MCP tool name in an allow-list: mcp__plugin_figma__get_screenshot
+MCP_TOOL_RE = re.compile(r"^mcp__[A-Za-z0-9_-]+$")
 BEARER_RE = re.compile(
     r"""(?i)(?<![A-Za-z0-9_])bearer[ \t]+["']?(?P<value>[A-Za-z0-9_\-+/=.~]{20,})""")
 URL_PASSWORD_RE = re.compile(
@@ -734,6 +738,7 @@ def _scan_line(raw: str, nxt: str, number: int, rel: str, rules: list[Rule],
                 and free(start, start + len(value))
                 and not VERSIONED_RE.search(value)
                 and not HOSTNAME_RE.match(value)
+                and not MCP_TOOL_RE.match(value)
                 and not BARE_PATH_RE.search(value)
                 and _secret_value_ok(value)):
             add("bare-token", "guess", None,

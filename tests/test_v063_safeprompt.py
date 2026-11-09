@@ -64,48 +64,79 @@ def run_connect(confirm, stored):
 
 
 class TestConnectConfirm(unittest.TestCase):
-    def test_the_prompt_says_do_not_paste(self):
+    """2026-11-08 (Dan): the "Press Enter to save it" step after a clipboard
+    capture confused people, so it is gone. The key is taken, said in plain
+    words, checked with the vendor and saved - no question in between."""
+
+    def test_a_copied_key_is_saved_without_any_question(self):
         stored = {}
-        replies = Replies("")
+        replies = Replies()
         code, text = run_connect(replies, stored)
         self.assertEqual(code, 0)
         self.assertEqual(stored, {"ACME_API_KEY": COPIED})
-        self.assertIn("Do NOT paste", text)
-        self.assertIn("hidden", text)
-        self.assertIn("Press Enter to save it, or n to cancel", replies.prompts[0])
-        self.assertNotIn("Is that the key", text + replies.prompts[0])
+        self.assertEqual(replies.prompts, [])
+        self.assertIn("Got your", text)
+        self.assertIn("has been added", text)
+        self.assertNotIn(COPIED, text)
 
-    def test_a_pasted_key_is_refused_then_enter_uses_the_copied_one(self):
+    def test_nothing_is_saved_when_the_vendor_rejects_a_wrong_copy(self):
         stored = {}
-        replies = Replies(PASTED, "")
-        code, text = run_connect(replies, stored)
-        self.assertEqual(code, 0)
-        self.assertEqual(stored, {"ACME_API_KEY": COPIED})      # not what was pasted
-        self.assertIn("That looked like a key. Do not paste it here. Nothing was saved.", text)
-        self.assertIn("Press Enter to accept the key you already copied", text)
-        for secret in (PASTED, COPIED):
-            self.assertNotIn(secret, text)
-            self.assertNotIn(secret, "".join(replies.prompts))
-
-    def test_pasting_every_time_cancels_and_saves_nothing(self):
-        stored = {}
-        code, text = run_connect(Replies(PASTED, PASTED, PASTED), stored)
-        self.assertEqual(code, 1)
+        out = io.StringIO()
+        with mock.patch.object(clip_mod, "wait_for_key", lambda *a, **k: COPIED):
+            connect_mod.connect(
+                recipe(), browser_open=lambda u: None, out=out, prompt=no_paste,
+                validate_fn=lambda spec, key: False,
+                clipboard=(lambda: "", lambda: None), confirm_in=Replies(),
+                store_fn=lambda var, key: stored.setdefault(var, key) and "saved")
         self.assertEqual(stored, {})
-        self.assertNotIn(PASTED, text)
+        self.assertNotIn("has been added", out.getvalue())
+        self.assertNotIn(COPIED, out.getvalue())
 
-    def test_a_multi_line_paste_is_not_an_answer(self):
-        stored = {}
-        code, text = run_connect(Replies("n\n" + PASTED, "n"), stored)
-        self.assertNotIn(PASTED, text)
-        self.assertEqual(stored, {})
 
-    def test_n_cancels_the_taken_key(self):
-        stored = {}
-        code, text = run_connect(Replies("n", ), stored)
-        self.assertEqual(stored, {})
-        self.assertIn("not using it", text)
+class TestMaskedPaste(unittest.TestCase):
+    """The hidden paste prompt shows a * per character and takes a paste
+    without Enter; typing by hand still ends with Enter."""
 
+    def _run(self, chars, gaps):
+        """chars arrive with `gaps[i]` True when the next one is already waiting."""
+        feed = list(chars)
+        state = {"i": 0}
+
+        def read_char():
+            ch = feed[state["i"]]
+            state["i"] += 1
+            return ch
+
+        def waiting(timeout):
+            i = state["i"]
+            return i < len(feed) and gaps[i - 1]
+        out = io.StringIO()
+        with mock.patch.object(safeprompt, "SETTLE", 0):
+            value = safeprompt._masked_loop(read_char, waiting, out)
+        return value, out.getvalue()
+
+    def test_a_paste_is_taken_without_enter_and_shown_as_stars(self):
+        value, shown = self._run(COPIED, [True] * (len(COPIED) - 1) + [False])
+        self.assertEqual(value, COPIED)
+        self.assertEqual(shown.strip(), "*" * len(COPIED))
+        self.assertNotIn(COPIED, shown)
+
+    def test_typing_by_hand_waits_for_enter(self):
+        typed = "abc123def456ghi789xyz"
+        value, shown = self._run(typed + "\r", [False] * (len(typed) + 1))
+        self.assertEqual(value, typed)
+        self.assertEqual(shown.strip(), "*" * len(typed))
+
+    def test_backspace_removes_a_star(self):
+        value, shown = self._run("ab\x08c\r", [False] * 5)
+        self.assertEqual(value, "ac")
+
+    def test_ctrl_c_cancels(self):
+        with self.assertRaises(KeyboardInterrupt):
+            self._run("ab\x03", [False] * 3)
+
+
+class TestDefaultReader(unittest.TestCase):
     def test_without_a_reader_given_the_quiet_one_is_used(self):
         # the real default (no injected confirm_in): read_quiet, not input()
         stored = {}

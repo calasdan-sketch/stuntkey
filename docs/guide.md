@@ -8,7 +8,7 @@
 pipx install stuntkey          # Python 3.10+, no other dependencies
 stuntkey scan                  # find keys an AI agent can read (works offline)
 stuntkey hook install          # stop Claude Code reading your .env files
-stuntkey list                  # the services it knows (36 built in)
+stuntkey list                  # the services it knows (37 built in)
 stuntkey connect github        # opens the key page, shows the exact steps
 #   paste the key when asked (typing is hidden), or use --clipboard and
 #   click the vendor's Copy button; the key is tested with one API call
@@ -857,7 +857,7 @@ exact click path, scopes, and a validation endpoint. Teach it once with
 `stuntkey add`, use it forever — and Claude Code can pull the exact recipe via
 `stuntkey mcp` instead of guessing.
 
-Ships with 36 recipes inside the package (so `pip install` carries
+Ships with 37 recipes inside the package (so `pip install` carries
 them), each checked against the provider's own docs for the key page,
 the validation endpoint and the auth header, and smoke-tested live with
 a fake key (every one answers with a clean "key rejected"):
@@ -866,7 +866,7 @@ a fake key (every one answers with a clean "key rejected"):
 |---|---|
 | LLM / AI | `openai`, `anthropic`, `google-gemini`, `groq`, `mistral`, `cohere`, `huggingface`, `together`, `openrouter`, `replicate` |
 | speech | `elevenlabs`, `deepgram`, `assemblyai` |
-| infra | `github`, `supabase` (Management API token), `vercel`, `netlify`, `cloudflare`, `pinecone` |
+| infra | `github`, `supabase` (Management API token), `vercel`, `netlify`, `cloudflare`, `cloudflare-keymaker` (lets `stuntkey mint` make Cloudflare keys), `pinecone` |
 | email / payments | `stripe`, `resend`, `sendgrid`, `mailgun`, `postmark` (server token) |
 | productivity / search | `notion`, `airtable`, `discord` (bot token), `tavily`, `brave-search` |
 | two values / other checks (0.4.0) | `ebay` and `spotify` (OAuth2 client credentials), `paypal` (OAuth2, token only), `twilio` (Account SID + token), `aws` (SigV4), `openweather` (key in the URL) |
@@ -1195,7 +1195,7 @@ is UTF-8 bytes regardless of console code page, console output is
 reconfigured to replace unencodable characters instead of crashing, and
 every text file is opened as UTF-8.
 
-## Scope / limits (v0.9.0)
+## Scope / limits (v0.9.1)
 
 - `scan` finds keys by their shape. It misses a key with no recognisable
   prefix under a name that does not end in KEY, TOKEN, SECRET or PASSWORD, and

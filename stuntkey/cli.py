@@ -159,7 +159,9 @@ def _build_parser() -> argparse.ArgumentParser:
                             ("connect", "Connect a service (guided key setup)."),
                             ("rotate", "Replace the stored key for a service.")):
         c = sub.add_parser(name, help=help_text)
-        c.add_argument("service", help="Service slug (see `stuntkey list`).")
+        c.add_argument("service", help="Service slug (see `stuntkey list`). `get` also "
+                                       "takes any site: a name or an address such as "
+                                       "example.com (saved untested).")
         c.add_argument("--env-file", default=None,
                        help="Where to store the key with --store env "
                             "(default: the manifest's env_file, else .env).")
@@ -342,6 +344,8 @@ def _build_parser() -> argparse.ArgumentParser:
     extras.add_parsers(sub)
     from . import panic as panic_mod
     panic_mod.add_parser(sub)
+    from . import mint as mint_mod
+    mint_mod.add_parser(sub)
     from . import proxy as proxy_mod
     proxy_mod.add_parsers(sub)
     return p
@@ -902,6 +906,7 @@ def _main(argv: list[str] | None = None) -> int:
                                    clipboard=args.clipboard,
                                    allow_history=args.allow_clipboard_history)
         return projectcmds.cmd_setup(args, catalog, connect_one)
+    any_site = args.cmd == "get"          # get also takes a site stuntkey does not know
     if args.cmd == "get":                 # one command: keychain + copy-and-go
         args.cmd = "connect"
         args.clipboard = args.clipboard or not args.no_clipboard
@@ -913,6 +918,9 @@ def _main(argv: list[str] | None = None) -> int:
         args.env_file = _project_env_file()
         if args.env_file is None:
             return 1
+    if args.cmd == "mint":
+        from . import mint as mint_mod
+        return mint_mod.cmd_mint(args, catalog)
     if args.cmd == "panic":
         from . import panic as panic_mod
         env_file = args.env_file or _project_env_file()
@@ -951,6 +959,14 @@ def _main(argv: list[str] | None = None) -> int:
         return _cmd_run(chosen, [args.service] + list(args.command), env_file, args.redact, prefer)
     if args.cmd in ("connect", "rotate", "run", "forget"):
         recipe = catalog.get(args.service)
+        from . import anysite
+        if not recipe and any_site and anysite.looks_like_site(args.service, catalog):
+            return anysite.cmd_get(
+                args.service, catalog,
+                lambda r, url: connect_service(
+                    r, env_file=args.env_file, store=args.store,
+                    no_browser=args.no_browser, clipboard=args.clipboard,
+                    allow_history=args.allow_clipboard_history, open_url=url))
         if not recipe:
             # exit 3 and the short "Did you mean" line; only a short plain
             # name is echoed back (a long or odd one could be a key typed in
@@ -997,10 +1013,12 @@ def _main(argv: list[str] | None = None) -> int:
 def connect_service(recipe: dict, env_file: str = ".env", store: str = "env",
                     no_browser: bool = False, clipboard: bool = False,
                     via_cli: bool = False, rotate: bool = False,
-                    allow_history: bool = False) -> int:
-    """The connect flow plus the local record of when the key was added."""
+                    allow_history: bool = False, open_url: str | None = None) -> int:
+    """The connect flow plus the local record of when the key was added.
+    `open_url` opens that page instead of the recipe's key page."""
     import webbrowser
-    opener = (lambda url: None) if no_browser else webbrowser.open
+    opener = ((lambda url: None) if no_browser
+              else (lambda url: webbrowser.open(open_url or url)))
     store_fn = keychain_store(recipe, env_file) if store == "keychain" else None
     clip = None
     if clipboard:

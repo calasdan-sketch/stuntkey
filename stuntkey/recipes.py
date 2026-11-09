@@ -556,6 +556,27 @@ def _check_revoke(data: dict) -> None:
         raise RecipeError("revoke.api.headers must be a {name: value} object")
 
 
+def _check_mint(data: dict) -> None:
+    """"mint": {vendor, permissions, account}. Only Cloudflare, and the new key
+    is checked at the recipe's validate.url, so that must be Cloudflare's API:
+    a minted key may never be sent to another server."""
+    m = data.get("mint")
+    if m is None:
+        return
+    if not (isinstance(m, dict) and set(m) == {"vendor", "permissions", "account"}):
+        raise RecipeError("mint must be {vendor, permissions, account}")
+    if m["vendor"] != "cloudflare":
+        raise RecipeError("mint.vendor must be 'cloudflare'")
+    perms = m["permissions"]
+    if not (isinstance(perms, list) and perms and all(
+            isinstance(p, str) and 0 < len(p) <= 100 and _plain(p, True) for p in perms)):
+        raise RecipeError("mint.permissions must be a list of permission names")
+    if not (isinstance(m["account"], str) and re.fullmatch(r"[0-9a-f]{32}", m["account"])):
+        raise RecipeError("mint.account must be a 32-character Cloudflare account id")
+    if _hosts(data) != frozenset({"api.cloudflare.com"}) or len(fields(data)) != 1:
+        raise RecipeError("a mint recipe must be a single key checked at api.cloudflare.com")
+
+
 RESULTS = ("valid", "limited", "invalid")
 STS_BODY = "Action=GetCallerIdentity&Version=2011-06-15"
 
@@ -601,6 +622,11 @@ def _check_extras(data: dict) -> None:
     if un is not None and not (isinstance(un, list) and all(
             isinstance(x, str) and x for x in un)):
         raise RecipeError("unverified must be a list of text")
+    # "untested": true - made by `stuntkey get <any site>`: the key is saved
+    # without a check call, because nobody knows the site's API yet. It can
+    # only make stuntkey send the key LESS, never somewhere new.
+    if not isinstance(data.get("untested", False), bool):
+        raise RecipeError("untested must be true or false")
 
 
 def validate_recipe(data: dict) -> dict:
@@ -673,6 +699,7 @@ def validate_recipe(data: dict) -> dict:
     _check_auth(auth, {f["name"] for f in fields(data)})
     _check_cli_token(data)
     _check_revoke(data)
+    _check_mint(data)
     # A pasted key must never travel in cleartext: the mint page, the
     # validation endpoint and any token endpoint must all be HTTPS.
     # Exception: a "local": true recipe (a router on this computer, such as

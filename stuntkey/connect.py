@@ -160,6 +160,12 @@ def render_validation_preview(recipe: dict, out=None) -> None:
     poisoned recipe can't turn `stuntkey connect` into a key harvest."""
     out = out or sys.stdout
     v = recipe["validate"]
+    if recipe.get("untested"):
+        out.write(f"\n  This key will NOT be tested: stuntkey does not know this site's "
+                  f"API yet, so nothing is sent now.\n"
+                  f"  Later calls go only to {printable(_host(v['url']))}.\n")
+        out.flush()
+        return
     auth = v.get("auth", {})
     method = printable(str(v.get("method", "GET")).upper())
     if auth.get("type") == "oauth2_client_credentials":
@@ -402,29 +408,14 @@ def _ask_one(field: dict, single: bool, prompt, out, clip, taken: set,
             _safe_clear(clear)
             out.write("\ncancelled.\n")
             return None
-        if value and not field.get("accept"):
-            # no pattern to recognise the key by: say what was taken (never
-            # its characters) and let the person stop a wrong copy
-            out.write(f"  The key was taken from your clipboard "
-                      f"({clipboard_mod.describe(value)}; hidden) - clipboard emptied.\n"
-                      f"  Do NOT paste anything - nothing you type here is shown.\n")
-            # read without echo, whatever the person pastes; a key pasted
-            # here is refused, not used and not kept
-            yes = safeprompt.ask(
-                "  Press Enter to save it, or n to cancel: ", out, enter_means=True,
-                reader=confirm,
-                if_key="That looked like a key. Do not paste it here. Nothing was "
-                       "saved. Press Enter to accept the key you already copied, "
-                       "or n to cancel.")
-            if yes is None:
-                return None
-            if not yes:
-                out.write("  ok, not using it.\n")
-                value = None
-            else:
-                return value
-        elif value:
-            out.write(f"  got the {label} ({len(value)} characters) - clipboard emptied\n")
+        if value:
+            # No "press Enter to save" step (Dan, 2026-11-08: it confused
+            # people). A wrong copy is caught by the check that follows: it
+            # goes only to the vendor's own address, and nothing is saved
+            # unless the vendor accepts it.
+            out.write(f"  ✓ Got your {label} from the clipboard "
+                      f"({clipboard_mod.describe(value)}; hidden) - clipboard emptied.\n")
+            out.flush()
             return value
         out.write("  nothing key-shaped was copied - type or paste it instead:\n")
     text = "  Paste your API key (hidden): " if single else f"  Paste the {label} (hidden): "
@@ -578,6 +569,8 @@ def connect(
         if again:
             values = None
             continue
+        if recipe.get("untested"):
+            break                 # nothing is sent; said in the preview and below
         out.write("  validating…\n")
         out.flush()
         try:
@@ -654,6 +647,12 @@ def connect(
         del values
     for description in saved:
         out.write(f"\n  ✓ {description}\n")
+    out.write(f"\n  ✓ Your {printable(recipe['display'], words=True)} key has been added.\n")
+    if recipe.get("untested"):
+        out.write("\n  Saved. Not tested - stuntkey doesn't know this site's API yet, "
+                  "so it cannot say the key works.\n"
+                  "  `stuntkey add` teaches it how to check a key.\n")
+        return 0
     try:
         import urllib.parse as _up
         _path = _up.urlsplit((recipe.get("validate") or {}).get("url", "")).path or "/"
