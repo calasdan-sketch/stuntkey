@@ -89,20 +89,17 @@ class Ask(unittest.TestCase):
         self.assertEqual(r, "typed-by-hand-123456")
         self.assertEqual(c.value, "")
 
-    def test_generic_value_needs_confirmation(self):
+    def test_generic_value_is_taken_without_a_question(self):
         c = Fake([""])
         orig = clip_mod.wait_for_key
         clip_mod.wait_for_key = lambda *a, **k: KEY
         out = io.StringIO()
         try:
-            no = connect_mod._ask_one(self.field, True, lambda t: "", out, (c.get, c.clear), set(),
-                                      confirm=lambda t: "n")
-            yes = connect_mod._ask_one(self.field, True, lambda t: "", out, (c.get, c.clear), set(),
-                                       confirm=lambda t: "")
+            got = connect_mod._ask_one(self.field, True, lambda t: "", out, (c.get, c.clear), set(),
+                                       confirm=lambda t: (_ for _ in ()).throw(AssertionError("asked")))
         finally:
             clip_mod.wait_for_key = orig
-        self.assertEqual(no, "")
-        self.assertEqual(yes, KEY)
+        self.assertEqual(got, KEY)
         self.assertNotIn(KEY, out.getvalue())
 
     def test_no_stale_clipboard_claim(self):

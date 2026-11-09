@@ -31,6 +31,10 @@
 - A write larger than 2,000,000 characters is refused, so padding a file can
   not carry code past the scan.
 - The hook no longer crashes on a `tool_name` that is not text.
+- `get`: no more "Press Enter to save it" after the key is taken from the clipboard.
+  A wrong copy is still caught: the vendor check must pass before anything is
+  saved. The hidden paste prompt now shows a `*` per character and takes a paste
+  without Enter. A plain "Your <service> key has been added." ends a good save.
 - Windows: many programs saving keys to the same `.env` at once could fail
   with "Permission denied" while another one was releasing the lock. They
   now wait and retry.
