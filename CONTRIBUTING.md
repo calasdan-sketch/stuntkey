@@ -65,7 +65,8 @@ Community recipes are reviewed, pinned and never trusted automatically.
    Put the vendor docs links in the description.
 2. **Pin it.** Put the file's SHA-256 in the pull request description
    (`sha256sum stuntkey/recipes/<slug>.json`, or on Windows
-   `certutil -hashfile stuntkeyecipes\<slug>.json SHA256`). A maintainer
+   `certutil -hashfile stuntkey
+ecipes\<slug>.json SHA256`). A maintainer
    checks that the hash matches the file being merged; any later change is a
    new pull request with a new hash.
 3. **Review.** A maintainer checks every address against the vendor docs and
@@ -79,7 +80,10 @@ Community recipes are reviewed, pinned and never trusted automatically.
 
 ## Smoke test with a FAKE key
 
-Never use a real key to test. Start a local stand-in for the vendor and point
+Never use a real key to test. For every manual trial and every test that stores
+or reads a key, set `STUNTKEY_KEYCHAIN=memory` (keys kept in the process only)
+or `STUNTKEY_KEYCHAIN=file:<temp folder>` (a plain JSON file, **not secure**), so
+the real OS keychain is never touched. Start a local stand-in for the vendor and point
 a copy of your recipe at it:
 
 ```bash

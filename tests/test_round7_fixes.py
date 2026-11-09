@@ -591,7 +591,7 @@ class TestForgetTwiceWithARealCommand(unittest.TestCase):
 
         def forget():
             proc = subprocess.run(
-                [sys.executable, "-m", "stuntkey", "forget", "github",
+                [sys.executable, "-m", "stuntkey", "forget", "github", "--yes",
                  "--env-file", os.path.join(work, ".env")],
                 capture_output=True, env=env, cwd=work, timeout=120)
             return (proc.returncode, proc.stdout.decode("utf-8", "replace"),

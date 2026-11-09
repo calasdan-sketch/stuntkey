@@ -188,6 +188,7 @@ def _run(names, yes, ask, out, **kw) -> int:
     chosen = names or [n for n, (path, _) in tg.items()
                        if os.path.exists(path) or n in ("claude-code",)]
     done = 0
+    unreadable = False
     for n in chosen:
         if n not in tg:
             out(f"unknown target '{n}'. Choose from: {', '.join(tg)}\n"
@@ -196,6 +197,12 @@ def _run(names, yes, ask, out, **kw) -> int:
         path, key = tg[n]
         try:
             p = plan(path, key)
+        except json.JSONDecodeError as e:
+            out(f"  {n}: NOT set up. {os.path.abspath(path)} is not valid JSON "
+                f"(line {e.lineno}). Fix or delete it, then run stuntkey install "
+                f"again. File left untouched.")
+            unreadable = True
+            continue
         except (ValueError, OSError) as e:
             out(f"  {n}: skipped - {e}")
             continue
@@ -222,7 +229,7 @@ def _run(names, yes, ask, out, **kw) -> int:
         out("")
         for n in chosen:
             out(f"  {LABELS.get(n, n)}: {'connected' if n in on else 'not connected'}")
-    return 0
+    return 1 if unreadable else 0
 
 
 def remove(names, yes: bool, ask=input, out=print, **kw) -> int:

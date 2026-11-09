@@ -11,6 +11,7 @@ from __future__ import annotations
 import base64
 import contextlib
 import hmac
+import itertools
 import json
 import os
 import re
@@ -306,8 +307,17 @@ def _write_fingerprints(path: str, data: dict) -> None:
 
 class _Prints(frozenset):
     """The fingerprints, plus the distinct lengths of the stored keys (a
-    frozenset still, so every caller that passes it around is unchanged)."""
+    frozenset still, so every caller that passes it around is unchanged).
+    `delimited`: ((length, fingerprints), ...) for keys that hold a character
+    _WORD_RE splits on (see _delimited_spans)."""
     lengths: tuple = ()
+    delimited: tuple = ()
+
+
+# A key with one of these in it is cut into pieces by _WORD_RE, so no word of
+# the output is the whole key. (A key that holds whitespace itself is not
+# recorded: it cannot sit inside one whitespace-delimited run.)
+_DELIM_RE = re.compile(r"[\"'`,;()\[\]{}<>|&\\]")
 
 
 MAX_LENGTHS = 8     # ponytail: window scan costs words x lengths x offsets; more keys than
@@ -326,6 +336,12 @@ def remember_key(name: str, secret: str, path: str | None = None) -> None:
         data["keys"][name] = (sorted(_fp(salt, f) for f in _fingerprint_forms(secret))
                               if len(secret) >= MIN_LEN else [])
         data.setdefault("lengths", {})[name] = [len(secret)] if len(secret) >= MIN_LEN else []
+        delimited = data.setdefault("delimited", {})
+        if len(secret) >= MIN_LEN and _DELIM_RE.search(secret) and not re.search(r"\s", secret):
+            delimited[name] = {"length": len(secret), "fp": _fp(salt, secret),
+                               "roll": _roll(secret, _roll_base(salt))}
+        else:
+            delimited.pop(name, None)
         _write_fingerprints(path, data)
 
 
@@ -340,6 +356,8 @@ def forget_key(name: str, path: str | None = None) -> bool:
         del data["keys"][name]
         if isinstance(data.get("lengths"), dict):
             data["lengths"].pop(name, None)
+        if isinstance(data.get("delimited"), dict):
+            data["delimited"].pop(name, None)
         _write_fingerprints(path, data)
         return True
 
@@ -354,7 +372,57 @@ def load_fingerprints(path: str | None = None) -> tuple[bytes, frozenset]:
     if isinstance(lens, dict):
         prints.lengths = tuple(sorted({n for ls in lens.values() if isinstance(ls, list)
                                        for n in ls if isinstance(n, int) and n >= MIN_LEN}))[:MAX_LENGTHS]
+    found: dict[int, dict] = {}
+    delimited = data.get("delimited")
+    for d in (delimited.values() if isinstance(delimited, dict) else ()):
+        if (isinstance(d, dict) and isinstance(d.get("length"), int)
+                and d["length"] >= MIN_LEN and isinstance(d.get("fp"), str)
+                and isinstance(d.get("roll"), int)):
+            found.setdefault(d["length"], {})[d["roll"]] = d["fp"]
+    prints.delimited = tuple((n, found[n]) for n in sorted(found)[:MAX_LENGTHS])
     return bytes.fromhex(data["salt"]), prints
+
+
+_ROLL_MOD = (1 << 61) - 1
+
+
+def _roll_base(salt: bytes) -> int:
+    return int.from_bytes(hmac.digest(salt, b"roll", "sha256")[:8], "big") % (_ROLL_MOD - 2) + 2
+
+
+def _roll(word: str, base: int) -> int:
+    """A salted polynomial hash of `word`: only a cheap first filter that
+    lets a window be tried, which the real fingerprint then confirms."""
+    h = 0
+    for ch in word:
+        h = (h * base + ord(ch)) % _ROLL_MOD
+    return h
+
+
+def _delimited_spans(text: str, salt: bytes, entries):
+    """Where a stored key that holds delimiter characters sits in `text`.
+    `entries`: ((length, {rolling hash: fingerprint}), ...). A window of the
+    key's length is slid over each whitespace-delimited run (the key has no
+    whitespace in it); a window is looked at only when its cheap rolling hash
+    matches, then confirmed with the fingerprint."""
+    base = _roll_base(salt)
+    shortest = min(n for n, _ in entries)
+    for run in re.finditer(r"\S{%d,}" % shortest, text):
+        word, start = run.group(), run.start()
+        if not _DELIM_RE.search(word):
+            continue
+        pre = list(itertools.accumulate(word, lambda h, ch: (h * base + ord(ch)) % _ROLL_MOD,
+                                        initial=0))
+        for n, table in entries:
+            if n > len(word):
+                continue
+            top = pow(base, n, _ROLL_MOD)
+            last = 0
+            for i in [i for i in range(len(word) - n + 1)
+                      if (pre[i + n] - pre[i] * top) % _ROLL_MOD in table]:
+                if i >= last and _fp(salt, word[i:i + n]) == table[(pre[i + n] - pre[i] * top) % _ROLL_MOD]:
+                    yield start + i, start + i + n
+                    last = i + n
 
 
 def _stored_spans(text: str, salt: bytes, prints: frozenset):
@@ -382,10 +450,17 @@ def _stored_spans(text: str, salt: bytes, prints: frozenset):
                     i += 1
 
 
+def _all_stored_spans(text: str, salt: bytes, prints: frozenset):
+    yield from _stored_spans(text, salt, prints)
+    entries = getattr(prints, "delimited", ())
+    if entries:
+        yield from _delimited_spans(text, salt, entries)
+
+
 def has_stored_key(text: str, prints: tuple[bytes, frozenset]) -> bool:
     """Does `text` hold a stored key (by fingerprint only, never by format)?"""
     salt, hashes = prints
-    return bool(hashes) and next(_stored_spans(text, salt, hashes), None) is not None
+    return bool(hashes) and next(_all_stored_spans(text, salt, hashes), None) is not None
 
 
 _RULES = None
@@ -435,7 +510,7 @@ def mask_secrets(text: str, prints: tuple[bytes, frozenset] | None = None) -> tu
     known key format replaced by [REDACTED]; and how many were. `prints` is
     load_fingerprints() (read here when not given)."""
     salt, hashes = prints if prints is not None else load_fingerprints()
-    spans = list(_stored_spans(text, salt, hashes)) if hashes else []
+    spans = list(_all_stored_spans(text, salt, hashes)) if hashes else []
     if _MAYBE_KEY_RE.search(text):
         spans += _format_spans(text)
     if not spans:

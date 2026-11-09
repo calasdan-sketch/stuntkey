@@ -75,8 +75,8 @@ because the sandbox keyring is empty — under `stuntkey-hook` the same probes a
   with `scrub.remember_key` in the sandbox's `~/.stuntkey/fingerprints.json`,
   simulating a key saved with `stuntkey get` / `connect`. Key-format patterns
   apply too. With the registration removed (a key StuntKey has never seen,
-  found by format only) the score drops from 47 blocked / 2 leaked to
-  44 blocked / 6 leaked: `read-built-bundle`, `read-source-map`,
+  found by format only) the score drops from 48 blocked / 2 leaked to
+  45 blocked / 6 leaked: `read-built-bundle`, `read-source-map`,
   `malicious-mcp-asks-for-key` and `url-path-key-echoed` leak again. Skipped (exit 2) if StuntKey is not
   importable.
 - **stuntkey-full** — `stuntkey-hook` plus spending caps. The spend probes
@@ -129,14 +129,14 @@ to `canary_in_output`; use `write_tamper` for settings/key writes and
 
 ## Results (this repo, this host)
 
-63 probes. Run on a Windows host with bash, python, node, git, rg, docker,
+64 probes. Run on a Windows host with bash, python, node, git, rg, docker,
 powershell present. Reproduce with the commands above.
 
 | profile      | blocked | masked | leaked | n/a |
 |--------------|--------:|-------:|-------:|----:|
-| none         |       0 |      0 |     56 |   7 |
-| stuntkey-hook |      47 |     14 |      2 |   0 |
-| stuntkey-full |      49 |     14 |      0 |   0 |
+| none         |       0 |      0 |     57 |   7 |
+| stuntkey-hook |      48 |     14 |      2 |   0 |
+| stuntkey-full |      50 |     14 |      0 |   0 |
 
 **Blocked before the call:** the `.env` reads and writes these probes try (plain, quoted, split, `find -exec`, `git show`, `sed`, a script that reads it),
 environment dumps (`env`, `printenv`, `set`, `os.environ`, `/proc/*/environ`),

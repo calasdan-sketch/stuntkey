@@ -239,6 +239,8 @@ def _build_parser() -> argparse.ArgumentParser:
     fg.add_argument("--env-file", default=None,
                     help="The .env file to remove the entry from (default: the "
                          "manifest's env_file, else .env).")
+    fg.add_argument("--yes", action="store_true",
+                    help="Do not ask first (needed when not run in a terminal).")
 
     aa = sub.add_parser("allow-agent", help="Allow an AI agent to capture a service's key "
                                             "from the clipboard (you type yes, once).")
@@ -579,6 +581,28 @@ def _describe_links(links) -> str:
     elif links.elsewhere:
         parts.append(f"{links.elsewhere} in other folders")
     return ", ".join(parts)
+
+
+def _confirm_forget(recipe: dict, yes: bool, out=None, reader=None,
+                    interactive=None) -> int | None:
+    """None when removing may go ahead; otherwise the exit code. Nothing is
+    removed unless --yes was given or the person typed y/yes."""
+    if yes:
+        return None
+    out = out or sys.stdout
+    if interactive is None:
+        interactive = _stdin_is_terminal()
+    if not interactive and reader is None:
+        out.write("stuntkey forget needs --yes when not run in a terminal\n")
+        return 2
+    name = recipes_mod.printable(recipe["display"], words=True)
+    answer = safeprompt.ask(f"Remove the stored {name} key? It cannot be "
+                            f"recovered. [y/N] ", out, enter_means=False,
+                            reader=reader)
+    if answer is True:
+        return None
+    out.write("  nothing was removed.\n")
+    return 1
 
 
 def _cmd_forget(recipe: dict, env_file: str, out=None,
@@ -1026,6 +1050,9 @@ def _main(argv: list[str] | None = None) -> int:
                     return 1
             return _cmd_run([recipe], args.command, env_file or ".env", args.redact, prefer)
         if args.cmd == "forget":
+            refused = _confirm_forget(recipe, args.yes)
+            if refused is not None:
+                return refused
             # one pass per stored value: an App ID and its secret are both removed
             code = max(_cmd_forget(dict(recipe, env_var=var), args.env_file)
                        for var in recipes_mod.env_vars(recipe))

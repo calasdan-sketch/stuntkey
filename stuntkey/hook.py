@@ -168,9 +168,20 @@ STEAL_RULES = (
      "run a command with the key and turn output hiding off"),
     (re.compile(r"(?:(?:^|[\s;&|`(\"'/\\])(?:stuntkey|oathkey)(?:\.exe)?|\s-\w*m\s+(?:stuntkey|oathkey)(?:\.(?:cli|__main__))?)"
                 r"(?:\s+--project-dir(?:\s+|=)\S+)*\s+"
-                r"(?:remote|deploy|trust-server|export|run|serve|call)(?![\w-])", re.I),
-     "run a stuntkey command that uses or sends a stored key (remote, deploy, "
-     "trust-server, export, run, serve, call: only the person runs those)"),
+                r"(?:remote|deploy|trust-server|export|run|serve|call|forget|stop|resume|rotate|"
+                r"caps\s+(?:set|--clear)|policy\s+approve|(?:hook\s+)?uninstall|"
+                r"install\s+(?:[^\n;&|]*\s)?--uninstall)(?![\w-])", re.I),
+     "run a stuntkey command that uses, sends or removes a stored key, or switches "
+     "its protection off (remote, deploy, trust-server, export, run, serve, call, "
+     "forget, stop, resume, rotate, caps set/--clear, policy approve, uninstall, hook uninstall: "
+     "only the person runs those)"),
+    # Bash text that writes, edits or removes the files that decide which hooks
+    # and MCP servers run. Pattern-based: a script (python -c ...) gets past it.
+    (re.compile(r"(?:>>?|\btee\b|\b(?:cp|mv|rm)\b|\bsed\b[^\n;&|]*?\s(?:-[A-Za-z]*i\b|--in-place))"
+                r"[^\n;&|]*?(?:\.claude[/\\]settings(?:\.local)?\.json|\.mcp\.json|\.claude\.json)"
+                r"(?![\w.-])", re.I),
+     "change the Claude settings files that decide which hooks and tools run "
+     "(only the person may)"),
     (re.compile(_SAFE + r"secret-tool\s+(?:lookup|search)\b", re.I), "read the Linux keyring"),
     (re.compile(_SAFE + r"security\s+(?:find-\w+-password|dump-keychain|export)\b", re.I),
      "read the macOS keychain"),
@@ -1423,6 +1434,19 @@ def _offer_agent_rules(args, out, ask=None) -> str:
 
 def _describe(handler: dict) -> str:
     return " ".join([handler.get("command", ""), *handler.get("args", [])])
+
+
+def is_installed() -> bool:
+    """Is our hook in the user's settings or in this folder's? Read only;
+    an unreadable file counts as not installed."""
+    for path in (user_settings_path(), project_settings_path()):
+        try:
+            groups = _pretool_list(load_settings(path), create=False) or []
+        except SettingsError:
+            continue
+        if any(True for _ in _our_handlers(groups)):
+            return True
+    return False
 
 
 def _status(args, out, run) -> int:

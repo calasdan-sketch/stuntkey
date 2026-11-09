@@ -15,7 +15,9 @@ stuntkey connect github        # opens the key page, shows the exact steps
 #   and only then saved to .env (owner-only) - or to the OS keychain:
 stuntkey connect openai --store keychain
 stuntkey run openai -- python app.py     # keychain key goes to that command only
-stuntkey forget openai         # remove it from the keychain and .env
+stuntkey forget openai --yes       # remove it from the keychain and .env
+# Test-only: STUNTKEY_KEYCHAIN=memory (or file:<folder>) swaps the OS keychain for a
+# NOT SECURE stand-in, so trials never touch your real one. Never use it for real keys.
 
 # a whole project at once (0.6.0):
 stuntkey init --write          # list the services the project uses (stuntkey.json, no secrets)
@@ -445,7 +447,7 @@ stuntkey doctor-recipes [service ...] [--json] [--timeout S] [--my-recipes]   # 
 stuntkey connect <service> --allow-clipboard-history   # keep copy-and-go even if Windows keeps a history
 stuntkey rotate <service>            # replace a stored key
 stuntkey panic <service> [--dry-run] [--env-file FILE] [--no-browser]   # leaked key: revoke (API or page), get a new one, find the old one (terminal only)
-stuntkey forget <service>            # remove the key: OS keychain entry + .env line(s)
+stuntkey forget <service> --yes         # remove the key: OS keychain entry + .env line(s)
 stuntkey add                         # capture a new service recipe interactively
 stuntkey find <query>                # find free public APIs for a task
 stuntkey find <query> --category <name>   # only that category (part of its name)

@@ -22,6 +22,7 @@ injects them into a child process's environment - never printed.
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -58,7 +59,11 @@ def target_name(service: str, prefix: str = TARGET_PREFIX) -> str:
 def detect_backend(platform: str | None = None, which=shutil.which,
                    ctypes_mod=None) -> str | None:
     """Pick the backend for `platform` (default: this machine), or None
-    when the OS offers nothing we can drive without extra packages."""
+    when the OS offers nothing we can drive without extra packages. With
+    STUNTKEY_KEYCHAIN set, always the test backend (the OS is not asked)."""
+    test = test_backend()
+    if test:
+        return test
     plat = platform if platform is not None else sys.platform
     if plat == "darwin":
         return MACOS if which("security") else None
@@ -76,7 +81,67 @@ def detect_backend(platform: str | None = None, which=shutil.which,
 
 
 def label(backend: str | None) -> str:
+    if backend and backend.startswith(TEST_PREFIX):
+        return "test " + ("memory" if backend == TEST_MEMORY else "file") +             " keychain (not secure)"
     return LABELS.get(backend or "", "no OS keychain")
+
+
+# ------------------------------------------------- test backend (not secure)
+# STUNTKEY_KEYCHAIN=memory | file:<dir>: for tests and manual trials, so they
+# never touch the real keychain. The keys sit in this process's memory, or
+# in a plain JSON file: NOT secure, never for real keys.
+
+TEST_ENV = "STUNTKEY_KEYCHAIN"
+TEST_PREFIX = "test-"
+TEST_MEMORY = "test-memory"
+TEST_FILE = "test-file:"
+_memory: dict[str, str] = {}
+
+
+def test_backend() -> str | None:
+    """The test backend named by STUNTKEY_KEYCHAIN, else None. A value that
+    is neither `memory` nor `file:<dir>` is an error: a typo must not fall
+    back to the real keychain."""
+    value = os.environ.get(TEST_ENV, "")
+    if not value:
+        return None
+    if value == "memory":
+        return TEST_MEMORY
+    if value.startswith("file:") and len(value) > 5:
+        return TEST_FILE + value[5:]
+    raise KeychainError(f"{TEST_ENV} must be `memory` or `file:<folder>`")
+
+
+def _test_store(op: str, backend: str, service: str, account: str,
+                key: str | None, prefix: str) -> str | None:
+    name = f"{target_name(service, prefix)}|{account}"
+    path = None
+    if backend == TEST_MEMORY:
+        data = _memory
+    else:
+        path = os.path.join(backend[len(TEST_FILE):], "stuntkey-test-keychain.json")
+        try:
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+        except FileNotFoundError:
+            data = {}
+        except (OSError, ValueError) as e:
+            raise KeychainError(f"test keychain file {path} unreadable "
+                                f"({type(e).__name__})") from None
+    if op == "read":
+        return data.get(name)
+    if op == "store":
+        data[name] = key or ""
+    elif name in data:
+        del data[name]
+    else:
+        return ""
+    if path:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+    return None
 
 
 # ----------------------------------------------------------------- macOS
@@ -178,6 +243,15 @@ def _win_structs(ctypes_mod):
     return CREDENTIAL
 
 
+WINDOWS_MAX_BLOB = 2560      # CRED_MAX_CREDENTIAL_BLOB_SIZE: 1280 UTF-16 characters
+
+
+def _check_windows_size(blob: bytes) -> None:
+    if len(blob) > WINDOWS_MAX_BLOB:
+        raise KeychainError("Windows Credential Manager keeps at most 1280 "
+                            f"characters per key; this one is {len(blob) // 2}.")
+
+
 def _windows(op: str, service: str, account: str, key: str | None,
              ctypes_mod=None, prefix: str = TARGET_PREFIX) -> str | None:
     ct = ctypes_mod
@@ -190,6 +264,7 @@ def _windows(op: str, service: str, account: str, key: str | None,
     target = target_name(service, prefix)
     if op == "store":
         blob = (key or "").encode("utf-16-le")
+        _check_windows_size(blob)
         buf = ct.create_string_buffer(blob, len(blob))
         cred = CREDENTIAL()
         cred.Flags = 0
@@ -231,6 +306,8 @@ def _dispatch(op: str, backend: str, service: str, account: str,
               key: str | None, run, ctypes_mod,
               prefix: str = TARGET_PREFIX) -> str | None:
     tool = _TOOL_NAMES.get(backend, "the keychain")
+    if backend.startswith(TEST_PREFIX):
+        return _test_store(op, backend, service, account, key, prefix)
     try:
         if backend == MACOS:
             return _macos(op, service, account, key, run, prefix)

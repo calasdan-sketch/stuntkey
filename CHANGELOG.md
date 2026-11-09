@@ -2,6 +2,51 @@
 
 ## Unreleased
 
+### Expert round 3
+
+- **`stuntkey forget <service>` asks before it deletes** ("Remove the stored <Name> key? It
+  cannot be recovered. [y/N]"). Anything but y or yes removes nothing and exits 1. New
+  `--yes` skips the question. With no terminal and no `--yes` it prints
+  `stuntkey forget needs --yes when not run in a terminal`, removes nothing and exits 2.
+  Scripts that call `forget` must now pass `--yes`.
+- **The Claude Code hook refuses more self-disarming Bash commands**: `stuntkey` /
+  `oathkey` `forget`, `stop`, `resume`, `rotate`, `caps set` / `caps --clear`, `policy
+  approve`, `uninstall`, `hook uninstall` and `install --uninstall`; and Bash text that redirects into,
+  `tee`s, `sed -i`s, `cp`s, `mv`s or `rm`s `.claude/settings.json`,
+  `.claude/settings.local.json`, `.mcp.json` or `~/.claude.json`. Reading those files
+  (`cat`, `grep`) still passes. The settings rule is pattern-based: a script such as
+  `python -c` can still rewrite the file (SECURITY.md, Known limits). `leakbench` has a
+  new probe, `bash-sed-settings` (64 probes: `stuntkey-hook` 48 blocked, 14 masked, 2
+  leaked; `stuntkey-full` 50 / 14 / 0; `none` 57 leaked, 7 n/a).
+- **`STUNTKEY_KEYCHAIN` test backend** (`memory`, or `file:<folder>` as a plain JSON
+  file, NOT secure): with it set the real OS keychain is never called. `doctor` prints
+  `[info] keychain: test backend <value>`. A value that is neither is an error, not a
+  fall back to the real keychain. For tests and manual trials only; see CONTRIBUTING.md.
+- **README first steps** now start with `stuntkey scan` and include `stuntkey hook install`
+  (stops Claude reading `.env` files). `scan` adds, under each key it found a service for,
+  "after saving, delete that line from .env or run stuntkey forget <svc>, then start your
+  app with stuntkey run <svc> -- <your command>". `doctor` prints an `[info]` line, and
+  still exits 0, when Claude Code is plugged in but the hook is not installed.
+- **Bash output mask covers stored keys that hold delimiter characters** (one of
+  `; , ( ) [ ] { } < > & |`, a quote, a backslash), in the form typed: a window of the key's
+  length is slid over each whitespace-delimited run. `fingerprints.json` gains a
+  `delimited` set (a fingerprint and a salted rolling hash of the key; no plaintext). Keys
+  that hold whitespace are still not masked. Measured on one PC: 1 MB of plain sentences
+  with 8 such keys 0.17 s (0.15 s without them); 1 MB of dense minified-JSON-like text with no
+  spaces 1.3 s.
+- **`stuntkey install` says so when a config file is not valid JSON**:
+  `<tool>: NOT set up. <path> is not valid JSON (line N). Fix or delete it, then run
+  stuntkey install again. File left untouched.` The file is not changed, other tools are
+  still set up, and the command exits 1.
+- **Windows keychain**: a key over 1280 characters now fails with "Windows Credential
+  Manager keeps at most 1280 characters per key; this one is N." (instead of "error
+  1783"), and the usual `.env` fallback follows. No chunking.
+- **Docs made honest**: the 0.9.x notes below no longer claim the README lists the mask's
+  gaps (SECURITY.md does; the README says `leaked=0` counts Bash output only); SECURITY.md
+  adds keys split by any separator, a key glued inside a word in base64, double-encoded keys,
+  `git credential fill` and PowerShell `[Environment]::GetEnvironmentVariable('X')`; the
+  demo recording no longer shows a version number (its `--version` step was dropped).
+
 ### Changed (fewer tokens in the AI's context)
 
 - **`call_api` cuts long answers at 24,000 characters** by default (`truncated: true`
@@ -52,9 +97,12 @@
   length (not the key) for this; a file from an older version works as before until the
   key is saved again. It searches up to 8 distinct key lengths, and only the key as
   typed (not its URL-encoded or base64 form). With one stored key, 1 MB of
-  ordinary prose masked in 0.02-0.04 s; 1 MB of token- or path-like text in
+  plain sentences masked in 0.02-0.04 s; 1 MB of markdown or technical text
+  in about 0.5-0.8 s; 1 MB of token- or path-like text in
   0.7-1.8 s; 1 MB of 512-character words in 2.4-2.8 s (measured on one PC, timings
-  vary). A hook that times out fails open: the output is shown unmasked.
+  vary). Several stored keys of different lengths raise the cost: with 8 keys, 1 MB of
+  markdown-like text took 1.6 s and 1 MB of path-like text 7.6 s (measured 2026-11-09). A
+  scan that exceeds the 10 s hook timeout shows the output unmasked.
 - `stuntkey install` / `uninstall` with no terminal to answer on now says "no terminal
   to answer on; re-run with --yes" and exits 1, instead of a traceback.
 - The README, `install --help` and `doctor` say that Claude Code and VS Code are set up
@@ -63,14 +111,14 @@
 
 ### Docs
 
-- SECURITY.md and the README now say what the Bash output mask does not detect (changed
+- SECURITY.md now lists what the Bash output mask does not detect (changed
   case, reversed text, hex, URL-safe base64, keys split across lines, keys inside a `Basic`
-  header) and that stuntkey's file protection covers `.env`, `.pem`/`.key` and `~/.ssh`
+  header) and says that stuntkey's file protection covers `.env`, `.pem`/`.key` and `~/.ssh`
   shapes plus a named list of other tools' files by name only (`.netrc`, `.npmrc`, Docker
   `config.json`, `.kube/config`, `.aws/credentials`: plain Read, `cat`, `head`, `type`
   refused; copies and scripts pass), and not GitHub CLI's `hosts.yml` or `gh auth token`.
-  Each was checked with a temp key or temp home. The leakbench report footer and the
-  README say `leaked=0` counts Bash output only; PowerShell and Monitor output is not
+  Each was checked with a temp key or temp home. The leakbench report footer says,
+  and the README says, `leaked=0` counts Bash output only; PowerShell and Monitor output is not
   masked.
 - README: after `install`, restart the AI app; the permission window's title is shown.
 - SECURITY.md named "5 leaks"; the measured numbers are `stuntkey-hook` 2 (named) and

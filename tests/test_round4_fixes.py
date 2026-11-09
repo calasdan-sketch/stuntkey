@@ -496,7 +496,7 @@ class TestForget(unittest.TestCase):
         with mock.patch.object(recipes_mod, "load_recipes", return_value=cat), \
                 mock.patch.object(keychain_mod, "detect_backend", return_value=None), \
                 redirect_stdout(out):
-            code = cli_mod.main(["forget", "acme", "--env-file", env])
+            code = cli_mod.main(["forget", "acme", "--yes", "--env-file", env])
         self.assertEqual(code, 0)
         self.assertIn("forgot acme", out.getvalue())
         self.assertNotIn("ACME_API_KEY", store_mod.load_env(env))

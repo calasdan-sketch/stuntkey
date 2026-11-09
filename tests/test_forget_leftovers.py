@@ -506,7 +506,7 @@ esac
                          FAKE_SECRETS=secrets,
                          PYTHONPATH=_isolation.REPO)
         proc = subprocess.run(
-            [sys.executable, "-m", "stuntkey", "forget", "github",
+            [sys.executable, "-m", "stuntkey", "forget", "github", "--yes",
              "--env-file", env], capture_output=True, env=child_env,
             cwd=new_folder(), timeout=120)
         text = proc.stdout.decode("utf-8", "replace")

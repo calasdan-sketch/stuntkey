@@ -8,7 +8,7 @@ that have already leaked into the files your agent reads.
 
 ### Measured, not asserted
 
-`leakbench` is a vendor-neutral benchmark of 63 ways an AI coding agent leaks a
+`leakbench` is a vendor-neutral benchmark of 64 ways an AI coding agent leaks a
 credential — reading `.env`, dumping the environment, printing a traceback,
 following an injected instruction. Run it yourself: `python -m leakbench --profile stuntkey-hook` (the default profile, `none`, is the unprotected baseline).
 
@@ -39,18 +39,22 @@ external security review, and what we do instead.
 - Formerly OathKey (and before that SafeEasyAPI).
 - Home page and docs: https://calasautomations.com/devtools/stuntkey/
 
-![Recording of a terminal running stuntkey --version, list, selftest and audit show. The output is real; the demo does not show saving a key.](https://raw.githubusercontent.com/calasdan-sketch/stuntkey/main/docs/demo.svg)
+![Recording of a terminal running stuntkey list, selftest and audit show. The output is real; the demo does not show saving a key.](https://raw.githubusercontent.com/calasdan-sketch/stuntkey/main/docs/demo.svg)
 
-## Start here (four steps)
+## Start here
 
 Need pipx? https://pipx.pypa.io
 
 ```
 pipx install stuntkey
+stuntkey scan                  # step 0: finds keys already sitting in your project
 stuntkey get github            # opens the key page; you click Copy; stuntkey tests the key and saves it
 stuntkey install               # plug stuntkey into Claude, Cursor or VS Code, then restart that app
+stuntkey hook install          # stops Claude reading .env files
 stuntkey doctor                # health check; "AI tools: plugged into ..." means it is connected
 ```
+
+The hook stops the agent running `stuntkey run`; you start your app yourself with `stuntkey run <svc> -- <your command>`.
 
 Run `stuntkey install` in your project folder. Claude Code and VS Code are set up per folder (`.mcp.json`, `.vscode/mcp.json`); Claude Desktop and Cursor are set up once for all projects.
 
@@ -108,6 +112,7 @@ It reduces risk; it does not remove it, and no independent security review has b
 - **It does not protect `run`.** A program started with `run` holds the key and can print it.
 - **It does not catch every disguise.** Scrubbing is best effort.
 - **The Claude Code hook masks Bash output only.** Claude Code documents no output shape for Read or Grep, so the hook cannot mask them: it refuses Read of private keys, credentials files and files holding a key you stored instead. A key stuntkey never stored, in a format it does not know, in an ordinary file, still reaches the AI through Read. A script the AI writes is checked when it is saved, for obvious leaks only (printing the environment, opening `.env`); a script that hides what it does is checked only when it runs through Bash. Scores per leak are in [leakbench/README.md](https://github.com/calasdan-sketch/stuntkey/blob/main/leakbench/README.md).
+- **Windows keeps at most 1280 characters per key.** A longer key is not saved to the Credential Manager (stuntkey says so and keeps it in the `.env` file instead).
 - **The clipboard.** `get` empties it right away, but other programs or clipboard-history tools may see the key while it is there.
 - **A log that can't be rewritten.** The log shows accidents and casual edits. Someone running as you could rewrite it.
 - **It sends no telemetry.** stuntkey talks only to the services you call (and, for `find`, a public list on GitHub).
@@ -147,7 +152,7 @@ stuntkey uses only Python's own standard library, and a test in the repository (
 - `caps set openai --calls-day 500 --tokens-day 200000 --calls-session 100` - a spending limit per key, counted across every program using it (`--clear` removes it; `caps show` lists them). The limit can be passed by one call already in flight.
 - `stop` / `resume` - a kill switch: `stop` refuses every brokered and proxied call at once; `resume` (asks you first) lets them through again.
 - `policy show` / `policy approve` - an `stuntkey.policy` file lists the methods and paths each service may use. A project's file can only narrow your own. A new or changed file is obeyed only after you approve it.
-- `forget <service>` - remove a stored key.
+- `forget <service>` - remove a stored key (asks first; `--yes` skips the question, and is needed outside a terminal).
 
 **Security**
 

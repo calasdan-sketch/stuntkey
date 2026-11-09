@@ -165,14 +165,18 @@ def doctor(env=None, which=shutil.which) -> dict:
     from . import keychain as keychain_mod
     checks = []
 
-    def add(name: str, ok: bool, detail: str, fix: str = ""):
-        checks.append({"check": name, "ok": ok, "detail": detail, "fix": fix})
+    def add(name: str, ok: bool, detail: str, fix: str = "", info: bool = False):
+        # info: shown as [info], never makes the result "not ready"
+        checks.append({"check": name, "ok": ok or info, "detail": detail, "fix": fix,
+                       "info": info})
 
     add("python", sys.version_info >= (3, 10), platform.python_version(),
         "stuntkey needs Python 3.10 or newer.")
     backend = keychain_mod.detect_backend()
     add("keychain", backend is not None, keychain_mod.label(backend) if backend else "none",
         "Without an OS keychain, keys are kept in a .env file (owner-only).")
+    if keychain_mod.test_backend():
+        add("keychain", True, f"test backend {env.get(keychain_mod.TEST_ENV, '')}", info=True)
     add("ssh", bool(which("ssh")), "found" if which("ssh") else "missing",
         "Needed for `remote`/`deploy`. Windows: Settings > Apps > Optional features > OpenSSH Client.")
     add("git", bool(which("git")), "found" if which("git") else "missing",
@@ -207,6 +211,10 @@ def _doctor_stuntkey_checks(add) -> None:
         plugged = clients.plugged()
         add("AI tools", True, ("plugged into " + ", ".join(clients.where(n) for n in plugged)) if plugged
             else "none yet", "" if plugged else "Run `stuntkey install` to plug it into Claude, Cursor or VS Code.")
+        from . import hook
+        if "claude-code" in plugged and not hook.is_installed():
+            add("Claude Code hook", True, "not installed (agent can still read .env). "
+                "Fix: stuntkey hook install", info=True)
     except Exception as e:                                   # noqa: BLE001
         add("AI tools", False, f"could not check ({type(e).__name__})", "")
     try:
@@ -222,7 +230,7 @@ def _doctor_stuntkey_checks(add) -> None:
 def format_doctor(result: dict) -> str:
     lines = []
     for c in result["checks"]:
-        mark = "ok " if c["ok"] else "FIX"
+        mark = "info" if c.get("info") else "ok " if c["ok"] else "FIX"
         lines.append(f"  [{mark}] {c['check']}: {c['detail']}" +
                      (f"  -> {c['fix']}" if (not c["ok"] and c["fix"]) else ""))
     lines.append("")

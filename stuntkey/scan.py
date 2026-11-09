@@ -1202,6 +1202,10 @@ def render_text(result: ScanResult) -> str:
         if f.detail:
             out.append(f"      note: {f.detail}")
         out.append(f"      next: {f.next_step}")
+        if f.provider and not bundle:
+            out.append(f"      after saving, delete that line from .env or run "
+                       f"stuntkey forget {f.provider}, then start your app with "
+                       f"stuntkey run {f.provider} -- <your command>")
     quiet = [s for s in result.skipped if not s.incomplete]
     if quiet:
         counts = collections.Counter(s.reason for s in quiet)
