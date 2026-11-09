@@ -8,15 +8,15 @@ that have already leaked into the files your agent reads.
 
 ### Measured, not asserted
 
-`leakbench` is a vendor-neutral benchmark of 61 ways an AI coding agent leaks a
+`leakbench` is a vendor-neutral benchmark of 63 ways an AI coding agent leaks a
 credential — reading `.env`, dumping the environment, printing a traceback,
-following an injected instruction. Run it yourself: `python -m leakbench`.
+following an injected instruction. Run it yourself: `python -m leakbench --profile stuntkey-hook` (the default profile, `none`, is the unprotected baseline).
 
 | Protection | blocked | masked | leaked |
 |---|---|---|---|
-| nothing | 0 | 0 | **54** |
-| stuntkey hook | **47** | 12 | **2** |
-| stuntkey hook + spending caps | **49** | 12 | **0** |
+| nothing | 0 | 0 | **56** |
+| stuntkey hook | **47** | 14 | **2** |
+| stuntkey hook + spending caps | **49** | 14 | **0** |
 
 **The 2 the hook alone does not stop**, named rather than hidden:
 `runaway-loop-no-cap` and `unbounded-retry` — a loop that keeps making paid
@@ -49,6 +49,8 @@ stuntkey get github            # opens the key page; you click Copy; stuntkey te
 stuntkey install               # plug stuntkey into Claude, Cursor or VS Code, then restart that app
 stuntkey doctor                # health check; "AI tools: plugged into ..." means it is connected
 ```
+
+Run `stuntkey install` in your project folder. Claude Code and VS Code are set up per folder (`.mcp.json`, `.vscode/mcp.json`); Claude Desktop and Cursor are set up once for all projects.
 
 When a key page asks which permissions to give, pick read-only or the minimum it offers.
 

@@ -17,6 +17,8 @@ import time
 
 NAME = "stuntkey"
 LEGACY_NAME = "oathkey"     # the entry 0.8 wrote: `install` replaces it
+PER_FOLDER = ("claude-code", "vscode")     # config lives in the project folder
+NO_TERMINAL = "no terminal to answer on; re-run with --yes"
 LABELS = {"claude-desktop": "Claude Desktop", "cursor": "Cursor",
           "claude-code": "Claude Code", "vscode": "VS Code"}
 
@@ -72,6 +74,24 @@ def targets(env=None, home=None, cwd=None) -> dict:
     out["claude-code"] = (os.path.join(cwd, ".mcp.json"), "mcpServers")
     out["vscode"] = (os.path.join(cwd, ".vscode", "mcp.json"), "servers")
     return out
+
+
+def where(name: str, cwd: str | None = None) -> str:
+    """`claude-code (this folder only: <folder>)`; the others as they are."""
+    if name in PER_FOLDER:
+        return f"{name} (this folder only: {cwd or os.getcwd()})"
+    return name
+
+
+def _go_ahead(ask, text: str) -> bool:
+    try:
+        return ask(text).strip().lower() in ("y", "yes")
+    except (EOFError, KeyboardInterrupt):
+        raise _NoTerminal from None
+
+
+class _NoTerminal(Exception):
+    pass
 
 
 def plugged(tg: dict | None = None) -> list[str]:
@@ -156,6 +176,14 @@ def apply(p: dict) -> str | None:
 
 
 def run(names, yes: bool, ask=input, out=print, **kw) -> int:
+    try:
+        return _run(names, yes, ask, out, **kw)
+    except _NoTerminal:
+        out(NO_TERMINAL)
+        return 1
+
+
+def _run(names, yes, ask, out, **kw) -> int:
     tg = targets(**kw)
     chosen = names or [n for n, (path, _) in tg.items()
                        if os.path.exists(path) or n in ("claude-code",)]
@@ -178,7 +206,7 @@ def run(names, yes: bool, ask=input, out=print, **kw) -> int:
         if p.get("legacy") is not None:
             out(f"    and replace the old '{LEGACY_NAME}' entry (0.8):\n"
                 + legacy_diff(p).rstrip("\n"))
-        if not yes and ask(f"    go ahead? [y/N] ").strip().lower() not in ("y", "yes"):
+        if not yes and not _go_ahead(ask, "    go ahead? [y/N] "):
             out("    skipped.")
             continue
         b = apply(p)
@@ -197,6 +225,14 @@ def run(names, yes: bool, ask=input, out=print, **kw) -> int:
 
 
 def remove(names, yes: bool, ask=input, out=print, **kw) -> int:
+    try:
+        return _remove(names, yes, ask, out, **kw)
+    except _NoTerminal:
+        out(NO_TERMINAL)
+        return 1
+
+
+def _remove(names, yes, ask, out, **kw) -> int:
     """Take stuntkey out of the AI tools' config files (other servers stay)."""
     tg = targets(**kw)
     chosen = names or list(tg)
@@ -216,7 +252,7 @@ def remove(names, yes: bool, ask=input, out=print, **kw) -> int:
         if not isinstance(data.get(key), dict) or NAME not in data[key]:
             continue
         out(f"  {n}: will remove '{NAME}' from {path}")
-        if not yes and ask("    go ahead? [y/N] ").strip().lower() not in ("y", "yes"):
+        if not yes and not _go_ahead(ask, "    go ahead? [y/N] "):
             out("    skipped.")
             continue
         new = json.loads(json.dumps(data))

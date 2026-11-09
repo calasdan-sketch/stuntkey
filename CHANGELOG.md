@@ -1,5 +1,56 @@
 # Changelog
 
+## Unreleased
+
+### Changed (fewer tokens in the AI's context)
+
+- **`call_api` cuts long answers at 24,000 characters** by default (`truncated: true`
+  plus a short note to ask for less with the service's `limit` or fields parameters).
+  New optional argument `max_chars` (1 to 1,000,000) raises or lowers it. The whole
+  answer is still scrubbed for the key before it is cut. This applies to the MCP tool
+  only; `stuntkey call`, the web door and the proxy are unchanged.
+- **`list_services` takes `connected_only: true`** (only services with a saved key). The
+  duplicate `env_var` field is gone from each row: use `env_vars` (its first entry is the
+  old `env_var`). Nothing in this repo read it.
+- **The MCP `tools/list` text is under 3,000 characters** (was about 5,000). The long
+  `capture_key` explanation (states, waiting times) now comes in the reply to
+  `request_connect` and `capture_key start` as `capture_help`. Tool names and
+  parameters are unchanged; the rules (never paste a key into chat, do not retry after a
+  refusal) are still in the descriptions.
+
+### Fixed
+
+- **Caps fail closed.** `caps.json` with a value that is not a whole number (text,
+  decimal, true/false), a negative number or a limit name stuntkey does not know now
+  refuses calls ("so no call was made") naming the service, instead of silently
+  ignoring that cap. A usage record with a non-number now refuses the same way; a
+  negative count is read as 0.
+- **A key glued inside a word is now masked in Bash output** (`/bot<KEY>/getMe`,
+  `/v1/<KEY>/x`, `id-<KEY>`, `<KEY>+x`). `fingerprints.json` records each stored key's
+  length (not the key) for this; a file from an older version works as before until the
+  key is saved again. It searches up to 8 distinct key lengths, and only the key as
+  typed (not its URL-encoded or base64 form). A 1 MB output of ordinary text masks in
+  about 0.03 s; 1 MB of unbroken 512-character words took about 2.4 s in a test.
+- `stuntkey install` / `uninstall` with no terminal to answer on now says "no terminal
+  to answer on; re-run with --yes" and exits 1, instead of a traceback.
+- The README, `install --help` and `doctor` say that Claude Code and VS Code are set up
+  per folder (run `install` in your project folder) and Claude Desktop and Cursor once
+  for all projects; `doctor` names the folder for the per-folder ones.
+
+### Docs
+
+- SECURITY.md named "5 leaks"; the measured numbers are `stuntkey-hook` 2 (named) and
+  `stuntkey-full` 0. The documented command is now `python -m leakbench --profile
+  stuntkey-hook` (the default profile `none` is the unprotected baseline). Known limits
+  added, each checked with a local repro: output masking is Bash-only; glob forms
+  (`cat ./.e*`, `cat .en[v]`) and paths built at run time pass the pre-call hook; stored
+  keys over 512 characters, or containing a space or one of `; , ( ) & |` or a quote, are
+  not masked by the hook.
+- leakbench: 63 probes (two new: key in a URL path, `curl -v` request line). `none` 0/0/56,
+  `stuntkey-hook` 47 blocked / 14 masked / 2 leaked, `stuntkey-full` 49/14/0. README no
+  longer says "every `.env` read" is blocked, and says the spend probes test the counter,
+  not an agent loop.
+
 ## 0.9.1
 
 ### Added

@@ -293,6 +293,16 @@ def _write_fingerprints(path: str, data: dict) -> None:
         raise
 
 
+class _Prints(frozenset):
+    """The fingerprints, plus the distinct lengths of the stored keys (a
+    frozenset still, so every caller that passes it around is unchanged)."""
+    lengths: tuple = ()
+
+
+MAX_LENGTHS = 8     # ponytail: window scan costs words x lengths x offsets; more keys than
+                    # this with distinct lengths -> only the 8 shortest are searched inside words
+
+
 def remember_key(name: str, secret: str, path: str | None = None) -> None:
     """Record the fingerprints of a key just stored or rotated (`name`:
     "service/ENV_VAR"; a second call for the same name replaces the first).
@@ -302,6 +312,7 @@ def remember_key(name: str, secret: str, path: str | None = None) -> None:
     salt = bytes.fromhex(data["salt"])
     data["keys"][name] = (sorted(_fp(salt, f) for f in _fingerprint_forms(secret))
                           if len(secret) >= MIN_LEN else [])
+    data.setdefault("lengths", {})[name] = [len(secret)] if len(secret) >= MIN_LEN else []
     _write_fingerprints(path, data)
 
 
@@ -312,6 +323,8 @@ def forget_key(name: str, path: str | None = None) -> bool:
     if name not in data.get("keys", {}):
         return False
     del data["keys"][name]
+    if isinstance(data.get("lengths"), dict):
+        data["lengths"].pop(name, None)
     _write_fingerprints(path, data)
     return True
 
@@ -321,8 +334,12 @@ def load_fingerprints(path: str | None = None) -> tuple[bytes, frozenset]:
     data = _read_fingerprints(path or fingerprint_path())
     if not data:
         return b"", frozenset()
-    return (bytes.fromhex(data["salt"]),
-            frozenset(h for hs in data["keys"].values() if isinstance(hs, list) for h in hs))
+    prints = _Prints(h for hs in data["keys"].values() if isinstance(hs, list) for h in hs)
+    lens = data.get("lengths")
+    if isinstance(lens, dict):
+        prints.lengths = tuple(sorted({n for ls in lens.values() if isinstance(ls, list)
+                                       for n in ls if isinstance(n, int) and n >= MIN_LEN}))[:MAX_LENGTHS]
+    return bytes.fromhex(data["salt"]), prints
 
 
 def _stored_spans(text: str, salt: bytes, prints: frozenset):
@@ -334,10 +351,21 @@ def _stored_spans(text: str, salt: bytes, prints: frozenset):
         for i, ch in enumerate(word):
             if ch in "=:":
                 cands.update(((i + 1, len(word)), (0, i)))
+        hit = False
         for a, b in cands:
             piece = word[a:b].rstrip(".")
             if len(piece) >= MIN_LEN and _fp(salt, piece) in prints:
+                hit = True
                 yield base + a, base + a + len(piece)
+        if not hit:                  # a key glued inside the word (URL path, id-KEY, ...)
+            for n in getattr(prints, "lengths", ()):
+                i = 0
+                while i + n <= len(word):
+                    if n < len(word) and _fp(salt, word[i:i + n]) in prints:
+                        yield base + i, base + i + n
+                        i += n
+                    else:
+                        i += 1
 
 
 def has_stored_key(text: str, prints: tuple[bytes, frozenset]) -> bool:

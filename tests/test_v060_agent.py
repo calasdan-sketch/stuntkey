@@ -84,7 +84,7 @@ class TestRequestConnect(Base):
 
     def test_only_whitelisted_fields(self):
         r = json.loads(call("request_connect", {"service": "groq"}, self.d)["result"]["content"][0]["text"])
-        self.assertLessEqual(set(r), {"service", "env_var", "env_vars", "status", "instructions", "key_page", "opened_key_page", "browser", "rules", "note"})
+        self.assertLessEqual(set(r), {"service", "env_var", "env_vars", "status", "instructions", "key_page", "opened_key_page", "browser", "rules", "note", "capture_help"})
 
     def test_present_when_the_env_file_has_it(self):
         r = json.loads(call("request_connect", {"service": "stripe"}, self.d)["result"]["content"][0]["text"])

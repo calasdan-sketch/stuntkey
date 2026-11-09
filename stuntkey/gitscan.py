@@ -205,7 +205,7 @@ def _doctor_stuntkey_checks(add) -> None:
     try:
         from . import clients
         plugged = clients.plugged()
-        add("AI tools", True, ("plugged into " + ", ".join(plugged)) if plugged
+        add("AI tools", True, ("plugged into " + ", ".join(clients.where(n) for n in plugged)) if plugged
             else "none yet", "" if plugged else "Run `stuntkey install` to plug it into Claude, Cursor or VS Code.")
     except Exception as e:                                   # noqa: BLE001
         add("AI tools", False, f"could not check ({type(e).__name__})", "")

@@ -954,7 +954,8 @@ Add to Claude Code (`claude mcp add`) or `~/.claude.json`:
 runs your Python 3.) Eight tools: `list_services`, `get_recipe`,
 `find_public_apis`, `get_public_api`, `request_connect`, `capture_key`,
 `needs_keys` (the agent handshake, above) and `call_api` (make a brokered call
-with a saved key: service, method, path, optional `query_json` and `body_json`;
+with a saved key: service, method, path, optional `query_json` and `body_json`, and `max_chars`: the answer body is cut at 24,000 characters by default, up to 1,000,000;
+`list_services` takes `connected_only: true`;
 it reads the OS keychain only, and anything but a GET asks you first). The recipe tells the agent the
 exact steps and ends with: call `capture_key` (or, if that is unavailable,
 ask the person to run `stuntkey connect <service>`) — never ask the user

@@ -56,6 +56,22 @@ CAPTURE_RULES = (
     "Do not copy anything else while capture is armed: the next key-shaped copy is taken.",
 )
 
+# Sent in the replies (paid only when used), not in the tools/list text.
+CAPTURE_HELP = (
+    "capture_key: action=start arms a one-shot capture and returns the browser steps; "
+    "you create the key and click the vendor's Copy button. stuntkey takes it from the "
+    "clipboard, empties the clipboard, tests it with the vendor and stores it. "
+    "action=status waits up to 25 s by default (wait_seconds, at most 45) and returns "
+    "{state, env_vars, stored_in, account}, never the key; timeout_seconds (10 to 180, "
+    "default 120) is how long to wait for the Copy. The person allows it in a window "
+    "or with `stuntkey allow-agent`. States: consent_pending, consent_needed, "
+    "consent_expired (tell the person; they can ask again), consent_denied, "
+    "consent_granted (then call start), replace_granted (then start with replace=true), "
+    "unavailable, unsupported_gateless, refused, busy, already_stored, waiting, "
+    "validating, confirming (the person confirms the account in a window), storing, "
+    "stored, failed, timeout, cancelled, idle. Login, 2FA, CAPTCHA and password "
+    "prompts are for the person. Do not retry after a refusal.")
+
 
 def browser_steps(recipe: dict) -> dict:
     """What the agent does in the browser, from the recipe (plain text only)."""
@@ -209,6 +225,7 @@ def request_connect(service, catalog: dict, open_key_page: bool = False,
         f"do not print or transform the variable. " + AGENT_RULE_CAPTURE)
     out["browser"] = browser_steps(recipe)
     out["rules"] = list(CAPTURE_RULES)
+    out["capture_help"] = CAPTURE_HELP
     out["key_page"] = recipe["key_url"]
     if open_key_page:
         if opener is None:
@@ -320,4 +337,5 @@ def capture_key(args: dict, catalog: dict, cwd: str | None = None, manager=None)
     if out.get("state") == "waiting":
         out["browser"] = browser_steps(recipe)
         out["rules"] = list(CAPTURE_RULES)
+        out["capture_help"] = CAPTURE_HELP
     return out

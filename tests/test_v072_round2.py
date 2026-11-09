@@ -828,8 +828,7 @@ class TestMcpTexts(unittest.TestCase):
         return next(t for t in r["result"]["tools"] if t["name"] == "capture_key")
 
     def test_the_text_matches_the_real_waits_and_lists_every_state(self):
-        t = self.tool()
-        text = t["description"]
+        text = agent_mod.CAPTURE_HELP        # the long text moved out of tools/list
         self.assertIn("25 s", text)
         self.assertIn("45", text)
         self.assertNotIn("60", text)
@@ -837,7 +836,6 @@ class TestMcpTexts(unittest.TestCase):
         self.assertEqual(capture_mod.MAX_STATUS_WAIT, 45.0)
         for state in ("consent_granted", "replace_granted", "confirming", "validating", "storing"):
             self.assertIn(state, text)
-        self.assertIn("45", t["inputSchema"]["properties"]["wait_seconds"]["description"])
 
     def test_every_supported_protocol_is_echoed_and_others_get_the_oldest(self):
         for version in mcp_mod.SUPPORTED_PROTOCOLS:
@@ -1758,8 +1756,7 @@ class TestExpiredWindow(base.Base):
 
     def test_the_tool_text_lists_the_state(self):
         r = mcp_mod.handle({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}, CATALOG)
-        text = next(t for t in r["result"]["tools"] if t["name"] == "capture_key")["description"]
-        self.assertIn("consent_expired", text)
+        self.assertIn("consent_expired", agent_mod.CAPTURE_HELP)
 
 
 if __name__ == "__main__":

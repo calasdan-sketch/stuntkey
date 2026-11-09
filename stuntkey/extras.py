@@ -71,7 +71,10 @@ def add_parsers(sub) -> None:
 
     ins = sub.add_parser("install", help="Plug stuntkey into your AI tools (Claude "
                                          "Desktop, Cursor, VS Code, Claude Code). Shows "
-                                         "the change and asks first.")
+                                         "the change and asks first. Run it in your "
+                                         "project folder: Claude Code and VS Code are "
+                                         "set up per folder; Claude Desktop and Cursor "
+                                         "once for all projects.")
     ins.add_argument("targets", nargs="*", help="claude-desktop, cursor, claude-code, vscode "
                                                 "(default: the ones found)")
     ins.add_argument("--yes", action="store_true", help="Do not ask.")

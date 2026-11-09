@@ -31,6 +31,9 @@ from . import validate as _v
 from .scrub import Scrubber, loosely_contains, scrub_text
 
 MAX_BODY_OUT = 1_000_000      # most we read back
+RETURN_CAP = 24_000           # default most the MCP call_api hands to the AI
+CUT_NOTE = ("\n[cut to save the AI's context; ask for less with the service's "
+            "limit or fields parameters, or pass a larger max_chars]")
 MAX_BODY_IN = 256_000         # most the AI may send
 READ_METHODS = {"GET", "HEAD"}
 WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
@@ -332,7 +335,8 @@ def credentials(recipe: dict, values: dict):
 
 def call(recipe: dict, values: dict, method: str, path: str,
          query: dict | None = None, body=None, policy: Policy | None = None,
-         audit=None, send=None, resolver=None, timeout: float = 20.0) -> dict:
+         audit=None, send=None, resolver=None, timeout: float = 20.0,
+         max_chars: int | None = None) -> dict:
     """One brokered API call. `values` = {env_var: key}. Returns a dict that
     is safe to hand to an AI: status, a few headers, the (scrubbed) body."""
     policy = policy or Policy()
@@ -457,6 +461,11 @@ def call(recipe: dict, values: dict, method: str, path: str,
             shown = whole[:MAX_BODY_OUT].decode("utf-8", "replace")
     else:
         shown = f"[binary {len(raw)} bytes sha256 {hashlib.sha256(raw).hexdigest()[:16]}]"
+    cut = False
+    if max_chars is not None and len(shown) > max_chars:   # after the full scrub
+        room = max_chars - len(CUT_NOTE)
+        shown = shown[:room] + CUT_NOTE if room > 0 else shown[:max_chars]
+        cut = True
     keep = {}
     for k in _EXPOSED_HEADERS:
         if k in headers:
@@ -468,7 +477,7 @@ def call(recipe: dict, values: dict, method: str, path: str,
     _log(audit, recipe, values, method, host, path, status, len(raw), "ok",
          ms=int((time.time() - started) * 1000))
     return {"status": status, "headers": keep, "body": shown,
-            "truncated": len(raw) > MAX_BODY_OUT}
+            "truncated": cut or len(raw) > MAX_BODY_OUT}
 
 
 # ---- audit log (hash chained) -------------------------------------------------

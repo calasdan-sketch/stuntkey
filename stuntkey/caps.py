@@ -57,9 +57,21 @@ def load_caps(home: str) -> dict:
                           "made. Fix or delete it with `stuntkey caps set`.", 5) from None
     if not isinstance(data, dict):
         raise BrokerError("~/.stuntkey/caps.json is not valid, so no call was made.", 5)
-    return {s: {k: v for k, v in (c or {}).items()
-                if k in LIMITS and isinstance(v, int) and not isinstance(v, bool)}
-            for s, c in data.items() if isinstance(c, dict)}
+    out = {}
+    for s, c in data.items():
+        if not isinstance(c, dict):
+            continue
+        for k, v in c.items():
+            if k not in LIMITS or not isinstance(v, int) or isinstance(v, bool) or v < 0:
+                raise BrokerError(f"~/.stuntkey/caps.json has a bad value for "
+                                  f"'{_short(s)}' {_short(k)}, so no call was made. "
+                                  "Fix it with `stuntkey caps set`.", 5)
+        out[s] = dict(c)
+    return out
+
+
+def _short(text) -> str:
+    return "".join(ch if ch.isprintable() else "?" for ch in str(text))[:40]
 
 
 def _read_usage(path: str) -> dict:
@@ -73,8 +85,12 @@ def _read_usage(path: str) -> dict:
                           "so no call was made.", 5) from None
     if not isinstance(u, dict) or u.get("day") != _today():
         return {"day": _today(), "calls": 0, "tokens": 0}
-    return {"day": u["day"], "calls": int(u.get("calls", 0)),
-            "tokens": int(u.get("tokens", 0))}
+    try:
+        return {"day": u["day"], "calls": max(0, int(u.get("calls", 0))),
+                "tokens": max(0, int(u.get("tokens", 0)))}
+    except (TypeError, ValueError, OverflowError):
+        raise BrokerError("The usage record in ~/.stuntkey/usage cannot be read, "
+                          "so no call was made.", 5) from None
 
 
 def _write_usage(path: str, u: dict) -> None:

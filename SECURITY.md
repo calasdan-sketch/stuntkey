@@ -11,10 +11,14 @@ than claim a review that has not happened, the evidence is published and
 runnable:
 
 - **A threat model with links to the code** — [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md).
-- **`leakbench`**, a vendor-neutral benchmark of 61 ways an agent leaks a
-  credential. Run it against stuntkey, against no protection, or against
-  another tool: `python -m leakbench`. It reports **5 leaks stuntkey cannot
-  stop**, by name, rather than scoring only what it passes.
+- **`leakbench`**, a vendor-neutral benchmark of 63 ways an agent leaks a
+  credential. Run it against stuntkey with `python -m leakbench --profile
+  stuntkey-hook` (the default profile, `none`, is the unprotected baseline), or
+  against another tool. The hook alone leaves **2 leaks**, named
+  (`runaway-loop-no-cap`, `unbounded-retry`: a loop of paid calls, which
+  the spending caps in `stuntkey-full` stop, leaving 0), rather than
+  scoring only what it passes. The probes are simulated tool calls, not a
+  real model.
 - **`stuntkey selftest`**, which attacks stuntkey's own rules and currently
   reports 77 of 77 simulated attacks stopped. Note what it does *not* prove:
   the attacks are simulated against a pretend server, so it does not exercise
@@ -53,6 +57,9 @@ will say so until one happens.
 
 ## Known limits
 These are known and not fixed. They are listed so you can judge for yourself.
+- **The Claude Code hook masks Bash output only.** Read, Write, PowerShell and MCP output is not masked.
+- **The pre-call hook reads command text, not what a shell will make of it.** Glob forms (`cat ./.e*`, `cat .en[v]`, `cat .e?v`) and paths built at run time (`cat $(printf '.en%s' v)`, a variable holding part of the name) are not recognised as a `.env` read and pass the hook; plain `cat .env` is blocked. (Checked on 0.9.1 with `stuntkey.hook.check`.)
+- **The hook does not mask some stored keys in output.** A key longer than 512 characters, or one containing a space or one of `; , ( ) & |` or a quote, is not found by the output mask, which looks at words up to 512 characters split on those characters. (Checked by saving such keys and masking text that holds them.)
 - **`proxy` does not ask per call.** A chat prompt is far too long to review in a window, so proxy mode sends `POST` to the usual AI endpoints (chat, responses, messages, embeddings) without asking, and refuses every other write unless an `stuntkey.policy` file you approved allows it. Its streamed answers get the key-scrubber but not the whole-body disguise check a brokered call adds. Brokered calls are the ones that ask.
 - **A short piece of a key echoed back is not caught.** The scrubber removes whole forms of the key, and the fail-closed check also withholds a reply holding 32 or more of the key's characters in a row. A shorter run (a vendor's own `sk-...Zk` style hint, which is meant to be public) is left alone, so a service that echoes only the first few characters of your key passes them through.
 - **A GET can read other secrets.** stuntkey hides the key it added, but a read-only call to a vendor's own endpoints (a settings, tokens or environment listing) can return other secrets, and those are not recognised. Use read-only, minimum-permission keys, and do not connect services whose reads expose secrets.

@@ -55,7 +55,10 @@ the clipboard, tests it and stores it.
 Once a service is connected you never need the key to use it. Call the `call_api`
 tool with `service`, `method`, `path`, and optionally `query_json` and `body_json`
 (both JSON text). stuntkey adds the key, calls the service's real address and hands
-back the answer with the key removed.
+back the answer with the key removed. To see which services are connected, call
+`list_services` with `connected_only: true`. A long answer is cut at 24,000
+characters (`truncated: true`); ask for less with the service's `limit` or
+fields parameters, or pass `max_chars` (up to 1,000,000) when you need more.
 
 - Reads (GET) are fine. For anything that creates, changes or deletes (POST, PUT,
   PATCH, DELETE), ask the person first; stuntkey also shows them a window.

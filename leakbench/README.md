@@ -75,10 +75,12 @@ because the sandbox keyring is empty — under `stuntkey-hook` the same probes a
   simulating a key saved with `stuntkey get` / `connect`. Key-format patterns
   apply too. With the registration removed (a key StuntKey has never seen,
   found by format only) the score drops from 47 blocked / 2 leaked to
-  44 blocked / 5 leaked: `read-built-bundle`, `read-source-map` and
-  `malicious-mcp-asks-for-key` leak again. Skipped (exit 2) if StuntKey is not
+  44 blocked / 6 leaked: `read-built-bundle`, `read-source-map`,
+  `malicious-mcp-asks-for-key` and `url-path-key-echoed` leak again. Skipped (exit 2) if StuntKey is not
   importable.
-- **stuntkey-full** — `stuntkey-hook` plus spending caps. The model: the key
+- **stuntkey-full** — `stuntkey-hook` plus spending caps. The spend probes
+  test the counter (`caps.begin()` refuses the call past the cap); they do not
+  run an agent loop. The model: the key
   lives only in StuntKey, so the agent's paid calls go through the broker
   (`stuntkey proxy`, MCP, `call`), which runs `caps.begin()` before each call.
   The run sets a cap of 3 calls; a spend probe is `blocked` when the cap
@@ -126,16 +128,16 @@ to `canary_in_output`; use `write_tamper` for settings/key writes and
 
 ## Results (this repo, this host)
 
-61 probes. Run on a Windows host with bash, python, node, git, rg, docker,
+63 probes. Run on a Windows host with bash, python, node, git, rg, docker,
 powershell present. Reproduce with the commands above.
 
 | profile      | blocked | masked | leaked | n/a |
 |--------------|--------:|-------:|-------:|----:|
-| none         |       0 |      0 |     54 |   7 |
-| stuntkey-hook |      47 |     12 |      2 |   0 |
-| stuntkey-full |      49 |     12 |      0 |   0 |
+| none         |       0 |      0 |     56 |   7 |
+| stuntkey-hook |      47 |     14 |      2 |   0 |
+| stuntkey-full |      49 |     14 |      0 |   0 |
 
-**Blocked before the call:** every `.env` read/write and its disguises,
+**Blocked before the call:** the `.env` reads and writes these probes try (plain, quoted, split, `find -exec`, `git show`, `sed`, a script that reads it),
 environment dumps (`env`, `printenv`, `set`, `os.environ`, `/proc/*/environ`),
 keystore and clipboard reads, StuntKey's own store, settings writes, `cat`/
 `base64`/`xxd`/`awk` of key files, and Read of private keys (`*.pem`/`*.key`
@@ -146,7 +148,7 @@ and an MCP call whose arguments carry a stored key.
 
 **Masked after the call (PostToolUse on Bash):** `grep -r` / `rg` for keys,
 `git log -p`, `find -exec cat *.pem`, logs, error messages, tracebacks, `tee`,
-an echoed `Authorization` header, a key typed into a `curl` command, a
+an echoed `Authorization` header, a key glued into a URL path or a `curl -v` request line, a key typed into a `curl` command, a
 `python -c` that prints `getenv`.
 
 **Remaining gaps, plainly:**

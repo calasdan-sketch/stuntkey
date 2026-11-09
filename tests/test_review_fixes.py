@@ -100,7 +100,7 @@ class CapturedKeyReachesCallApi(unittest.TestCase):
         fake = FakeKeychain()
         seen = {}
 
-        def fake_call(rec, values, method, path, query, body, policy=None, audit=None):
+        def fake_call(rec, values, method, path, query, body, policy=None, audit=None, max_chars=None):
             seen["values"] = dict(values)
             return {"status": 200}
         tmp = tempfile.mkdtemp()

@@ -2,7 +2,8 @@
 without holding it.
 
 Tools (8):
-  list_services            -> [{service, display, env_var, connected}]
+  list_services {connected_only?}
+                           -> [{service, display, env_vars, connected}]
   get_recipe {service}     -> {display, key_url, steps, scopes, env_var, docs}
   find_public_apis {query, auth?, category?, limit?}
                            -> free public APIs matching a task
@@ -11,7 +12,7 @@ Tools (8):
   capture_key {service, action}
                            -> the person clicks Copy; stuntkey takes the key
   needs_keys {project?}    -> which keys a project is missing
-  call_api {service, method, path, query_json?, body_json?}
+  call_api {service, method, path, query_json?, body_json?, max_chars?}
                            -> one brokered call; the key is added by stuntkey
                               and removed from the answer; writes ask the person
 
@@ -83,107 +84,68 @@ def _tool_defs() -> list[dict]:
     return [
         {"name": "list_services",
          "description": "List services with saved API-key connection recipes.",
-         "inputSchema": {"type": "object", "properties": {}}},
+         "inputSchema": {"type": "object",
+                         "properties": {"connected_only": {"type": "boolean"}}}},
         {"name": "get_recipe",
-         "description": ("Get the exact, verified steps to obtain an API key "
-                         "for a service: key page URL, click path, scopes, "
-                         "and which env var it belongs in. Use this instead "
-                         "of guessing."),
+         "description": "Verified steps to get an API key for a service. Use this, do not guess.",
          "inputSchema": {"type": "object",
                          "properties": {"service": {"type": "string"}},
                          "required": ["service"]}},
         {"name": "request_connect",
-         "description": ("Start connecting a service's API key. Returns only "
-                         "{service, env_var, status, instructions, browser, rules}: "
-                         "the status is present, missing or unknown. You never see "
-                         "the key. Prefer the capture_key tool (you drive the browser, "
-                         "stuntkey takes the key from the clipboard); ask the person "
-                         "to run `stuntkey connect` only if capture_key is "
-                         "unavailable. Never ask anyone to paste a key into chat."),
+         "description": ("Start connecting a service's API key; you never see the key. "
+                         "Never ask anyone to paste a key into chat. Prefer capture_key; "
+                         "the reply says what to do next."),
          "inputSchema": {"type": "object",
                          "properties": {
                              "service": {"type": "string"},
-                             "open_key_page": {"type": "boolean",
-                                               "description": "Also open the vendor's key page in the person's browser."}},
+                             "open_key_page": {"type": "boolean"}},
                          "required": ["service"]}},
         {"name": "capture_key",
-         "description": ("EXPERIMENTAL. Get an API key into the project without anyone typing or "
-                         "pasting it. action=start arms a one-shot capture in this "
-                         "(local) server and returns the browser steps and rules; YOU "
-                         "then create the key in the browser and click the vendor's Copy "
-                         "button - never read, type or screenshot the key. This server "
-                         "takes it from the clipboard, empties the clipboard, tests it "
-                         "with the vendor and stores it. action=status waits up to 25 s by "
-                         "default (at most 45) and returns as soon as the state changes, "
-                         "with {state, env_vars, stored_in, account} - never the key. "
-                         "States: consent_pending, consent_needed, consent_expired (the window closed "
-                         "by itself: tell the person, they can ask again), consent_denied, "
-                         "consent_granted (then call start), replace_granted (then call "
-                         "start with replace=true), unavailable, unsupported_gateless, "
-                         "refused, busy, already_stored, waiting, validating, confirming "
-                         "(the person is confirming the account in a window), storing, "
-                         "stored, failed, timeout, cancelled, idle. The person is asked to allow it in a window (or with "
-                         "`stuntkey allow-agent`). Login, 2FA, CAPTCHA and password "
-                         "prompts are for the person to do in the browser."),
+         "description": ("EXPERIMENTAL. Store a key without anyone typing or pasting it: "
+                         "you click the vendor's Copy button, stuntkey takes it from the "
+                         "clipboard. Never read, type or screenshot the key. Do not retry "
+                         "after a refusal. The replies explain the states and steps."),
          "inputSchema": {"type": "object",
                          "properties": {
                              "service": {"type": "string"},
-                             "action": {"type": "string", "enum": ["start", "status", "cancel"],
-                                        "description": "start (default; needs service), status or cancel."},
-                             "timeout_seconds": {"type": "integer",
-                                                 "description": "How long to wait for the Copy, 10 to 180 (default 120)."},
-                             "wait_seconds": {"type": "integer",
-                                              "description": "With action=status: wait up to this many seconds (default 25, at most 45); returns early when the state changes."},
+                             "action": {"type": "string", "enum": ["start", "status", "cancel"]},
+                             "timeout_seconds": {"type": "integer"},
+                             "wait_seconds": {"type": "integer"},
                              "replace": {"type": "boolean",
-                                         "description": "Capture even though a key is already stored (rotation, only when the person asked)."}},
+                                         "description": "Only when the person asked to rotate."}},
                          "required": []}},
         {"name": "needs_keys",
-         "description": ("List the API keys a project uses (from stuntkey.json, "
-                         ".env.example and variable names in the code) and which "
-                         "are not stored yet. Returns names and statuses only - "
-                         "never a value."),
+         "description": "Which API keys a project uses and which are not stored yet: names only, never a value.",
          "inputSchema": {"type": "object",
-                         "properties": {"project": {"type": "string",
-                                                    "description": "Folder path; default is the current folder."}}}},
+                         "properties": {"project": {"type": "string"}}}},
         {"name": "find_public_apis",
-         "description": ("Search the public APIs directory for free APIs "
-                         "matching a task (e.g. 'weather', 'crypto price', "
-                         "'send sms'). Returns name, description, auth type, "
-                         "docs URL, and category. Use this to discover an API "
-                         "before reaching for a paid service."),
+         "description": "Search the public APIs directory (name, auth type, docs URL).",
          "inputSchema": {"type": "object",
                          "properties": {
                              "query": {"type": "string"},
-                             "auth": {"type": "string",
-                                      "description": "Filter: No, apiKey, OAuth"},
+                             "auth": {"type": "string"},
                              "category": {"type": "string"},
                              "limit": {"type": "integer", "default": 10}},
                          "required": ["query"]}},
         {"name": "get_public_api",
-         "description": ("Get full details for one public API plus how to "
-                         "wire it: no-auth APIs can be called directly; "
-                         "apiKey APIs should go through `stuntkey add` + "
-                         "`stuntkey connect` so the key is stored securely."),
+         "description": "Details for one public API and how to wire it.",
          "inputSchema": {"type": "object",
                          "properties": {"name": {"type": "string"}},
                          "required": ["name"]}},
         {"name": "call_api",
-         "description": ("Call a connected service's API WITHOUT ever seeing "
-                         "its key. You give service, method, path (like "
-                         "/user), optional query_json and body_json (JSON "
-                         "text). The host and credential are added for you; "
-                         "the key is hidden from the reply. GET is allowed; "
-                         "POST/PUT/PATCH/DELETE ask the person first. If a "
-                         "request is refused or not approved, do NOT retry: "
-                         "tell the person what you wanted to do and why. "
-                         "Never put keys in any argument."),
+         "description": ("Call a connected service's API without seeing its key. "
+                         "Give service, method, path, optional query_json/body_json "
+                         "(JSON text). Writes ask the person first. If refused, do NOT "
+                         "retry: tell the person. Never put keys in any argument."),
          "inputSchema": {"type": "object",
                          "properties": {
                              "service": {"type": "string"},
                              "method": {"type": "string"},
                              "path": {"type": "string"},
                              "query_json": {"type": "string"},
-                             "body_json": {"type": "string"}},
+                             "body_json": {"type": "string"},
+                             "max_chars": {"type": "integer",
+                                           "description": "Body cap, default 24000."}},
                          "required": ["service", "method", "path"]}},
     ]
 
@@ -219,6 +181,12 @@ def _call_api(catalog: dict, args: dict) -> dict:
         return fail("query_json and body_json must be valid JSON text")
     if query is not None and not isinstance(query, dict):
         return fail("query_json must be a JSON object")
+    max_chars = args.get("max_chars")
+    if max_chars is None:
+        max_chars = broker.RETURN_CAP
+    elif isinstance(max_chars, bool) or not isinstance(max_chars, int)             or not 1 <= max_chars <= broker.MAX_BODY_OUT:
+        return fail("max_chars must be a whole number from 1 to %d"
+                    % broker.MAX_BODY_OUT)
     try:
         # never a .env found in the folder the AI app happened to start in
         # (an agent could plant one); only the keychain or a file the person
@@ -228,7 +196,8 @@ def _call_api(catalog: dict, args: dict) -> dict:
         values = remote.collect_values(recipe, env_file)
         audit = broker.AuditLog(os.path.join(remote.home_dir(), "audit.log"))
         result = broker.call(recipe, values, args["method"], args["path"],
-                             query, body, policy=_session_policy(), audit=audit)
+                             query, body, policy=_session_policy(), audit=audit,
+                             max_chars=max_chars)
     except broker.BrokerError as e:
         return fail(str(e))
     except remote.RemoteError:
@@ -485,11 +454,15 @@ def _handle(request, catalog: dict[str, dict],
                     return True
                 except Exception:
                     return False
-            services = [{"service": r["service"], "display": r["display"],
-                         "env_var": r["env_var"],
-                         "env_vars": recipes_mod.env_vars(r),
-                         "connected": _has(r)}
-                        for r in catalog.values()]
+            only = args.get("connected_only") is True
+            services = []
+            for r in catalog.values():
+                connected = _has(r)
+                if only and not connected:
+                    continue
+                services.append({"service": r["service"], "display": r["display"],
+                                 "env_vars": recipes_mod.env_vars(r),
+                                 "connected": connected})
             return ok({"content": [{"type": "text",
                                     "text": json.dumps(services)}]})
         if name == "get_recipe":
