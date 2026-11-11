@@ -558,6 +558,10 @@ UNKEYED_NOTE = ("This log is not signed with a secret key on this computer "
                 "and clumsy edits, but not someone who rewrites the whole log.")
 
 
+OLDER_ENTRIES_NOTE = ("The entries so far were written before log signing existed, so they are "
+                      "not signed. The signing key is ready: every new entry will be signed.")
+
+
 def _test_redirect(path: str) -> str:
     """While STUNTKEY_KEYCHAIN names a test keychain, the log that would sit in
     the real ~/.stuntkey goes to the test folder (file:<folder>) or to a
@@ -869,7 +873,8 @@ class AuditLog:
             if reason is None and s["problem_seen"]:
                 reason = "the problem flag was deleted"
         return {"ok": reason is None, "n": s["n"], "mode": mode, "reason": reason,
-                "note": UNKEYED_NOTE if mode == "unkeyed" else ""}
+                "note": ((UNKEYED_NOTE if key is None else OLDER_ENTRIES_NOTE)
+                         if mode == "unkeyed" else "")}
 
     def verify(self) -> tuple[bool, int]:
         d = self.verify_detail()
