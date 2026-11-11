@@ -6,20 +6,54 @@ host is fixed by the recipe, writes ask the person on the real terminal.
 
 Safety of the door itself:
 - listens on 127.0.0.1 only
-- every request needs the secret token (random, kept in an owner-only file)
+- every API request needs the secret token (random, kept in an owner-only file)
+- the one exception is the page at `/`: a browser cannot send the token, so it
+  opens with a ONE-TIME link (`/?c=CODE`, good for 2 minutes, used once) that is
+  swapped for a cookie made from the token (never the token itself) and opens
+  the page only. The page holds names, never keys.
 - the Host header must be exactly us (blocks DNS-rebinding tricks)
 - any request with an Origin header is refused (blocks web pages)
 - no CORS headers are ever sent; bodies are size-limited
 """
 from __future__ import annotations
 
+import hashlib
 import hmac
+import html
 import json
 import os
 import secrets
 import socket
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+PAGE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web", "index.html")
+LAUNCH_SECONDS = 120            # a one-time page link works for two minutes, once
+PAGE_COOKIE = "sk_page"
+PAGE_CSP = ("default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; "
+            "img-src data:; font-src data:; base-uri 'none'; form-action 'none'; "
+            "frame-ancestors 'none'")
+
+
+def render_page(version: str, status: dict, template: str | None = None) -> bytes:
+    """The local page with its two placeholders filled in. The status is JSON
+    inside <script type="application/json">, so '<', '>' and '&' are written
+    as unicode escapes (nothing in it can close the tag or start a comment).
+    It holds names and counts only, never a key or the token."""
+    if template is None:
+        with open(PAGE_FILE, encoding="utf-8") as f:
+            template = f.read()
+    blob = (json.dumps(status, separators=(",", ":"), ensure_ascii=True)
+            .replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026"))
+    return (template.replace("{{status_json}}", blob)
+            .replace("{{version}}", html.escape(str(version), quote=True))).encode("utf-8")
+
+
+def _cookie_value(token: str) -> str:
+    """What the page cookie holds: a value made FROM the token, never the
+    token. It opens the page only; every API route still needs the Bearer token."""
+    return hmac.new(token.encode(), b"stuntkey page cookie", hashlib.sha256).hexdigest()
 
 from . import broker
 
@@ -86,8 +120,25 @@ class DoorServer(ThreadingHTTPServer):
 
 
 def make_server(catalog: dict, get_values, token: str, policy, audit=None,
-                port: int = 0, call_fn=None) -> ThreadingHTTPServer:
+                port: int = 0, call_fn=None, page_status=None,
+                version: str = "") -> ThreadingHTTPServer:
     call_fn = call_fn or broker.call
+    launch = {}                      # one-time page links: code -> expiry time
+    launch_lock = threading.Lock()
+
+    def new_launch_code() -> str:
+        code = secrets.token_urlsafe(24)
+        with launch_lock:
+            now = time.time()
+            for old in [c for c, t in launch.items() if t < now]:
+                del launch[old]
+            launch[code] = now + LAUNCH_SECONDS
+        return code
+
+    def use_launch_code(code: str) -> bool:
+        with launch_lock:
+            expiry = launch.pop(code, None)      # once: a second use finds nothing
+        return expiry is not None and expiry >= time.time()
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "stuntkey"
@@ -117,7 +168,71 @@ def make_server(catalog: dict, get_values, token: str, policy, audit=None,
                 return False
             return True
 
+        def _page(self) -> bool:
+            """GET / : the local page. A browser sends no Authorization header,
+            so it gets in with a one-time link (?c=CODE, from `stuntkey serve`)
+            that is swapped at once for a session cookie, then the address is
+            cleaned. Nothing here is logged, and the long-lived token never
+            appears in a URL. Returns False when this is not a page request."""
+            from urllib.parse import urlsplit, parse_qs
+            parts = urlsplit(self.path)
+            if parts.path not in ("/", "/index.html") or page_status is None:
+                return False
+            if not local_only(self.headers, self.server.server_address[1]):
+                self._send(403, {"error": "forbidden"})
+                return True
+            safe = [("Cache-Control", "no-store"), ("Referrer-Policy", "no-referrer"),
+                    ("X-Content-Type-Options", "nosniff"),
+                    ("Content-Security-Policy", PAGE_CSP)]
+            code = (parse_qs(parts.query).get("c") or [""])[0]
+            if code:
+                if use_launch_code(code):
+                    self.send_response(303)
+                    self.send_header("Location", "/")
+                    self.send_header("Set-Cookie", f"{PAGE_COOKIE}={_cookie_value(token)}; "
+                                     "HttpOnly; SameSite=Strict; Path=/")
+                    for k, v in safe:
+                        self.send_header(k, v)
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return True
+                self._text(401, "That link was already used or has run out. Run "
+                                "`stuntkey serve` again for a new one.")
+                return True
+            cookies = {}
+            for item in (self.headers.get("Cookie") or "").split(";"):
+                name, _, value = item.strip().partition("=")
+                cookies[name] = value
+            if not hmac.compare_digest(cookies.get(PAGE_COOKIE, "").encode(),
+                                       _cookie_value(token).encode()):
+                self._text(401, "Open the link that `stuntkey serve` printed.")
+                return True
+            try:
+                body = render_page(version, page_status())
+            except Exception:
+                self._text(500, "The page could not be built. Run `stuntkey doctor`.")
+                return True
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            for k, v in safe:
+                self.send_header(k, v)
+            self.end_headers()
+            self.wfile.write(body)
+            return True
+
+        def _text(self, code: int, text: str) -> None:
+            data = text.encode("utf-8")
+            self.send_response(code)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(data)
+
         def do_GET(self):
+            if self._page():
+                return
             if not self._guard():
                 return
             if self.path == "/tools":
@@ -156,11 +271,23 @@ def make_server(catalog: dict, get_values, token: str, policy, audit=None,
                 return self._send(403 if e.code == 5 else 502, {"error": str(e)})
             except (ValueError, KeyError, TypeError):
                 return self._send(400, {"error": "bad request"})
-            except Exception:
+            except Exception as e:
+                from . import remote
+                if isinstance(e, remote.RemoteError):
+                    # no key stored, or the password vault is locked: say which,
+                    # and that no call was made (fail closed, plain words)
+                    if "did not answer" in str(e):
+                        return self._send(503, {"error": "The computer's password vault "
+                                                "did not answer, so no call was made. "
+                                                "A person needs to unlock it and retry."})
+                    return self._send(404, {"error": "No key is saved for that service, "
+                                            "so no call was made. A person can run "
+                                            "`stuntkey get <service>` in a terminal."})
                 return self._send(500, {"error": "internal error"})
 
     srv = DoorServer(("127.0.0.1", port), Handler)
     srv.daemon_threads = True
+    srv.new_launch_code = new_launch_code
     return srv
 
 

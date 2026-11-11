@@ -87,7 +87,7 @@ class McpResultsAreMasked(unittest.TestCase):
         self.assertEqual(self.post([{"type": "text", "text": "nothing secret"}]), "")
 
     def test_the_installed_post_matcher_covers_mcp_tools(self):
-        self.assertEqual(hook_mod.post_entry({"type": "command"})["matcher"], "^(Bash|mcp__.*)$")
+        self.assertEqual(hook_mod.post_entry({"type": "command"})["matcher"], "^(Bash|PowerShell|mcp__.*)$")
 
 
 class WrapUndoTouchesOnlyTheEntry(unittest.TestCase):

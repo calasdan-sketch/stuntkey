@@ -235,7 +235,7 @@ class TestBuilt(unittest.TestCase):
         src = _isolation.clean_source_copy()
         want = {n for n in listing(src)
                 if n.startswith("stuntkey/")
-                and (n.endswith(".py") or n.startswith(("stuntkey/recipes/", "stuntkey/skill/")))}
+                and (n.endswith(".py") or n.startswith(("stuntkey/recipes/", "stuntkey/skill/", "stuntkey/web/")))}
         names, entry_points = self.wheel(src)
         package = {n for n in names if not n.split("/")[0].endswith(".dist-info")}
         self.assertEqual(package, want)

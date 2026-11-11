@@ -49,16 +49,38 @@ Four steps:
   4. Ask your AI: "Who am I on GitHub?"
 Restart the AI app after install.
 
+New here? `stuntkey try` is a practice run with a pretend key.
+Have keys in a .env file already? `stuntkey import .env` moves them.
 `stuntkey --help` for all commands."""
+
+
+def _show_banner(cmd: str) -> None:
+    """The brand banner above start / doctor / status / get, when the brand module
+    exists and the output is a terminal. Never allowed to break a command."""
+    if cmd not in ("start", "doctor", "get", "status"):
+        return
+    try:
+        if not sys.stdout.isatty():
+            return
+        from . import brand
+        text = brand.banner()
+        if text:
+            print(text)
+    except Exception:           # no brand module yet, or it failed: no banner
+        pass
 
 
 class _Parser(argparse.ArgumentParser):
     def error(self, message):
         m = re.search(r"invalid choice: '([^']*)'", message)
         if m and message.startswith("argument cmd:"):
+            # plain words, one line, no dump of every command name
+            word = recipes_mod.printable(m.group(1))
             near = difflib.get_close_matches(m.group(1), list(self._subparsers_choices()), n=1)
+            text = f"I don't know '{word}'."
             if near:
-                message += f"\nDid you mean: stuntkey {near[0]}?"
+                text += f" Did you mean: stuntkey {near[0]}?"
+            self.exit(2, text + " Type `stuntkey --help` for the list.\n")
         super().error(message)
 
     def _subparsers_choices(self):
@@ -184,8 +206,8 @@ def _build_parser() -> argparse.ArgumentParser:
     hsub.add_parser("check", help="The hook itself: reads Claude Code's JSON "
                                   "on stdin. Not for typing by hand.")
 
-    for name, help_text in (("get", "One command: opens the key page, takes the key from "
-                                    "your copy, tests it, and saves it in the OS keychain."),
+    for name, help_text in (("get", "Add a key: opens the key page, takes the key when you "
+                                    "copy it, tests it, saves it in the keychain."),
                             ("connect", "Connect a service (guided key setup)."),
                             ("rotate", "Replace the stored key for a service.")):
         c = sub.add_parser(name, help=help_text)
@@ -216,6 +238,12 @@ def _build_parser() -> argparse.ArgumentParser:
         c.add_argument("--via-cli", action="store_true",
                        help="Get the key from the vendor's own CLI after its browser "
                             "sign-in (built-in recipes that support it, e.g. github).")
+        if name == "get":
+            c.add_argument("--key-from-stdin", action="store_true",
+                           help="FOR SCRIPTS AND TESTS ONLY: read the key from a pipe "
+                                "(one line per value) instead of the clipboard. "
+                                "Refused at a terminal. A key in a pipe or script "
+                                "can end up in a shell history or a log.")
 
     ls = sub.add_parser("list", help="List services with saved recipes.")
     ls.add_argument("--json", action="store_true", help="Machine-readable output.")
@@ -741,10 +769,8 @@ def _cmd_run(recipes_to_run: list, command: list[str], env_file: str = ".env",
               f"for '{names}': {e}.", file=sys.stderr)
         return 1
     except keychain_mod.KeychainError:
-        print(f"error: no key for '{names}' in the "
-              f"{keychain_mod.label(backend)} or in {env_file} - run "
-              f"`stuntkey connect {recipes_to_run[0]['service']} --store keychain`.",
-              file=sys.stderr)
+        print(f"No key saved for {names}. Run "
+              f"`stuntkey get {recipes_to_run[0]['service']}`.", file=sys.stderr)
         return 1
 
 
@@ -878,11 +904,14 @@ def _store_where_key_lives(recipe: dict) -> str:
 def _main(argv: list[str] | None = None) -> int:
     _harden_streams()
     from . import migrate as migrate_mod
-    migrate_mod.copy_home()          # 0.8 users: ~/.oathkey -> ~/.stuntkey, once
     parser = _build_parser()
     argv = list(sys.argv[1:] if argv is None else argv)
     argv, tail = split_remote(argv)
     args = parser.parse_args(argv)
+    if args.cmd != "try":
+        # 0.8 users: ~/.oathkey -> ~/.stuntkey, once. Not for the practice
+        # run: it must not open anything of the person's.
+        migrate_mod.copy_home()
     if args.cmd is None:
         print(NEXT_STEPS)
         return 0
@@ -891,9 +920,32 @@ def _main(argv: list[str] | None = None) -> int:
     if args.project_dir:
         try:
             os.chdir(args.project_dir)
-        except OSError:
-            print("error: --project-dir is not a folder I can use.", file=sys.stderr)
+        except OSError as e:
+            shown = recipes_mod.printable(args.project_dir)
+            if isinstance(e, FileNotFoundError):
+                why = "there is no such folder"
+            elif isinstance(e, NotADirectoryError):
+                why = "that is a file, not a folder"
+            elif isinstance(e, PermissionError):
+                why = "you do not have permission to open it"
+            else:
+                why = e.strerror or "it cannot be opened"
+            print(f"error: I cannot use --project-dir '{shown}': {why}.",
+                  file=sys.stderr)
             return 2
+    _show_banner(args.cmd)
+    if args.cmd in ("status", "setup"):
+        from . import manifest as manifest_mod
+        if not manifest_mod.find():
+            if args.cmd == "status" and getattr(args, "json", False):
+                print(json.dumps({"setup": False, "services": [],
+                                  "note": "This folder has no stuntkey setup. "
+                                          "Run `stuntkey init` to create one."}))
+                return 0
+            print("This folder has no stuntkey setup. Run `stuntkey init` to "
+                  "create one.\n(To see keys saved anywhere on this computer, "
+                  "run `stuntkey overview`.)")
+            return 0 if args.cmd == "status" else 1
     if args.cmd == "hook":
         # before the recipes load: the hook's stdout must hold only its answer
         from . import hook as hook_mod
@@ -965,9 +1017,16 @@ def _main(argv: list[str] | None = None) -> int:
                                    allow_history=args.allow_clipboard_history)
         return projectcmds.cmd_setup(args, catalog, connect_one)
     any_site = args.cmd == "get"          # get also takes a site stuntkey does not know
+    stdin_key = False
+    key_lines = None
     if args.cmd == "get":                 # one command: keychain + copy-and-go
         args.cmd = "connect"
-        args.clipboard = args.clipboard or not args.no_clipboard
+        stdin_key = getattr(args, "key_from_stdin", False)
+        if stdin_key:
+            key_lines = _lines_from_stdin()
+            if key_lines is None:
+                return 2
+        args.clipboard = (args.clipboard or not args.no_clipboard) and not stdin_key
         if args.store is None:
             args.store = "keychain"
     if getattr(args, "store", "env") is None and args.cmd != "rotate":
@@ -1023,14 +1082,25 @@ def _main(argv: list[str] | None = None) -> int:
                 args.service, catalog,
                 lambda r, url: connect_service(
                     r, env_file=args.env_file, store=args.store,
-                    no_browser=args.no_browser, clipboard=args.clipboard,
-                    allow_history=args.allow_clipboard_history, open_url=url))
+                    no_browser=args.no_browser or stdin_key,
+                    clipboard=args.clipboard,
+                    allow_history=args.allow_clipboard_history, open_url=url,
+                    **({"key_lines": key_lines} if stdin_key else {})))
+        if not recipe and args.cmd in ("run", "forget", "rotate"):
+            # a site typed as an address (example.com): find the recipe that
+            # `get example.com` saved for it
+            recipe = _saved_site_recipe(args.service, catalog)
         if not recipe:
             # exit 3 and the short "Did you mean" line; only a short plain
             # name is echoed back (a long or odd one could be a key typed in
             # the wrong place)
-            shown = (args.service if len(args.service) <= 24
-                     and recipes_mod.SLUG_RE.match(args.service) else "(not shown)")
+            plain = (len(args.service) <= 64 and (
+                recipes_mod.SLUG_RE.match(args.service)
+                or anysite.site_domain(args.service)))
+            if args.cmd in ("run", "forget") and plain and not difflib.get_close_matches(
+                    args.service.lower(), list(catalog), n=1, cutoff=0.8):
+                return extras.no_key_saved(args.service)
+            shown = args.service if plain else "(not shown)"
             return extras.unknown_service(catalog, shown)
         if args.cmd == "rotate" and args.store is None:
             args.store = _store_where_key_lives(recipe)
@@ -1065,22 +1135,78 @@ def _main(argv: list[str] | None = None) -> int:
                   f"{recipes_mod.printable(recipe['display'], words=True)} - "
                   f"the stored key will be replaced.\n")
         return connect_service(recipe, env_file=args.env_file, store=args.store,
-                               no_browser=args.no_browser, clipboard=args.clipboard,
+                               no_browser=args.no_browser or stdin_key,
+                               clipboard=args.clipboard,
                                via_cli=args.via_cli, rotate=args.cmd == "rotate",
-                               allow_history=args.allow_clipboard_history)
+                               allow_history=args.allow_clipboard_history,
+                               **({"key_lines": key_lines} if stdin_key else {}))
     return 0
+
+
+def _lines_from_stdin() -> list[str] | None:
+    """For `get --key-from-stdin`: the piped lines (one value per line), or
+    None - after saying why - when that is not allowed. Refused at a terminal:
+    there copy-and-go (or the hidden paste) is safer and the key is never
+    typed on a command line or kept in a shell history."""
+    if _stdin_is_terminal():
+        print("--key-from-stdin is for scripts and tests: pipe the key in. At a "
+              "terminal just run `stuntkey get <service>` - the key is taken "
+              "from your copy and never shown.", file=sys.stderr)
+        return None
+    lines = [ln.strip() for ln in (sys.stdin.read() if sys.stdin else "").splitlines()
+             if ln.strip()]
+    if not lines:
+        print("--key-from-stdin: nothing was piped in.", file=sys.stderr)
+        return None
+    return lines
+
+
+def _saved_site_recipe(name: str, catalog: dict) -> dict | None:
+    """The recipe `stuntkey get example.com` saved for that address, if any."""
+    from . import anysite
+    domain = anysite.site_domain(name)
+    if not domain:
+        return None
+    try:
+        recipe = anysite.build_recipe(domain, catalog)
+    except recipes_mod.RecipeError:
+        return None
+    return recipe if recipe.get("service") in catalog else None
+
+
+def _what_will_happen(recipe: dict, store: str, env_file: str, no_browser: bool,
+                      clipboard: bool, via_cli: bool, stdin_key: bool) -> str:
+    """One plain line, shown before anything is done."""
+    name = recipes_mod.printable(recipe["display"], words=True)
+    where = ("your computer's keychain" if store == "keychain"
+             else f"the file {recipes_mod.printable(env_file)}")
+    if stdin_key:
+        return f"This will read the {name} key from the pipe, test it and save it in {where}."
+    if via_cli:
+        return f"This will sign in with {name}'s own tool, test the key and save it in {where}."
+    page = "open the key page, " if not no_browser else ""
+    take = "wait for you to copy the key" if clipboard else "ask you to paste the key"
+    test = "save it" if recipe.get("untested") else "test it and save it"
+    return f"This will {page}{take}, {test} in {where}."
 
 
 def connect_service(recipe: dict, env_file: str = ".env", store: str = "env",
                     no_browser: bool = False, clipboard: bool = False,
                     via_cli: bool = False, rotate: bool = False,
-                    allow_history: bool = False, open_url: str | None = None) -> int:
+                    allow_history: bool = False, open_url: str | None = None,
+                    key_lines: list[str] | None = None) -> int:
     """The connect flow plus the local record of when the key was added.
-    `open_url` opens that page instead of the recipe's key page."""
+    `open_url` opens that page instead of the recipe's key page. `key_lines`
+    (scripts and tests only) are the values to use instead of the clipboard
+    or the hidden prompt, one per field."""
     import webbrowser
+    stdin_key = key_lines is not None
+    if stdin_key:
+        no_browser, clipboard = True, False
     opener = ((lambda url: None) if no_browser
               else (lambda url: webbrowser.open(open_url or url)))
     store_fn = keychain_store(recipe, env_file) if store == "keychain" else None
+    print(f"\n  {_what_will_happen(recipe, store, env_file, no_browser, clipboard, via_cli, stdin_key)}")
     clip = None
     if clipboard:
         from . import clipboard as clipboard_mod
@@ -1095,8 +1221,21 @@ def connect_service(recipe: dict, env_file: str = ".env", store: str = "env",
         except clipboard_mod.Unavailable as e:
             print(f"  (copy-and-go unavailable: {recipes_mod.printable(e)} - "
                   f"using the hidden paste instead)")
+    extra = {}
+    if stdin_key:
+        pending = iter(key_lines)
+
+        def _next_line(_text: str) -> str:
+            try:
+                return next(pending)
+            except StopIteration:
+                raise EOFError from None
+        extra["prompt"] = _next_line
+    if no_browser:
+        extra["opens_browser"] = False
     code = connect_mod.connect(recipe, env_file=env_file, browser_open=opener,
-                               store_fn=store_fn, clipboard=clip, via_cli=via_cli)
+                               store_fn=store_fn, clipboard=clip, via_cli=via_cli,
+                               **extra)
     if code == 0:
         from . import ledger as ledger_mod
         ledger_mod.record(_project_root(), recipe["service"], store, rotated=rotate)

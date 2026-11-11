@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en-CA">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>How StuntKey works - Calas Automations</title>
+<meta name="description" content="How StuntKey lets your AI use your API keys without seeing them, in plain words.">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#0B2E45">
+<link rel="canonical" href="https://calasautomations.com/devtools/stuntkey/how-it-works.html">
+<link rel="icon" type="image/png" href="favicon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Libre+Baskerville:ital,wght@0,400;0,700;1,400&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="bar"><div class="in">
+  <a class="lock" href="index.html" aria-label="StuntKey by Calas Automations, home"><span class="crest" aria-hidden="true"></span><span><span class="name">StuntKey</span><span class="sub">BY CALAS AUTOMATIONS</span></span></a>
+  <nav aria-label="Primary"><a href="index.html">Home</a><a href="how-it-works.html" aria-current="page">How it works</a><a href="add-your-first-key.html">Add your first key</a><a href="https://github.com/calasdan-sketch/stuntkey">GitHub</a></nav>
+</div></header>
+<main id="main">
+<div class="page"><div class="wrap">
+  <p class="crumbs"><a href="index.html">StuntKey</a> / How it works</p>
+  <h1>How it <em>works</em></h1>
+  <p class="lede">The idea is simple. The key that matters never goes where the AI can read it.</p>
+  <h2>The stunt double</h2>
+  <p>In a film, the stunt double does the risky part. StuntKey does the same for your keys. Your AI gets a stand-in and uses that. StuntKey swaps in the real key only at the last moment, outside the AI's sight.</p>
+  <h2>Step by step</h2>
+  <ol class="steps">
+    <li><b>You save a key once.</b><p>StuntKey locks it in your computer's keychain: Windows Credential Manager, macOS Keychain, or the Linux keyring.</p></li>
+    <li><b>Your AI asks for a call.</b><p>It says "call this service", or it talks to a local stand-in address. It never gets the key.</p></li>
+    <li><b>StuntKey makes the call.</b><p>It adds the real key, sends the request to the right website, and hands back only the answer.</p></li>
+    <li><b>StuntKey keeps watch.</b><p>It blocks the sneaky routes: dumping environment variables, reading your private keys, opening your <code>.env</code> file. If a key appears in output, it is hidden before the AI sees it.</p></li>
+  </ol>
+  <h2>You stay in charge</h2>
+  <ul class="tick">
+    <li>Set a daily limit for each key: <code>stuntkey caps show</code>.</li>
+    <li>Stop everything at once: <code>stuntkey stop</code>. Start again with <code>stuntkey resume</code>.</li>
+    <li>See what happened: <code>stuntkey audit</code>.</li>
+    <li>Find keys already lying around: <code>stuntkey scan</code>.</li>
+  </ul>
+  <h2>What it does not do</h2>
+  <div class="note"><p>It lowers risk, it does not remove it. It cannot stop an AI misusing a key it is allowed to use, and it does not protect against malware already running as you. It is beta and has not had an independent security review.</p></div>
+  <div class="ctas"><a class="btn" href="add-your-first-key.html">Add your first key</a></div>
+</div></div>
+</main>
+<footer class="foot"><div class="in">
+  <a class="lock" href="index.html" aria-label="StuntKey home"><span class="crest" aria-hidden="true"></span><span><span class="name">StuntKey</span><span class="sub">BY CALAS AUTOMATIONS</span></span></a>
+  <nav aria-label="Footer"><a href="index.html">Home</a><a href="how-it-works.html" aria-current="page">How it works</a><a href="add-your-first-key.html">Add your first key</a><a href="https://github.com/calasdan-sketch/stuntkey">GitHub</a><a href="https://pypi.org/project/stuntkey/">PyPI</a><a href="https://github.com/calasdan-sketch/stuntkey/blob/main/docs/THREAT_MODEL.md">Threat model</a><a href="https://calasautomations.com/devtools/">All dev tools</a></nav>
+  <p class="fine">Free and open source, MIT licence. Python standard library only. Formerly OathKey and SafeEasyAPI.<br>
+  &copy; Calas Automations Inc., Winnipeg, Manitoba. Questions: <a href="mailto:office@calasautomations.com">office@calasautomations.com</a>. Security problem? <a href="mailto:security@calasautomations.com">security@calasautomations.com</a></p>
+</div></footer>
+</body>
+</html>

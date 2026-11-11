@@ -392,7 +392,8 @@ class TestConnectShowsTheNewFields(unittest.TestCase):
         connect_mod._print_steps(CAT["mailgun"], out)
         text = out.getvalue()
         self.assertIn("Least privilege:", text)
-        self.assertIn("Not confirmed by the vendor's docs", text)
+        # the plain wording that replaced "Not confirmed by the vendor's docs" (round 11)
+        self.assertIn("I could not check this site's key test settings", text)
 
     def test_a_limited_key_is_stored_and_the_note_is_shown(self):
         import io
@@ -410,7 +411,7 @@ class TestConnectShowsTheNewFields(unittest.TestCase):
         self.assertNotIn("sk_live_ABCDEFGHIJKLMN", out.getvalue())
 
     def test_the_version_is_075(self):
-        self.assertEqual(stuntkey.__version__, "0.9.1")
+        self.assertEqual(stuntkey.__version__, "0.9.2")
 
 
 if __name__ == "__main__":

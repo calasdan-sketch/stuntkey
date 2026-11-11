@@ -29,6 +29,9 @@ from . import safeexec
 
 POLL_SECONDS = 0.3
 WAIT_SECONDS = 180
+# How many windows of WAIT_SECONDS copy-and-go waits before it gives up and
+# asks for a hidden paste instead (3 x 3 minutes). Each lapse says so plainly.
+AUTO_ROUNDS = 3
 MAX_LEN = 4096
 KEY_SHAPE = re.compile(r"^[!-~]{16,4096}\Z")  # printable ASCII, no spaces, 16+ long
 NOT_A_KEY = (

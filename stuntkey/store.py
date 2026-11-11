@@ -473,18 +473,74 @@ LOCK_SECONDS = 15.0
 
 
 class EnvFileBusy(OSError):
-    """Another stuntkey has had the file locked for too long."""
+    """The file stayed locked for too long (another stuntkey, or on Windows
+    often an antivirus scanner or a file-sync program holding it)."""
 
     def __init__(self, path: str):
-        super().__init__(errno.EAGAIN, "another stuntkey is writing this file right now - "
-                                       "try again in a moment", path)
+        super().__init__(errno.EAGAIN, "this file is in use by another program right now "
+                                       "(another stuntkey, or maybe your antivirus). "
+                                       "Wait a few seconds and try again", path)
+
+
+def _backoff(attempt: int) -> float:
+    """Seconds to wait before the next try: starts short, grows, never long."""
+    return min(0.02 * (1.6 ** attempt), 0.4)
+
+
+# ---- links and junctions -----------------------------------------------------
+
+REPARSE_POINT = 0x400        # FILE_ATTRIBUTE_REPARSE_POINT
+
+
+def is_reparse_point(path: str) -> bool:
+    """True for a symbolic link, a Windows junction or any other Windows
+    reparse point (a folder or file that is really a pointer elsewhere)."""
+    try:
+        if os.path.islink(path):
+            return True
+        isjunction = getattr(os.path, "isjunction", None)
+        if isjunction is not None and isjunction(path):
+            return True
+    except OSError:
+        return False
+    if os.name == "nt":
+        try:
+            import ctypes
+            fn = ctypes.windll.kernel32.GetFileAttributesW
+            fn.restype = ctypes.c_uint32
+            attrs = fn(str(path))
+            if attrs != 0xFFFFFFFF and attrs & REPARSE_POINT:
+                return True
+        except (OSError, AttributeError, ImportError):
+            pass
+    return False
+
+
+def private_path_problem(path: str) -> str | None:
+    """Plain words saying why `path` (a file StuntKey keeps for itself) or the
+    folder it sits in cannot be trusted - it is a link or junction, or it
+    really lives somewhere else - else None. Only the file and its own
+    folder are looked at, not the folders above (a home folder may itself be
+    reached through a harmless link)."""
+    directory = os.path.dirname(os.path.abspath(path)) or "."
+    if is_reparse_point(directory):
+        return "its folder is a link (a shortcut to another place), not a real folder"
+    if is_reparse_point(path):
+        return "it is a link (a shortcut to another place), not a real file"
+    try:
+        real = os.path.normcase(os.path.dirname(os.path.realpath(path)))
+        if real != os.path.normcase(os.path.realpath(directory)):
+            return "it really lives in another folder"
+    except OSError:
+        return None
+    return None
 
 
 def _windows() -> bool:
     return sys.platform == "win32"
 
 
-def _lock_once(path: str, lock_path: str, deadline: float):
+def _lock_once(path: str, lock_path: str, deadline: float, attempt: int = 0):
     """Open and lock the lock file; return its fd, or None when the file was
     swapped for a new one while waiting (the caller tries again)."""
     flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
@@ -497,9 +553,10 @@ def _lock_once(path: str, lock_path: str, deadline: float):
             raise
         if time.monotonic() > deadline:
             raise EnvFileBusy(path) from None
-        time.sleep(0.05)
+        time.sleep(_backoff(attempt))
         return None                     # the caller tries again
     try:
+        tries = 0
         if _windows():
             import msvcrt
             if os.fstat(fd).st_size == 0:
@@ -512,7 +569,8 @@ def _lock_once(path: str, lock_path: str, deadline: float):
                 except OSError:
                     if time.monotonic() > deadline:
                         raise EnvFileBusy(path) from None
-                    time.sleep(0.05)
+                    time.sleep(_backoff(tries))
+                    tries += 1
         else:
             import fcntl
             while True:
@@ -522,7 +580,8 @@ def _lock_once(path: str, lock_path: str, deadline: float):
                 except OSError:
                     if time.monotonic() > deadline:
                         raise EnvFileBusy(path) from None
-                    time.sleep(0.02)
+                    time.sleep(_backoff(tries))
+                    tries += 1
         try:
             same = os.path.samestat(os.fstat(fd), os.stat(lock_path))
         except OSError:
@@ -553,8 +612,10 @@ def file_lock(path: str, timeout: float | None = None):
     lock_path = os.path.join(directory, f"{base}.lock" if base.startswith(".") else f".{base}.lock")
     deadline = time.monotonic() + timeout
     fd = None
+    attempt = 0
     while fd is None:
-        fd = _lock_once(path, lock_path, deadline)
+        fd = _lock_once(path, lock_path, deadline, attempt)
+        attempt += 1
     try:
         yield
     finally:

@@ -69,6 +69,10 @@ MAX_DEPTH = 12
 MAX_FINDINGS_PER_FILE = 500
 MAX_VALIDATIONS = 50               # distinct keys sent per run
 BINARY_PROBE = 8192
+# Windows file attributes of a file that is not on this disk yet: offline,
+# recall on open, recall on data access
+CLOUD_ONLY_ATTRIBUTES = 0x1000 | 0x40000 | 0x400000
+CLOUD_ONLY_REASON = "a cloud-only file (not downloaded; open it once to have it scanned)"
 WALK_SECONDS = 60                  # time to find the files
 FILE_SECONDS = 10.0                # time to scan one file
 SCAN_SECONDS = 300.0               # time to scan all of them
@@ -804,6 +808,12 @@ def read_text_safely(path: str, root_real: str,
             return None, "not a regular file (pipe, device or folder)"
         if st.st_size > limit:
             return None, f"bigger than {limit // (1024 * 1024)} MB"
+        if getattr(st, "st_file_attributes", 0) & CLOUD_ONLY_ATTRIBUTES:
+            # OneDrive / network "online-only" file: opening it would download
+            # it first (slow, and over the network), so it is not opened
+            return None, CLOUD_ONLY_REASON
+        if st.st_size == 0:
+            return "", None
         flags = (os.O_RDONLY | getattr(os, "O_NONBLOCK", 0)
                  | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0))
         fd = os.open(real, flags)
@@ -887,6 +897,8 @@ def collect_files(root: str, everything: bool = False
             try:
                 is_dir = entry.is_dir(follow_symlinks=False)
             except OSError:
+                notes.append(Skipped(os.path.relpath(entry.path, root),
+                                     "could not be looked at (an error from the system)", True))
                 continue
             if is_dir:
                 if entry.name in PRUNE_DIRS:
@@ -895,7 +907,12 @@ def collect_files(root: str, everything: bool = False
                     notes.append(Skipped(os.path.relpath(entry.path, root),
                                          "too many folders deep", True))
                     continue
-                real = os.path.realpath(entry.path)
+                try:
+                    real = os.path.realpath(entry.path)
+                except (OSError, ValueError):
+                    notes.append(Skipped(os.path.relpath(entry.path, root),
+                                         "a folder whose real location could not be found", True))
+                    continue
                 if not _within(real, root_real):
                     notes.append(Skipped(os.path.relpath(entry.path, root),
                                          "a folder link that leads outside the folder"))
@@ -939,6 +956,22 @@ def _display_path(path: str, real: str, root: str, root_real: str) -> str:
     return os.path.relpath(base, where).replace("\\", "/")
 
 
+def _real_file(path: str, folders: dict[str, str]) -> str:
+    """os.path.realpath(path), but the folder part is resolved once per folder
+    (`folders` remembers it): on Windows realpath costs far more than the
+    rest of reading a small file, and a folder can hold 50,000 of them."""
+    try:
+        folder, name = os.path.split(path)
+        if folder not in folders:
+            folders[folder] = os.path.realpath(folder)
+        candidate = os.path.join(folders[folder], name)
+        if not stat.S_ISLNK(os.lstat(candidate).st_mode):
+            return candidate
+    except (OSError, ValueError):
+        pass
+    return os.path.realpath(path)
+
+
 def scan_path(target: str, catalog: dict, everything: bool = False) -> ScanResult:
     """Scan a folder (the agent-readable files in it) or one file."""
     target = os.path.abspath(target)
@@ -954,13 +987,14 @@ def scan_path(target: str, catalog: dict, everything: bool = False) -> ScanResul
     findings: list[Finding] = []
     scanned = 0
     done: set[str] = set()
+    folders: dict[str, str] = {}
     total = Budget(SCAN_SECONDS)
     for index, path in enumerate(files):
         if total.expired():
             skipped.append(Skipped(".", f"stopped after {int(SCAN_SECONDS)} seconds; "
                                         f"{len(files) - index} files were not read", True))
             break
-        real = os.path.realpath(path)
+        real = _real_file(path, folders)
         if real in done:
             continue
         done.add(real)
@@ -969,7 +1003,7 @@ def scan_path(target: str, catalog: dict, everything: bool = False) -> ScanResul
         if text is None:
             why = why or "skipped"
             parts = tuple(rel.split("/"))
-            gap = why.startswith("could not be read") or (
+            gap = why.startswith("could not be read") or why == CLOUD_ONLY_REASON or (
                 why.startswith("bigger than") and _is_agent_path(parts))
             skipped.append(Skipped(rel, why, gap))
             continue

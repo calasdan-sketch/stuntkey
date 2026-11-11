@@ -6,6 +6,8 @@ global-exclude __pycache__ *.py[cod]
 include CONTRIBUTING.md
 recursive-include .github *.yml *.md
 include docs/guide.md
+recursive-include docs/site *.html *.css *.svg *.png *.md
+recursive-include stuntkey/web *.html *.css *.svg *.png
 
 include SECURITY.md
 include docs/THREAT_MODEL.md

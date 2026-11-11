@@ -128,14 +128,17 @@ PER_HOST_DOMAINS = frozenset({
 })
 
 
-def _print_steps(recipe: dict, out=None) -> None:
+def _print_steps(recipe: dict, out=None, opens_browser: bool = True) -> None:
     """The recipe's own words. Every one goes through printable(): a recipe
     is somebody else's text and must not be able to drive the terminal (hide
     the validation preview that follows, forge a line, retitle the window).
-    Its name, steps and scopes are sentences (words=True); the URL is not."""
+    Its name, steps and scopes are sentences (words=True); the URL is not.
+    `opens_browser` says whether the key page is opened for the person (it is
+    not with --no-browser: then the header says to open it themselves)."""
     out = out or sys.stdout
-    out.write(f"\n  Connect {printable(recipe['display'], words=True)}  "
-              f"(key opens in your browser)\n\n")
+    where = ("(the key page opens in your browser)" if opens_browser
+             else "(open the key page yourself - the address is below)")
+    out.write(f"\n  Connect {printable(recipe['display'], words=True)}  {where}\n\n")
     for i, step in enumerate(recipe["steps"], 1):
         out.write(f"    {i}. {printable(step, words=True)}\n")
     if recipe.get("scopes"):
@@ -147,9 +150,10 @@ def _print_steps(recipe: dict, out=None) -> None:
         if least.get("url"):
             out.write(f"    ({printable(least['url'])})\n")
     if recipe.get("unverified"):
-        what = ", ".join(printable(x) for x in recipe["unverified"])
-        out.write(f"\n  Not confirmed by the vendor's docs: {what} - "
-                  f"if something looks different on screen, trust the screen.\n")
+        # The field names (validate.url ...) are deliberately not shown: they
+        # mean nothing to a person who is not a programmer.
+        out.write("\n  I could not check this site's key test settings. "
+                  "If the screen looks different, trust the screen.\n")
     out.write(f"\n  Key page: {printable(recipe['key_url'])}\n\n")
     out.flush()
 
@@ -396,14 +400,26 @@ def _ask_one(field: dict, single: bool, prompt, out, clip, taken: set,
     label = printable(field["label"], words=True)
     if clip is not None:
         get, clear = clip
-        out.write(f"  Click Copy next to the {label} - I'll take it from the clipboard "
+        rounds = max(1, int(clipboard_mod.AUTO_ROUNDS))
+        out.write(f"  Copy the {label} on the page - I'll take it from the clipboard "
                   f"and EMPTY it.\n    The next single-word thing you copy is taken "
-                  f"as the key, so copy nothing else\n    (waiting up to "
-                  f"{clipboard_mod.WAIT_SECONDS // 60} minutes; nothing is shown; "
-                  f"Ctrl-C cancels)\n")
+                  f"as the key, so copy nothing else\n    (I keep waiting for you, "
+                  f"up to {rounds * clipboard_mod.WAIT_SECONDS // 60} minutes in all; "
+                  f"nothing is shown; Ctrl-C stops)\n")
         out.flush()
+        value = None
         try:
-            value = clipboard_mod.wait_for_key(field.get("accept"), taken, get, clear)
+            for turn in range(1, rounds + 1):
+                value = clipboard_mod.wait_for_key(field.get("accept"), taken,
+                                                   get, clear)
+                if value or turn == rounds:
+                    break
+                # The window ran out before anything was copied. Not a
+                # failure: say so in plain words and keep waiting. Only
+                # key-shaped text is ever taken, and Ctrl-C stops it.
+                out.write(f"  Still waiting for you to copy the {label} "
+                          f"(try {turn + 1} of {rounds}). Ctrl-C stops.\n")
+                out.flush()
         except KeyboardInterrupt:
             _safe_clear(clear)
             out.write("\ncancelled.\n")
@@ -417,7 +433,8 @@ def _ask_one(field: dict, single: bool, prompt, out, clip, taken: set,
                       f"({clipboard_mod.describe(value)}; hidden) - clipboard emptied.\n")
             out.flush()
             return value
-        out.write("  nothing key-shaped was copied - type or paste it instead:\n")
+        out.write("  Nothing was copied in time. Paste the key here instead "
+                  "(nothing is shown):\n")
     text = "  Paste your API key (hidden): " if single else f"  Paste the {label} (hidden): "
     try:
         return safeprompt.strip_paste_marks(prompt(text)).strip()
@@ -480,6 +497,7 @@ def connect(
     clipboard=None,
     via_cli: bool = False,
     cli_token_fn=None,
+    opens_browser: bool = True,
 ) -> int:
     """Run the guided flow. Returns 0 on success, 1 on failure.
 
@@ -515,7 +533,7 @@ def connect(
                   "(e.g. github).\n")
         return 1
     if not via_cli:
-        _print_steps(recipe, out)
+        _print_steps(recipe, out, opens_browser)
         try:
             browser_open(recipe["key_url"])
         except Exception as e:

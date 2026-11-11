@@ -1,3 +1,5 @@
+**To add a key, run** `stuntkey get` followed by the service name, for example `github` (for any other site: `stuntkey get example.com`). Not installed yet? See *Start here* below.
+
 # stuntkey
 
 **Keep your API keys out of your coding agent's context.** Your agent calls the
@@ -9,7 +11,7 @@ that have already leaked into the files your agent reads.
 ### Measured, not asserted
 
 `leakbench` is a vendor-neutral benchmark of 64 ways an AI coding agent leaks a
-credential — reading `.env`, dumping the environment, printing a traceback,
+credential - reading `.env`, dumping the environment, printing a traceback,
 following an injected instruction. Run it yourself: `python -m leakbench --profile stuntkey-hook` (the default profile, `none`, is the unprotected baseline).
 
 | Protection | blocked | masked | leaked |
@@ -19,7 +21,7 @@ following an injected instruction. Run it yourself: `python -m leakbench --profi
 | stuntkey hook + spending caps | **49** | 14 | **0** |
 
 **The 2 the hook alone does not stop**, named rather than hidden:
-`runaway-loop-no-cap` and `unbounded-retry` — a loop that keeps making paid
+`runaway-loop-no-cap` and `unbounded-retry` - a loop that keeps making paid
 calls. The spending caps stop those; the hook cannot.
 
 `leaked=0` counts Bash output only; PowerShell and Monitor output is not masked.
@@ -30,7 +32,7 @@ it is saved and blocks obvious leaks (`print(os.environ)`,
 can still get past that check.
 
 Threat model: [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md). Known gaps and
-limits: [SECURITY.md](SECURITY.md) — including that stuntkey has not had a paid
+limits: [SECURITY.md](SECURITY.md) - including that stuntkey has not had a paid
 external security review, and what we do instead.
 
 - The key sits in your computer's own keychain. When your AI needs an API, it asks stuntkey to make the call, and stuntkey adds the key itself.
@@ -43,10 +45,18 @@ external security review, and what we do instead.
 
 ## Start here
 
+pipx is a small helper that installs a Python program on its own, so its command (`stuntkey`) works from any folder. If `pipx` is not on your computer yet, install Python 3.10 or newer from python.org, then run these two lines (on Mac or Linux use `python3` in place of `py`), and open a new terminal window:
+
+```
+py -m pip install --user pipx
+pipx ensurepath
+```
+
 Need pipx? https://pipx.pypa.io
 
 ```
 pipx install stuntkey
+stuntkey try                   # practice first, with a pretend key (touches nothing real)
 stuntkey scan                  # step 0: finds keys already sitting in your project
 stuntkey get github            # opens the key page; you click Copy; stuntkey tests the key and saves it
 stuntkey install               # plug stuntkey into Claude, Cursor or VS Code, then restart that app
@@ -135,7 +145,9 @@ stuntkey uses only Python's own standard library, and a test in the repository (
 
 **Start**
 
-- `get <service>` - one command: opens the key page, takes the key when you click Copy (then empties the clipboard), tests it, saves it in the keychain. `--no-clipboard` uses hidden typing instead. Any site works too: `stuntkey get example.com` saves the key untested (stuntkey does not know that site's API yet; `stuntkey add` teaches it).
+- `get <service>` - one command: opens the key page, takes the key when you click Copy (then empties the clipboard), tests it, saves it in the keychain. If you are slow, it keeps waiting (up to 9 minutes in all) and says so. `--no-clipboard` uses hidden typing instead; `--no-browser` does not open the page. `--key-from-stdin` is for scripts and tests only: it reads the key from a pipe and refuses to run at a terminal. Any site works too: `stuntkey get example.com` saves the key untested (stuntkey does not know that site's API yet; `stuntkey add` teaches it).
+- `try` - a practice run (add, use, forget) with a pretend key, in a throwaway store; nothing real is touched. `--auto` skips the pauses.
+- `import <file>` - move keys you already have (a `.env` file, a Doppler or Bitwarden JSON export, a 1Password or Bitwarden CSV export) into the keychain. It shows only the names, asks first, and then tells you to delete the file (`--delete-source` does that for you). `--paste` takes pasted `NAME=value` lines instead of a file.
 - `install` / `uninstall` - plug stuntkey into (or remove it from) Claude Desktop, Cursor, Claude Code and VS Code.
 - `doctor` - the health check above.
 - `start` - a short guided tour: what is connected and what to do next.

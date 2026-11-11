@@ -1,0 +1,294 @@
+<!doctype html>
+<html lang="en-CA">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>StuntKey by Calas Automations</title>
+<meta name="description" content="StuntKey keeps your API keys in your computer's keychain and lets your AI use them without ever seeing them.">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#0B2E45">
+<meta name="referrer" content="no-referrer">
+<!-- Local page: no external requests. Libre Baskerville / IBM Plex are used if installed on this computer, else Georgia / system fonts. -->
+<style>
+/* StuntKey by Calas Automations - shared brand styles.
+   Same family as calasautomations.com (calas-ui.css / calas-brandbar.js):
+   blue #155F87 accent, gold #F0C171 as a HAIRLINE ONLY (2px line + card top borders),
+   Libre Baskerville headings, IBM Plex Sans body, IBM Plex Mono labels.
+   The crest is the real Calas logo PNG used as a mask (never a drawn shape). */
+:root{
+  --paper:#fff;--sunk:#F1F6F9;--ink:#12212C;--ink-2:#4E5B66;--rule:#D9E3EA;
+  --accent:#155F87;--accent-2:#0E4A6B;--navy:#0B2E45;--gold:#F0C171;--gold-text:#8A5A12;
+  --btn-bg:#155F87;--btn-ink:#fff;--btn-bg-h:#0E4A6B;
+  --code-bg:#0B1B2B;--code-ink:#E0ECF3;--ok:#1E6B3A;--warn:#8A5A12;
+  --crest:#155F87;--focus:#155F87;
+  --serif:"Libre Baskerville",Georgia,"Times New Roman",serif;
+  --sans:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Consolas,"Courier New",monospace;
+  --crest-img:url(data:image/png;base64,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);
+}
+@media(prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --paper:#0F2231;--sunk:#0A1722;--ink:#EEF4F8;--ink-2:#B2C3CF;--rule:#1E3A4D;
+  --accent:#5CAAD6;--accent-2:#8CC4E4;--gold-text:#F0C171;
+  --btn-bg:#5CAAD6;--btn-ink:#0B2E45;--btn-bg-h:#8CC4E4;
+  --code-bg:#06111A;--ok:#7BD39A;--warn:#F0C171;--crest:#5CAAD6;--focus:#8CC4E4}}
+:root[data-theme="dark"]{
+  --paper:#0F2231;--sunk:#0A1722;--ink:#EEF4F8;--ink-2:#B2C3CF;--rule:#1E3A4D;
+  --accent:#5CAAD6;--accent-2:#8CC4E4;--gold-text:#F0C171;
+  --btn-bg:#5CAAD6;--btn-ink:#0B2E45;--btn-bg-h:#8CC4E4;
+  --code-bg:#06111A;--ok:#7BD39A;--warn:#F0C171;--crest:#5CAAD6;--focus:#8CC4E4}
+
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--sans);font-size:17px;line-height:1.65}
+a{color:var(--accent)}
+a:hover{color:var(--accent-2)}
+:focus-visible{outline:3px solid var(--focus);outline-offset:2px;border-radius:4px}
+.skip{position:absolute;left:-9999px;top:0;background:var(--btn-bg);color:var(--btn-ink);padding:10px 16px;z-index:100;text-decoration:none}
+.skip:focus{left:0}
+.wrap{max-width:1040px;margin:0 auto;padding:0 clamp(16px,4vw,32px)}
+
+/* header: crest + wordmark + gold hairline */
+.bar{background:var(--paper);border-bottom:1px solid var(--rule);position:sticky;top:0;z-index:50}
+.bar::after{content:"";display:block;height:2px;background:linear-gradient(90deg,transparent,var(--gold),transparent)}
+.bar .in{max-width:1040px;margin:0 auto;padding:12px clamp(16px,4vw,32px);display:flex;align-items:center;justify-content:space-between;gap:12px 18px;flex-wrap:wrap}
+.lock{display:flex;align-items:center;gap:12px;text-decoration:none}
+.crest{width:26px;height:36px;flex:none;display:inline-block;background:var(--crest);
+  -webkit-mask:var(--crest-img) center/contain no-repeat;mask:var(--crest-img) center/contain no-repeat;
+  animation:flip 6s linear infinite}
+@keyframes flip{from{transform:rotateY(0)}to{transform:rotateY(360deg)}}
+@media(prefers-reduced-motion:reduce){.crest{animation:none}}
+.lock .name{display:block;font-family:var(--serif);font-size:20px;font-weight:700;color:var(--accent);line-height:1;letter-spacing:-.01em}
+.lock .sub{display:block;font-family:var(--mono);font-size:11px;letter-spacing:.24em;color:var(--ink-2);margin-top:4px;border-top:1.5px solid var(--accent);padding-top:3px}
+.bar nav{display:flex;align-items:center;gap:6px 16px;flex-wrap:wrap;font-size:16px}
+.bar nav a{color:var(--ink-2);text-decoration:none;padding:8px 2px;min-height:44px;display:inline-flex;align-items:center}
+.bar nav a:hover,.bar nav a[aria-current="page"]{color:var(--accent)}
+.bar nav a[aria-current="page"]{font-weight:600;text-decoration:underline;text-underline-offset:6px}
+
+/* hero: the navy band with white title and gold italic word */
+.hero{background:#0B2E45;color:#fff;border-bottom:1px solid #1E4A66;background-image:linear-gradient(180deg,rgba(11,46,69,.55),rgba(11,46,69,.9))}
+.hero .wrap{padding-top:clamp(40px,6vw,84px);padding-bottom:clamp(36px,5vw,72px)}
+.eyebrow{font-family:var(--mono);font-size:13px;letter-spacing:.18em;text-transform:uppercase;color:var(--accent);margin:0 0 10px;display:inline-flex;align-items:center;gap:10px}
+.hero .eyebrow{color:#7FBFE3}
+.eyebrow::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--gold);flex:none}
+h1,h2,h3{font-family:var(--serif);line-height:1.15;color:var(--ink);margin:0 0 12px}
+h1{font-size:clamp(32px,5.2vw,58px);font-weight:700;letter-spacing:-.02em;text-wrap:balance}
+.hero h1{color:#fff}
+h1 em{font-style:italic;font-weight:400;color:var(--gold)}
+.page h1 em{color:var(--accent)}
+h2{font-size:clamp(24px,3.2vw,36px);letter-spacing:-.015em;text-wrap:balance}
+h3{font-size:20px}
+.lede{font-size:clamp(17px,1.6vw,20px);max-width:660px;margin:0 0 20px}
+.hero .lede{color:#D3E3EE}
+.say{color:var(--ink-2)}
+section{padding:clamp(28px,4.5vw,56px) 0}
+section.sunk{background:var(--sunk);border-top:1px solid var(--rule);border-bottom:1px solid var(--rule)}
+
+/* cards: gold top border */
+.grid{display:grid;gap:18px;grid-template-columns:repeat(auto-fit,minmax(min(100%,260px),1fr))}
+.card{background:var(--paper);border:1px solid var(--rule);border-top:3px solid var(--gold);border-radius:8px;padding:20px 22px}
+section.sunk .card{background:var(--paper)}
+.card p{margin:0 0 10px}.card p:last-child{margin:0}
+.card h3{margin-bottom:8px}
+.big{font-size:19px}
+
+/* buttons */
+.btn{display:inline-flex;align-items:center;justify-content:center;font-family:var(--sans);font-weight:600;font-size:17px;line-height:1.2;padding:12px 22px;min-height:44px;border:1.5px solid transparent;border-radius:6px;background:var(--btn-bg);color:var(--btn-ink);text-decoration:none;cursor:pointer;letter-spacing:.01em;transition:background .15s ease}
+.btn:hover{background:var(--btn-bg-h);color:var(--btn-ink)}
+.btn.ghost{background:transparent;color:var(--accent);border-color:var(--accent)}
+.btn.ghost:hover{background:var(--sunk);color:var(--accent-2)}
+.hero .btn.ghost{color:#fff;border-color:#7FBFE3}
+.hero .btn.ghost:hover{background:rgba(255,255,255,.1);color:#fff}
+.btn.gold{background:var(--gold);color:#0B2E45}
+.btn.gold:hover{background:#F5CF8C;color:#0B2E45}
+.ctas{display:flex;gap:12px 14px;flex-wrap:wrap;margin-top:6px}
+
+/* copyable command */
+.cmd{display:flex;align-items:stretch;background:var(--code-bg);border-radius:10px;overflow:hidden;margin:12px 0}
+.cmd code{background:transparent;border:0;border-radius:0;flex:1;min-width:0;padding:14px 16px;font-family:var(--mono);font-size:15.5px;color:var(--code-ink);overflow-x:auto;white-space:pre;display:flex;align-items:center}
+.cmd .copy{border-radius:0;min-width:92px;font-size:15px}
+pre.block{background:var(--code-bg);color:var(--code-ink);padding:16px;border-radius:10px;overflow:auto;font-family:var(--mono);font-size:15px;line-height:1.55;margin:12px 0}
+code{font-family:var(--mono);font-size:.92em}
+p code,li code{background:var(--sunk);border:1px solid var(--rule);border-radius:4px;padding:1px 6px}
+
+/* numbered steps */
+.steps{list-style:none;margin:16px 0;padding:0;counter-reset:s}
+.steps>li{position:relative;padding:0 0 22px 52px;counter-increment:s}
+.steps>li::before{content:counter(s);position:absolute;left:0;top:0;width:34px;height:34px;border-radius:50%;background:var(--gold);color:#0B2E45;font-family:var(--mono);font-size:15px;font-weight:600;display:grid;place-items:center}
+.steps>li b{display:block;font-family:var(--serif);font-size:19px;margin-bottom:2px}
+.steps>li p{margin:0 0 6px}
+
+/* key status list (names only) */
+.keys{list-style:none;margin:10px 0 0;padding:0}
+.keys li{display:flex;align-items:center;gap:12px;padding:12px 0;border-top:1px solid var(--rule)}
+.keys li:first-child{border-top:0}
+.keys .nm{font-family:var(--mono);font-size:15px;word-break:break-all}
+.keys .st{margin-left:auto;font-family:var(--mono);font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:var(--ok);display:flex;align-items:center;gap:8px;white-space:nowrap}
+.keys .st i{width:8px;height:8px;border-radius:50%;background:currentColor}
+.keys .meta{color:var(--ink-2);font-size:14px}
+.empty{color:var(--ink-2);margin:6px 0 0}
+
+.note{padding:16px 20px;background:var(--sunk);border:1px solid var(--rule);border-left:3px solid var(--gold);border-radius:8px;margin:18px 0}
+.note p{margin:0 0 8px}.note p:last-child{margin:0}
+.pill{display:inline-block;font-family:var(--mono);font-size:12px;letter-spacing:.1em;text-transform:uppercase;border:1px solid var(--rule);border-radius:999px;padding:3px 10px;color:var(--ink-2)}
+ul.tick{padding-left:20px}ul.tick li{margin:0 0 8px}
+.live{min-height:1.4em;font-size:14px;color:var(--ok);margin:4px 0 0}
+.page{padding:clamp(28px,4vw,56px) 0}
+.page .wrap{max-width:780px}
+.page p,.page li{font-size:17px}
+.crumbs{font-family:var(--mono);font-size:13px;letter-spacing:.1em;text-transform:uppercase;margin:0 0 14px}
+.crumbs a{text-decoration:none}
+
+/* footer: gold 2px top rule */
+.foot{margin-top:24px;background:var(--paper);border-top:2px solid var(--gold);color:var(--ink-2)}
+.foot .in{max-width:1040px;margin:0 auto;padding:28px clamp(16px,4vw,32px) 32px}
+.foot .lock{margin-bottom:12px}
+.foot .crest{width:22px;height:30px}
+.foot .name{font-size:16px}
+.foot nav{display:flex;flex-wrap:wrap;gap:0 6px;margin:4px 0 10px}
+.foot nav a{display:inline-flex;align-items:center;min-height:44px;padding:0 8px;color:var(--accent);font-size:15px}
+.foot .fine{font-size:14px;line-height:1.5;margin:0}
+.foot .fine a{color:var(--accent)}
+@media(max-width:560px){.cmd{flex-direction:column}.cmd .copy{min-height:48px}.keys li{flex-wrap:wrap}.keys .st{margin-left:0}}
+
+</style>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="bar"><div class="in">
+  <a class="lock" href="#top" aria-label="StuntKey by Calas Automations">
+    <span class="crest" aria-hidden="true"></span>
+    <span><span class="name">StuntKey</span><span class="sub">BY CALAS AUTOMATIONS</span></span>
+  </a>
+  <nav aria-label="Page"><a href="#keys">Your keys</a><a href="#add">Add a key</a><a href="#practice">Practice</a><a href="#safe">Safety</a></nav>
+</div></header>
+
+<main id="main">
+<section class="hero" id="top"><div class="wrap">
+  <p class="eyebrow">Running on this computer only</p>
+  <h1>Your AI uses your keys. <em>It never sees them.</em></h1>
+  <p class="lede">StuntKey is a stand-in for your API keys. Your AI works with the stand-in. The real key stays locked away.</p>
+  <ul class="tick" style="color:#D3E3EE;margin:0 0 22px;font-size:18px">
+    <li>Real keys live in your computer's own keychain.</li>
+    <li>Your AI gets a stunt double, never the real thing.</li>
+    <li>You can set a spending limit on every key.</li>
+  </ul>
+  <div class="ctas"><a class="btn gold" href="#add">Add a key</a><a class="btn ghost" href="#practice">Try practice mode first</a></div>
+</div></section>
+
+<section id="keys"><div class="wrap">
+  <h2>Your keys</h2>
+  <div class="card">
+    <p class="say" id="keys-intro">Names only. The secret part is never shown on this page.</p>
+    <ul class="keys" id="keys-list" aria-live="polite"></ul>
+    <p class="empty" id="keys-empty" hidden>No keys yet. Add your first one below. It takes about a minute.</p>
+  </div>
+  <p class="say" style="font-size:14px;margin-top:10px">StuntKey <span id="ver"></span><span id="mode"></span></p>
+</div></section>
+
+<section class="sunk" id="add"><div class="wrap">
+  <p class="eyebrow">Add a key</p>
+  <h2>Three steps. You never type your key into this page.</h2>
+  <ol class="steps">
+    <li><b>Say which service.</b>
+      <p>For example OpenAI, GitHub or Stripe. Type it here and the command below updates.</p>
+      <label for="svc" class="say" style="font-size:15px">Service name</label><br>
+      <input id="svc" type="text" value="openai" maxlength="40" autocomplete="off" spellcheck="false" aria-describedby="svc-help"
+        style="font:inherit;font-family:var(--mono);padding:10px 12px;border:1.5px solid var(--accent);border-radius:6px;background:var(--paper);color:var(--ink);width:min(100%,320px);min-height:44px">
+      <p class="say" id="svc-help" style="font-size:14px;margin-top:6px">Letters and numbers only.</p></li>
+    <li><b>Copy this command and paste it into a terminal.</b>
+      <div class="cmd"><code id="cmd">stuntkey get openai</code><button type="button" class="btn copy" id="copy" aria-describedby="copy-live">Copy</button></div>
+      <p class="live" id="copy-live" role="status"></p></li>
+    <li><b>Follow the prompts.</b>
+      <p>StuntKey opens the key page for you. Click that site's own Copy button. StuntKey takes the key from your copy, tests it, and locks it in your keychain.</p></li>
+  </ol>
+</div></section>
+
+<section id="practice"><div class="wrap">
+  <p class="eyebrow">Practice mode</p>
+  <h2>Want to see it work first?</h2>
+  <div class="card">
+    <p class="big">Run a safe practice. StuntKey saves a pretend key, uses it, then forgets it, in a throwaway place that is deleted afterwards. No real key is used. Nothing real is changed.</p>
+    <div class="cmd"><code id="pcmd">stuntkey try</code><button type="button" class="btn copy" id="pcopy" aria-describedby="pcopy-live">Copy</button></div>
+    <p class="live" id="pcopy-live" role="status"></p>
+  </div>
+</div></section>
+
+<section class="sunk" id="safe"><div class="wrap">
+  <p class="eyebrow">Safety, in plain words</p>
+  <h2>What StuntKey does, and what it does not.</h2>
+  <div class="grid">
+    <div class="card"><h3>What it does</h3><ul class="tick">
+      <li>Keeps your real keys in the keychain your computer already has.</li>
+      <li>Lets your AI make calls without ever holding the key.</li>
+      <li>Hides a key if one shows up in what the AI would read.</li>
+      <li>Lets you set a daily limit per key, and a stop switch.</li></ul></div>
+    <div class="card"><h3>What it does not do</h3><ul class="tick">
+      <li>It lowers the risk. It cannot make it zero.</li>
+      <li>It cannot stop an AI misusing a key it is allowed to use. Give each key only the permissions it needs.</li>
+      <li>It does not protect against a virus already running as you.</li></ul></div>
+    <div class="card"><h3>This page</h3><ul class="tick">
+      <li>Only opens on this computer.</li>
+      <li>Shows names, never secrets.</li>
+      <li>Has no box to type a key into, on purpose.</li>
+      <li>Sends nothing anywhere.</li></ul></div>
+  </div>
+  <div class="note"><p><b>Leaked a key?</b> Run <code>stuntkey panic openai</code>. It walks you through cancelling it and making a new one.</p></div>
+</div></section>
+</main>
+
+<footer class="foot"><div class="in">
+  <a class="lock" href="#top" aria-label="Back to top"><span class="crest" aria-hidden="true"></span><span><span class="name">StuntKey</span><span class="sub">BY CALAS AUTOMATIONS</span></span></a>
+  <p class="fine">Free and open source, MIT licence. &copy; Calas Automations Inc., Winnipeg, Manitoba. Questions: <a href="mailto:office@calasautomations.com">office@calasautomations.com</a></p>
+</div></footer>
+
+<!-- Filled in by stuntkey/httpd.py: the status is JSON with every less-than sign written as a unicode escape. -->
+<script type="application/json" id="sk-status">{{status_json}}</script>
+<script>
+(function(){
+  "use strict";
+  var raw = document.getElementById("sk-status").textContent || "";
+  var st = {};
+  try { if (raw.indexOf("{{") !== 0) st = JSON.parse(raw) || {}; } catch (e) { st = {}; }
+  var ver = "{{version}}";
+  var ve = document.getElementById("ver");
+  if (ver.indexOf("{{") !== 0) ve.textContent = "version " + ver;
+  if (raw.indexOf("{{") === 0) document.getElementById("mode").textContent = " - preview (not connected)";
+  function el(tag, cls, text){ var n = document.createElement(tag); if (cls) n.className = cls; if (text != null) n.textContent = text; return n; }
+  var list = document.getElementById("keys-list"), keys = st.keys || [];
+  if (!keys.length) { document.getElementById("keys-empty").hidden = false; }
+  keys.forEach(function(k){
+    var li = el("li"), left = el("span");
+    left.appendChild(el("span", "nm", String(k.name || k.service || "key")));
+    var meta = [];
+    if (k.age_days != null) meta.push("added " + k.age_days + " day" + (k.age_days === 1 ? "" : "s") + " ago");
+    if (k.cap) meta.push("limit: " + k.cap);
+    if (meta.length) { left.appendChild(document.createElement("br")); left.appendChild(el("span", "meta", meta.join(" - "))); }
+    var s = el("span", "st"); s.appendChild(el("i")); s.appendChild(document.createTextNode("Locked"));
+    li.appendChild(left); li.appendChild(s); list.appendChild(li);
+  });
+  if (st.practice_cmd && /^stuntkey [a-z0-9 .-]{1,40}$/.test(st.practice_cmd)) document.getElementById("pcmd").textContent = st.practice_cmd;
+  var svc = document.getElementById("svc"), cmd = document.getElementById("cmd");
+  svc.addEventListener("input", function(){
+    var v = svc.value.toLowerCase().replace(/[^a-z0-9._-]/g, "").slice(0, 40);
+    cmd.textContent = "stuntkey get " + (v || "openai");
+  });
+  function wire(btnId, codeId, liveId){
+    var b = document.getElementById(btnId), live = document.getElementById(liveId);
+    b.addEventListener("click", function(){
+      var text = document.getElementById(codeId).textContent;
+      function done(ok){ live.textContent = ok ? "Copied. Now paste it into your terminal." : "Could not copy. Select the command and press Ctrl+C."; setTimeout(function(){ live.textContent = ""; }, 4000); }
+      if (navigator.clipboard && navigator.clipboard.writeText) { navigator.clipboard.writeText(text).then(function(){ done(true); }, function(){ fallback(); }); }
+      else fallback();
+      function fallback(){
+        var ta = document.createElement("textarea"); ta.value = text; ta.setAttribute("readonly", ""); ta.style.position = "fixed"; ta.style.opacity = "0";
+        document.body.appendChild(ta); ta.select(); var ok = false;
+        try { ok = document.execCommand("copy"); } catch (e) {}
+        document.body.removeChild(ta); done(ok);
+      }
+    });
+  }
+  wire("copy", "cmd", "copy-live"); wire("pcopy", "pcmd", "pcopy-live");
+})();
+</script>
+</body>
+</html>

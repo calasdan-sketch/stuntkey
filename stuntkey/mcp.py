@@ -203,7 +203,12 @@ def _call_api(catalog: dict, args: dict) -> dict:
                              max_chars=max_chars)
     except broker.BrokerError as e:
         return fail(str(e))
-    except remote.RemoteError:
+    except remote.RemoteError as e:
+        if "did not answer" in str(e):
+            # the keychain is locked or unavailable: say so, not "no key saved"
+            return fail("The computer's password vault did not answer, so no call "
+                        "was made. Tell the person to unlock it (sign in to "
+                        "Windows again) and retry. Do not retry on your own.")
         return fail("No key is saved for '%s'. Tell the person to run "
                     "`stuntkey get %s` in a terminal. "
                     "Never ask them to paste a key into the chat."
@@ -379,11 +384,39 @@ def handle(request, catalog: dict[str, dict],
     if response is not None and "result" in response:
         for item in response["result"].get("content", []) if isinstance(response["result"], dict) else []:
             if isinstance(item, dict) and isinstance(item.get("text"), str):
-                item["text"] = agent_mod.guard_text(item["text"], catalog, cwd)
+                item["text"] = _guard(item["text"], catalog, cwd)
     elif response is not None and "error" in response:
-        response["error"]["message"] = agent_mod.guard_text(
+        response["error"]["message"] = _guard(
             str(response["error"].get("message", "")), catalog, cwd)
     return response
+
+
+WITHHELD = ("[stuntkey withheld this answer: it could not be checked for keys, so "
+            "nothing was passed on]")
+
+
+def _guard(text: str, catalog: dict, cwd: str | None = None) -> str:
+    """Last gate for everything the agent is shown: the keys stuntkey can reach
+    (agent.guard_text), then every STORED key by fingerprint and every text in a
+    known key format (scrub.mask_secrets). The second pass is what catches a key
+    that a tool or an API answer echoes back even though this process never held
+    it. JSON stays valid: only string values are touched. If the check itself
+    fails, the text is withheld (fail closed)."""
+    try:
+        text = agent_mod.guard_text(text, catalog, cwd)
+        from . import scrub as scrub_mod
+        prints = scrub_mod.load_fingerprints()
+        mask = lambda s: scrub_mod.mask_secrets(s, prints)[0]
+        try:
+            data = json.loads(text)
+        except (ValueError, RecursionError):
+            return mask(text)
+        if not isinstance(data, (dict, list)):
+            return mask(text)
+        indent = 2 if "\n" in text.strip() else None
+        return json.dumps(agent_mod._scrub_json(data, mask), indent=indent)
+    except Exception:
+        return WITHHELD
 
 
 def _handle(request, catalog: dict[str, dict],
@@ -620,7 +653,7 @@ def _serve(catalog: dict[str, dict] | None = None,
                 response = handle(request, catalog, pa_loader)
             except Exception as e:  # never let one bad request kill the server
                 rid = request.get("id") if isinstance(request, dict) else None
-                response = _error(rid, INTERNAL_ERROR, agent_mod.guard_text(str(e), catalog))
+                response = _error(rid, INTERNAL_ERROR, _guard(str(e), catalog))
         if response is not None:
             try:
                 text = json.dumps(response)

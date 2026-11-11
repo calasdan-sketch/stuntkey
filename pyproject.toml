@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "stuntkey"
-version = "0.9.1"
+version = "0.9.2"
 description = "Let your AI use your API keys through stuntkey without ever holding them: guided one-command setup, brokered API calls, a self-attack test and an activity log. Reduces risk; not independently reviewed."
 readme = "README.md"
 license = "MIT"
@@ -45,4 +45,4 @@ stuntkey = "stuntkey.cli:main"
 packages = ["stuntkey"]
 
 [tool.setuptools.package-data]
-stuntkey = ["recipes/*.json", "skill/*.md"]
+stuntkey = ["recipes/*.json", "skill/*.md", "web/*.html", "web/*.css", "web/*.svg", "web/*.png"]

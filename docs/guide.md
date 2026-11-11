@@ -2,6 +2,20 @@
 
 # stuntkey
 
+## The plain-words path (for people who do not write code)
+
+1. **Practice first:** `stuntkey try`. It walks you through adding a pretend key, using it and forgetting it. It runs in a throwaway store and a temporary folder (your keychain, your keys, your project and your activity log are not opened) and deletes everything when it ends. `--auto` goes through it without pausing.
+2. **Add a real key:** `stuntkey get github`, or `stuntkey get example.com` for a site stuntkey has no recipe for (the key is then saved untested). Every command says in one line what it is about to do before it does it. The key goes in your computer's keychain unless you ask for `--store env`.
+3. **Already have keys in a file or a password manager?** `stuntkey import FILE` reads a `.env` file, a Doppler or Bitwarden JSON export, or a 1Password or Bitwarden CSV export (or `--paste`: lines you paste, hidden). It shows the *names* it found, never the values, asks, and saves them in the keychain. A name stuntkey has no service for is left alone and listed. When it is done it tells you to delete the file you read them from; use the command it prints (a file deleted in Explorer waits in the Recycle Bin), or pass `--delete-source`, which overwrites and deletes it (on an SSD or a synced folder an old copy can remain, so also remove it from there).
+4. **Use it:** `stuntkey run <service> -- <your command>`. `stuntkey forget <service>` removes it. `run` and `forget` also take the address you gave to `get` (`stuntkey forget example.com`).
+
+### The questions stuntkey asks, and why
+
+- **Removed:** the "Press Enter to save" step after a key is taken, and the 3-minute clipboard timeout that ended the run. A copy that comes late no longer fails: stuntkey says "Still waiting for you to copy the key (try 2 of 3)" and goes on, 3 times 3 minutes in all, then asks for a hidden paste. This is safe because nothing new is trusted: only a key-shaped value is taken, it is sent only to the vendor's own address, nothing is saved unless the vendor accepts it, and Ctrl-C stops it at any time.
+- **Kept:** the typed `yes` when a recipe would send your key to a different company's domain or to a program on your own network (a poisoned recipe must not be able to harvest a key); the `[y/N]` before a key goes into a plain-text `.env` file because the keychain did not work; the `[y/N]` before `forget` and before `import` saves; and the operating-system permission windows (see the README), which are only for an AI agent's actions and which the agent cannot click. `get` itself never opens one: you are at the keyboard.
+- **Plain messages:** `stuntkey getx` says "I don't know 'getx'. Did you mean: stuntkey get?"; `stuntkey call github FETCH /user` says "FETCH is not a method I know. Use GET, POST, PUT, PATCH or DELETE."; `status` or `setup` in a folder with no `stuntkey.json` says "This folder has no stuntkey setup. Run `stuntkey init` to create one."; `run` or `forget` for a service with no key says "No key saved for github. Run `stuntkey get github`."; and a bad `--project-dir` names the folder and the reason.
+- **For scripts and tests only:** `stuntkey get <service> --key-from-stdin` reads the key (one line per value) from a pipe, so it never waits on a terminal. It is refused at a terminal, because there the clipboard flow is safer and the key would otherwise be typed into a shell history. A key in a script or a pipe can end up in logs: do not use it for real keys.
+
 **Quickstart**
 
 ```bash
@@ -460,6 +474,11 @@ stuntkey find <query> --refresh      # download the directory again now
 stuntkey mcp                         # stdio MCP server (for Claude Code)
 stuntkey proxy -- <command>          # run a program whose SDK talks to a local stuntkey address (OPENAI/ANTHROPIC/GROQ/TOGETHER_BASE_URL); its *_API_KEY is a throwaway password
 stuntkey proxy --print-env           # print those variables for a tool you start yourself
+stuntkey proxy --keep-env NAME -- <command>   # also pass this one environment variable on (the program gets only a short safe list otherwise; or set STUNTKEY_KEEP_ENV=NAME,NAME)
+stuntkey proxy --generic -- <command> # give the program a stand-in key and a proxy address (STUNTKEY_URL_<SERVICE>) for every service stuntkey can carry
+stuntkey proxy --map NAME=service -- <command> # make the variable NAME hold the proxy address of one service, for a program that reads its web address from NAME
+stuntkey proxy --tunnel -- <command> # also set HTTPS_PROXY to a tunnel that reaches only the AI services' hosts (it adds no key and sees nothing inside)
+stuntkey proxy --allow-host api.example.com -- <command> # with the tunnel: one more host the program may reach (repeat for more)
 stuntkey caps show                   # spending limits per key and today's usage
 stuntkey caps set <service> --calls-session N --calls-day N --tokens-day N   # limit a key (counted across every program)
 stuntkey caps set <service> --clear  # remove that key's limits
@@ -478,6 +497,15 @@ no "Exception ignored" noise at exit. On Windows Python reports that
 closed pipe as a plain `OSError` 22 instead of `BrokenPipeError` (a
 short output only fails when it is flushed); that is recognised too, for
 every command and for the MCP server.
+
+### What a program started with `proxy` can see
+
+The program starts with only a short list of settings (an allow-list): where programs live (`PATH`), the Windows system folders, your home and temp folders, the language and colour settings, and a few Python and Node ones. Everything else in your own environment is left behind, so a token your terminal happens to hold (`GITHUB_TOKEN`, `AWS_SECRET_ACCESS_KEY`, `NPM_TOKEN`, a database password) never reaches it by accident. A name that looks secret passes only when you name it yourself: `--keep-env NAME` for one run, or `STUNTKEY_KEEP_ENV=NAME,NAME` for every run. A key for a service stuntkey carries never passes at all, and neither does a setting whose value holds one of your stored keys. stuntkey's own `STUNTKEY_*` settings stay behind too. Ordinary tools (git, python, pip, node) keep working.
+
+- `--generic` gives the program a stand-in key and a proxy address for every service stuntkey can carry.
+- `--map NAME=service` makes the variable `NAME` hold the proxy address of one service, for a program that reads its web address from `NAME`.
+- `--tunnel` also sets `HTTPS_PROXY` to a tunnel that reaches only the AI services' hosts. It adds no key and cannot see inside the traffic.
+- `--allow-host HOST` (with the tunnel) lets the program reach one more host, for example `api.github.com`. Repeat it for more.
 
 ## A connect, annotated
 
@@ -505,7 +533,8 @@ $ stuntkey connect stripe
 *Where the key goes*.)
 
 `--no-browser` (for `connect` and `rotate`) does not open the key page in
-your browser. Its address is still printed under `Key page:`, so you can
+your browser (and the header line then says to open it yourself instead of
+"the key page opens in your browser"). Its address is still printed under `Key page:`, so you can
 open it yourself: on another machine, over SSH, in a container.
 
 The validation preview is the security hinge: you see exactly where the
@@ -827,7 +856,7 @@ stores it as usual; nothing is typed, pasted or shown. It looks only while
 it is waiting for a key, takes only a value that matches the field's
 `accept` pattern (when the recipe has one; it names only a shape the vendor documents, and only its start, so a valid key is never refused) or looks like a key (one line, no
 spaces, 8-4096 visible characters, different from what was already on the
-clipboard), and falls back to the hidden prompt after 3 minutes or when no
+clipboard), and keeps waiting when the 3 minutes pass with nothing copied (3 times in all, saying so each time), then falls back to the hidden prompt, or at once when no
 clipboard tool exists (Windows needs nothing; macOS uses `pbpaste`; Linux
 `wl-paste`, `xclip` or `xsel`). Windows clipboard history (Win+V) and
 clipboard managers can keep their own copy, which stuntkey cannot clear.
@@ -1203,7 +1232,7 @@ is UTF-8 bytes regardless of console code page, console output is
 reconfigured to replace unencodable characters instead of crashing, and
 every text file is opened as UTF-8.
 
-## Scope / limits (v0.9.1)
+## Scope / limits (v0.9.2)
 
 - `scan` finds keys by their shape. It misses a key with no recognisable
   prefix under a name that does not end in KEY, TOKEN, SECRET or PASSWORD, and

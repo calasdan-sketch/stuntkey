@@ -111,6 +111,16 @@ def begin(home: str, service: str, session_calls: int) -> None:
     `session_calls` is how many calls this process already made for it."""
     if os.path.lexists(stop_path(home)):
         raise BrokerError(STOPPED, 5)
+    try:
+        _begin(home, service, session_calls)
+    except OSError:
+        # a locked, read-only or full disk: fail closed, in plain words
+        raise BrokerError("stuntkey could not update its usage record in "
+                          "~/.stuntkey, so no call was made. Check that the folder "
+                          "can be written to.", 5) from None
+
+
+def _begin(home: str, service: str, session_calls: int) -> None:
     cap = load_caps(home).get(service, {})
     path = usage_path(home, service)
     with _file_lock(path) as got:
@@ -139,14 +149,17 @@ def add_tokens(home: str, service: str, n: int) -> None:
     if n <= 0:
         return
     path = usage_path(home, service)
-    with _file_lock(path) as got:
-        if got:
-            try:
-                u = _read_usage(path)
-            except BrokerError:
-                return
-            u["tokens"] += n
-            _write_usage(path, u)
+    try:
+        with _file_lock(path) as got:
+            if got:
+                try:
+                    u = _read_usage(path)
+                except BrokerError:
+                    return
+                u["tokens"] += n
+                _write_usage(path, u)
+    except OSError:
+        pass        # the call is over; the next one fails closed in begin()
 
 
 # ---- tokens from an API answer ---------------------------------------------------
@@ -263,9 +276,14 @@ def _usage_files(home: str) -> list:
 
 
 def cmd_stop(home: str) -> int:
-    os.makedirs(home, exist_ok=True)
-    with open(stop_path(home), "w", encoding="utf-8") as f:
-        f.write("stopped by `stuntkey stop`\n")
+    try:
+        os.makedirs(home, exist_ok=True)
+        with open(stop_path(home), "w", encoding="utf-8") as f:
+            f.write("stopped by `stuntkey stop`\n")
+    except OSError:
+        print("error: could not create the stop marker in ~/.stuntkey, so stuntkey is "
+              "NOT stopped. Check that the folder can be written to.")
+        return 1
     print("stuntkey is stopped: no API call will be made through it until a "
           "person runs `stuntkey resume`.")
     return 0
@@ -278,6 +296,10 @@ def cmd_resume(home: str, ask) -> int:
     if not ask("Resume stuntkey: allow API calls through it again?"):
         print("still stopped: the person did not approve.")
         return 5
-    os.remove(stop_path(home))
+    try:
+        os.remove(stop_path(home))
+    except OSError:
+        print("error: could not remove the stop marker, so stuntkey is still stopped.")
+        return 1
     print("resumed: API calls are allowed again.")
     return 0

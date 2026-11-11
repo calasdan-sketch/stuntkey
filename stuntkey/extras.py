@@ -12,7 +12,8 @@ import sys
 from . import recipes as recipes_mod
 
 COMMANDS = {"remote", "trust-server", "deploy", "install", "uninstall", "start",
-            "overview", "audit", "call", "serve", "selftest", "scan-git", "doctor"}
+            "overview", "audit", "call", "serve", "selftest", "scan-git", "doctor",
+            "try", "import"}
 
 
 PER_FOLDER_NOTE = ("Run this in your project folder. claude-code and vscode are set up for "
@@ -99,8 +100,9 @@ def add_parsers(sub) -> None:
     ov.add_argument("--json", action="store_true", help="Machine-readable output.")
     ov.add_argument("--env-file", default=".env")
     au = sub.add_parser("audit", help="Check the activity log has not been tampered with.")
-    au.add_argument("action", choices=["verify", "show", "reset"],
-                    help="reset: start a fresh log after a problem (the old one is kept)")
+    au.add_argument("action", nargs="?", default="verify", choices=["verify", "show", "reset"],
+                    help="verify (the default): check the log; show: list the last calls; "
+                         "reset: start a fresh log after a problem (the old one is kept)")
     au.add_argument("--json", action="store_true")
     au.add_argument("--last", type=int, default=20, help="how many entries to show")
     ca = sub.add_parser("call", help="Call a connected service's API; the key is "
@@ -116,6 +118,28 @@ def add_parsers(sub) -> None:
                                       "(OpenAI-style functions, Ollama, scripts).")
     sv.add_argument("--port", type=int, default=8787)
     sv.add_argument("--env-file", default=".env")
+    tr = sub.add_parser("try", help="Practice with a pretend key. Nothing real is touched.",
+                        description="A guided practice run: add a pretend key, use it, "
+                                    "forget it. It uses a throwaway store and a "
+                                    "temporary folder - your real keys, keychain and "
+                                    "activity log are never touched.")
+    tr.add_argument("--auto", action="store_true",
+                    help="Go through every step without waiting for Enter.")
+    im = sub.add_parser("import", help="Move keys from a .env file, or a 1Password / "
+                                       "Bitwarden / Doppler export, into the keychain.",
+                        description="Reads the file, shows the NAMES it found (never "
+                                    "the values), asks, saves them in the OS keychain, "
+                                    "then tells you to delete the file. Names stuntkey "
+                                    "does not know are left alone. Formats: .env, "
+                                    "JSON (Doppler or Bitwarden), CSV (1Password or "
+                                    "Bitwarden).")
+    im.add_argument("file", nargs="?", default=None,
+                    help="The file to read. Leave it out with --paste.")
+    im.add_argument("--paste", action="store_true",
+                    help="Paste NAME=value lines yourself (hidden); an empty line ends it.")
+    im.add_argument("--yes", action="store_true", help="Do not ask first (for scripts).")
+    im.add_argument("--delete-source", action="store_true",
+                    help="After saving, overwrite the file and delete it.")
     stp = sub.add_parser("selftest", help="Attack stuntkey with a made-up key and a pretend "
                                           "server; shows how many attacks it stopped.")
     stp.add_argument("--json", action="store_true")
@@ -125,11 +149,18 @@ def add_parsers(sub) -> None:
 
 def unknown_service(catalog: dict, name: str) -> int:
     close = difflib.get_close_matches(str(name).lower(), list(catalog), n=3, cutoff=0.5)
-    msg = f"unknown service '{recipes_mod.printable(name)}'."
+    msg = f"I don't know a service called '{recipes_mod.printable(name)}'."
     if close:
         msg += " Did you mean: " + ", ".join(close) + "?"
     print(msg + "  (`stuntkey list` shows all; `stuntkey add` makes your own.)",
           file=sys.stderr)
+    return 3
+
+
+def no_key_saved(name: str) -> int:
+    """run/forget on a name that has no saved key and no recipe."""
+    shown = recipes_mod.printable(name)
+    print(f"No key saved for {shown}. Run `stuntkey get {shown}`.", file=sys.stderr)
     return 3
 
 
@@ -149,6 +180,12 @@ def dispatch(args, catalog: dict):
     if cmd == "uninstall":
         from . import clients
         return clients.remove(args.targets, args.yes)
+    if cmd == "try":
+        from . import connect_try
+        return connect_try.cmd_try(auto=args.auto)
+    if cmd == "import":
+        from . import connect_import
+        return connect_import.cmd_import(args, catalog)
     if cmd == "selftest":
         from . import selftest
         return selftest.cmd_selftest(args.json, args.verbose)

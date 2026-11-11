@@ -264,7 +264,8 @@ class TestInstallLayout(unittest.TestCase):
         self.assertTrue(proj["classifiers"])
         self.assertEqual(data["tool"]["setuptools"]["packages"], ["stuntkey"])
         self.assertEqual(data["tool"]["setuptools"]["package-data"],
-                         {"stuntkey": ["recipes/*.json", "skill/*.md"]})
+                         {"stuntkey": ["recipes/*.json", "skill/*.md", "web/*.html",
+                                       "web/*.css", "web/*.svg", "web/*.png"]})
         self.assertIn("setuptools>=77", data["build-system"]["requires"][0])
 
     def test_builtin_recipes_live_inside_the_package(self):
@@ -569,7 +570,8 @@ class TestKeychain(unittest.TestCase):
                 err = io.StringIO()
                 with redirect_stderr(err):
                     self.assertEqual(cli_mod.main(["run", "acme", "--", *prog]), 1)
-                self.assertIn("--store keychain", err.getvalue())
+                # round 11: the plain message names the one command to run, not a flag
+                self.assertIn("No key saved for acme. Run `stuntkey get acme`", err.getvalue())
             # backend present, key stored -> command runs with the key
             with mock.patch.object(keychain_mod, "detect_backend",
                                    return_value=keychain_mod.LINUX), \

@@ -15,12 +15,14 @@ from __future__ import annotations
 import contextlib
 import functools
 import hashlib
+import hmac
 import http.client
 import ipaddress
 import json
 import os
 import re
 import socket
+import tempfile
 import threading
 import time
 import urllib.error
@@ -551,21 +553,56 @@ def _file_lock(path: str):
 
 _BAD = object()      # an end-marker file that exists but cannot be read
 
+UNKEYED_NOTE = ("This log is not signed with a secret key on this computer "
+                "(the keychain could not keep one). It still catches mistakes "
+                "and clumsy edits, but not someone who rewrites the whole log.")
+
+
+def _test_redirect(path: str) -> str:
+    """While STUNTKEY_KEYCHAIN names a test keychain, the log that would sit in
+    the real ~/.stuntkey goes to the test folder (file:<folder>) or to a
+    scratch folder in the system temp folder (memory): a test or trial must
+    never write to the real activity log."""
+    from . import keychain, remote
+    try:
+        test = keychain.test_backend()
+        if not test:
+            return path
+        here = os.path.normcase(os.path.realpath(os.path.dirname(os.path.abspath(path))))
+        if here != os.path.normcase(os.path.realpath(remote.home_dir())):
+            return path
+    except (keychain.KeychainError, OSError):
+        return path
+    if test.startswith(keychain.TEST_FILE):
+        folder = test[len(keychain.TEST_FILE):]
+    else:
+        folder = os.path.join(tempfile.gettempdir(), "stuntkey-test-activity")
+    return os.path.join(folder, os.path.basename(path))
+
 
 class AuditLog:
     """Append-only JSON lines; each line holds the hash of the line before.
     Change or remove any line and verify() says so. Never records query
     strings, bodies or headers.
 
+    The chain is keyed: each hash is an HMAC-SHA256 made with a random secret
+    kept in the OS keychain (a file beside the log for a log kept anywhere but
+    ~/.stuntkey), so rewriting the whole log needs that secret. Entries from
+    before the key existed (plain SHA-256) still verify; a marker line says
+    where the signed part starts. When no key can be kept, the log is written
+    plain with a CHAIN-UNKEYED marker and verify says "unkeyed" - never
+    silently.
+
     A second small file (.head) remembers how many entries there should be
-    and the last hash, so cutting off the end or deleting the log shows. Once
-    a problem is seen, a flag file (.broken) is written and stays until the
-    person runs `stuntkey audit reset`; later writes never lower the count and
-    never make the log look healthy again."""
+    and the last hash (signed too), so cutting off the end or deleting the log
+    shows. Once a problem is seen, a flag file (.broken) is written and stays
+    until the person runs `stuntkey audit reset`; later writes never lower the
+    count and never make the log look healthy again. Deleting the flag shows
+    too: the problem line stays in the chain."""
 
     def __init__(self, path: str):
-        self.path = path
-        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        self.path = _test_redirect(path)
+        os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
 
     _lock = threading.Lock()
 
@@ -576,16 +613,21 @@ class AuditLog:
     # first call. An empty log yields n=0, no anchor is expected, and verify()
     # returns (True, 0) -- it cannot tell "this log is a sink" from "this log is
     # fine", which defeats "every call goes to a hash-chained append-only log".
-    # ledger.py:38 already guards its own index this way; this is the same guard.
-    # O_NOFOLLOW closes the check-to-open race where the platform has it
-    # (Windows does not, so there the islink() check stands alone).
+    # On Windows a JUNCTION (or any reparse point) on the folder does the same
+    # and os.path.islink() does not see it: store.private_path_problem looks for
+    # links, junctions and reparse points on the file and its folder, and checks
+    # the real location with realpath. O_NOFOLLOW closes the check-to-open race
+    # where the platform has it.
     _OPEN_FLAGS = (os.O_WRONLY | os.O_APPEND | os.O_CREAT
                    | getattr(os, "O_NOFOLLOW", 0))
 
     def _open_for_append(self) -> int:
-        if os.path.islink(self.path):
-            raise BrokerError("The activity log is a link, not a file, so "
-                              "nothing was sent. Remove it and try again.", 5)
+        from . import store as store_mod
+        problem = store_mod.private_path_problem(self.path)
+        if problem:
+            raise BrokerError("The activity log cannot be trusted "
+                              f"({problem}), so nothing was sent. "
+                              "Remove the link and try again.", 5)
         return os.open(self.path, self._OPEN_FLAGS, 0o600)
 
     @property
@@ -609,37 +651,80 @@ class AuditLog:
                 raise BrokerError("The activity log is busy or locked, so "
                                   "nothing was sent. Try again.", 5)
 
-    @staticmethod
-    def _digest(entry: dict) -> str:
-        return hashlib.sha256(json.dumps(entry, sort_keys=True).encode()).hexdigest()
+    # ---- the signing key
 
-    def _scan(self):
-        """One pass: (entries, last good hash, chain intact, file exists,
-        first entry says an end-marker file should exist)."""
-        prev, n, anchored = "0" * 64, 0, False
+    def _key(self, create: bool = False):
+        from . import keychain
+        return keychain.integrity_key(
+            os.path.dirname(os.path.abspath(self.path)), create=create)[0]
+
+    def _digest(self, entry: dict, key: bytes | None = None) -> str:
+        data = json.dumps(entry, sort_keys=True).encode()
+        if entry.get("k") == 1:
+            if key is None:
+                raise ValueError("signed entry, no key")
+            return hmac.new(key, data, hashlib.sha256).hexdigest()
+        return hashlib.sha256(data).hexdigest()
+
+    @staticmethod
+    def _mac(key: bytes, count: int, h: str) -> str:
+        return hmac.new(key, f"{count} {h}".encode(), hashlib.sha256).hexdigest()
+
+    # ---- reading
+
+    def _scan_full(self, key: bytes | None) -> dict:
+        s = {"n": 0, "last": "0" * 64, "ok": True, "exists": False,
+             "anchored": False, "keyed_n": 0, "problem_seen": False,
+             "unkeyed_marked": False, "why": None}
         try:
             with open(self.path, "rb") as f:
                 data = f.read()
         except FileNotFoundError:
-            return 0, prev, True, False, False
+            return s
         except OSError:
-            return 0, prev, False, True, False
+            s.update(ok=False, exists=True)
+            return s
+        s["exists"] = True
         lines = data.splitlines()
         if data and not data.endswith(b"\n") and lines:
             lines = lines[:-1]           # a write in progress: not a problem yet
+        prev, n = s["last"], 0
         for line in lines:
             try:
                 e = json.loads(line)
                 h = e.pop("hash")
-                good = e.get("prev") == prev and h == self._digest(e)
+                keyed = e.get("k") == 1
+                if keyed and key is None:
+                    s["why"] = ("this log is signed but its secret key is "
+                                "missing (it is kept in the keychain)")
+                    good = False
+                elif not keyed and s["keyed_n"] > 0:
+                    s["why"] = "a signed line is followed by an unsigned one"
+                    good = False
+                else:
+                    good = e.get("prev") == prev and h == self._digest(e, key)
                 if n == 0:
-                    anchored = e.get("anchored") is True
+                    s["anchored"] = e.get("anchored") is True
+                if good:
+                    s["keyed_n"] += 1 if keyed else 0
+                    if e.get("result") == "LOG-PROBLEM-FOUND":
+                        s["problem_seen"] = True
+                    if e.get("result") == "CHAIN-UNKEYED":
+                        s["unkeyed_marked"] = True
             except (ValueError, KeyError, TypeError, AttributeError):
                 good = False
             if not good:
-                return n, prev, False, True, anchored
+                s.update(n=n, last=prev, ok=False)
+                return s
             prev, n = h, n + 1
-        return n, prev, True, True, anchored
+        s.update(n=n, last=prev)
+        return s
+
+    def _scan(self):
+        """(entries, last good hash, chain intact, file exists, first entry
+        says an end-marker file should exist)."""
+        s = self._scan_full(self._key())
+        return s["n"], s["last"], s["ok"], s["exists"], s["anchored"]
 
     def _last_hash(self) -> str:
         return self._scan()[1]
@@ -648,7 +733,7 @@ class AuditLog:
         return self._scan()[0]
 
     def _read_anchor(self):
-        """None = no marker file; _BAD = unreadable; else (count, hash)."""
+        """None = no marker file; _BAD = unreadable; else (count, hash, mac|None)."""
         try:
             with open(self.anchor_path, encoding="utf-8") as f:
                 text = f.read()
@@ -657,30 +742,43 @@ class AuditLog:
         except OSError:
             return _BAD
         try:
-            count, h = text.split()
-            return int(count), h
+            parts = text.split()
+            if len(parts) == 2:
+                return int(parts[0]), parts[1], None
+            count, h, mac = parts
+            return int(count), h, mac
         except ValueError:
             return _BAD
 
-    def _save_anchor(self, count: int, h: str) -> None:
+    def _save_anchor(self, count: int, h: str, key: bytes | None = None) -> None:
         tmp = self.anchor_path + ".tmp"
         try:
             with open(tmp, "w", encoding="utf-8") as f:
-                f.write(f"{count} {h}\n")
+                f.write(f"{count} {h}" + (f" {self._mac(key, count, h)}" if key else "") + "\n")
             os.replace(tmp, self.anchor_path)
         except OSError:
             pass
 
-    @staticmethod
-    def _problem(n, last, ok, a, anchored=False):
-        if not ok:
-            return "a line was changed, removed or damaged"
+    def _problem(self, s: dict, a, key: bytes | None, migrating: bool = False):
+        if not s["ok"]:
+            return s["why"] or "a line was changed, removed or damaged"
         if a is _BAD:
             return "the end-marker file is unreadable"
-        if a is None and n > 0 and anchored:
+        n, last = s["n"], s["last"]
+        if key is not None and n > 0 and s["keyed_n"] == 0 and not migrating:
+            return "the log was rewritten without its secret signature"
+        if a is None and n > 0 and (s["anchored"] or s["keyed_n"] > 0):
             return "the end-marker file was deleted"
-        if a is not None and (n < a[0] or (n == a[0] and last != a[1])):
-            return "entries were cut off or replaced"
+        if a is not None:
+            if a[2] is not None:
+                if key is None:
+                    return "the end-marker file is signed but the secret key is missing"
+                if not hmac.compare_digest(a[2], self._mac(key, a[0], a[1])):
+                    return "the end-marker file was changed"
+            elif key is not None and s["keyed_n"] > 0:
+                return "the end-marker file lost its signature"
+            if n < a[0] or (n == a[0] and last != a[1]):
+                return "entries were cut off or replaced"
         return None
 
     def broken_reason(self):
@@ -692,9 +790,16 @@ class AuditLog:
         except OSError:
             return "a problem was found earlier"
 
-    def _append(self, entry: dict, prev: str) -> str:
+    # ---- writing
+
+    def _append(self, entry: dict, prev: str, key: bytes | None = None,
+                first: bool = False) -> str:
         entry = dict(entry, ts=int(time.time()), prev=prev)
-        entry["hash"] = self._digest(entry)
+        if first:
+            entry["anchored"] = True       # this log has a .head file
+        if key is not None:
+            entry["k"] = 1
+        entry["hash"] = self._digest({k: v for k, v in entry.items() if k != "hash"}, key)
         fd = self._open_for_append()
         try:
             os.write(fd, (json.dumps(entry, sort_keys=True) + "\n").encode())
@@ -703,13 +808,24 @@ class AuditLog:
             os.close(fd)
         return entry["hash"]
 
+    @staticmethod
+    def _marker(result: str, note: str) -> dict:
+        return {"service": None, "method": "-", "host": "-", "path": "-",
+                "status": 0, "bytes": 0, "ms": 0, "result": result, "note": note}
+
     def write(self, entry: dict) -> None:
         with AuditLog._lock, _file_lock(self.path) as got:   # one writer at a time
             if not got:
                 raise BrokerError("The activity log is busy or locked.", 5)
-            n, last, ok, _exists, anchored = self._scan()
+            fresh = self._key() is None          # no key yet: this write starts signing
+            key = self._key(create=True)
+            s = self._scan_full(key)
             a = self._read_anchor()
-            reason = self._problem(n, last, ok, a, anchored)
+            reason = self._problem(s, a, key, migrating=fresh)
+            if (reason is None and s["problem_seen"]
+                    and self.broken_reason() is None):
+                reason = "the problem flag was deleted"
+            n, last = s["n"], s["last"]
             flagged = self.broken_reason() is not None
             if reason and not flagged:
                 try:
@@ -717,26 +833,53 @@ class AuditLog:
                         f.write(reason + "\n")
                 except OSError:
                     pass
-                last = self._append(
-                    {"service": None, "method": "-", "host": "-", "path": "-",
-                     "status": 0, "bytes": 0, "ms": 0,
-                     "result": "LOG-PROBLEM-FOUND", "note": reason}, last)
+                last = self._append(self._marker("LOG-PROBLEM-FOUND", reason),
+                                    last, key, first=(n == 0))
                 n += 1
                 flagged = True
-            if n == 0:
-                entry = dict(entry, anchored=True)     # this log has a .head file
-            h = self._append(entry, last)
-            if not flagged and not reason:
-                self._save_anchor(n + 1, h)      # a flagged log never re-anchors
+            if not flagged:
+                if key is not None and s["keyed_n"] == 0 and n > 0:
+                    last = self._append(self._marker(
+                        "CHAIN-NOW-SIGNED",
+                        "lines from here on are signed with a secret key; "
+                        "older lines were not"), last, key)
+                    n += 1
+                elif key is None and not s["unkeyed_marked"]:
+                    last = self._append(self._marker(
+                        "CHAIN-UNKEYED", UNKEYED_NOTE), last, None, first=(n == 0))
+                    n += 1
+            h = self._append(entry, last, key, first=(n == 0))
+            if not flagged:
+                self._save_anchor(n + 1, h, key)     # a flagged log never re-anchors
+
+    # ---- checking
+
+    def verify_detail(self) -> dict:
+        """{"ok", "n", "mode": "signed"|"unkeyed", "reason", "note"}."""
+        key = self._key()
+        a = self._read_anchor()                  # read first: a write landing
+        s = self._scan_full(key)                 # in between can only add entries
+        mode = "signed" if (s["keyed_n"] > 0 or (key is not None and s["n"] == 0)) else "unkeyed"
+        broken = self.broken_reason()
+        reason = None
+        if broken is not None:
+            reason = broken
+        else:
+            reason = self._problem(s, a, key)
+            if reason is None and s["problem_seen"]:
+                reason = "the problem flag was deleted"
+        return {"ok": reason is None, "n": s["n"], "mode": mode, "reason": reason,
+                "note": UNKEYED_NOTE if mode == "unkeyed" else ""}
 
     def verify(self) -> tuple[bool, int]:
-        a = self._read_anchor()                  # read first: a write landing
-        n, last, ok, exists, anchored = self._scan()   # in between can only add entries
-        if self.broken_reason() is not None:
-            return False, n
-        if self._problem(n, last, ok, a, anchored):
-            return False, n
-        return True, n
+        d = self.verify_detail()
+        return d["ok"], d["n"]
+
+    def describe(self) -> str:
+        """One plain line for `status` / `audit` to print: empty when the log
+        is signed, the 'unkeyed' warning when it is not."""
+        d = self.verify_detail()
+        return d["note"] if d["n"] else ""      # a brand-new empty log has nothing to warn about
 
     def reset(self):
         """Start a fresh log. The old one is kept beside it, never deleted."""

@@ -29,6 +29,8 @@ README for what could not be confirmed).
 
 from __future__ import annotations
 
+import base64
+import binascii
 import datetime
 import difflib
 import hashlib
@@ -42,6 +44,7 @@ import subprocess
 import sys
 import sysconfig
 import tempfile
+import time
 
 from . import recipes as recipes_mod
 
@@ -140,6 +143,7 @@ BIG_WRITE_REASON = (
     "code that would print secret keys. Write it in smaller parts.")
 
 _WRITE_TOOL_RE = re.compile(r'"tool_name"\s*:\s*"(?:Write|Edit|MultiEdit|NotebookEdit)"')
+_POST_EVENT_RE = re.compile(r'"hook_event_name"\s*:\s*"PostToolUse"')
 
 CODE_ENV_REASON = (
     "stuntkey blocked this write because the code names {what}, a .env file "
@@ -162,7 +166,9 @@ _CRED_FILE = (r"(?:[\w.\-]*\.(?:pem|key|p12|pfx|jks|keystore)|id_(?:rsa|dsa|ecds
               r"\.netrc|_netrc|\.git-credentials|\.npmrc|\.pypirc|\.pgpass|"
               r"\.aws[/\\](?:credentials|config)|\.docker[/\\]config\.json|"
               r"\.kube[/\\]config|credentials\.json|application_default_credentials\.json|"
-              r"service[-_]account[\w.\-]*\.json)(?=$|[\s\"'`;&|)>*])")
+              r"service[-_]account[\w.\-]*\.json|"
+              r"(?:[\w\-]+[-_.])?credentials?\.(?:json|ya?ml|toml|ini|txt|xml|csv|cfg|conf)|"
+              r"(?:[\w\-]+[-_.])?secrets?\.(?:json|ya?ml|toml|ini|cfg))(?=$|[\s\"'`;&|)>*])")
 # Bash text that writes, edits or removes the files that decide which hooks
 # and MCP servers run. Pattern-based: a script (python -c ...) gets past it.
 # The one STEAL_RULE also applied to an MCP tool's arguments (decide_steal).
@@ -188,9 +194,35 @@ STEAL_RULES = (
     (re.compile(_SAFE + r"secret-tool\s+(?:lookup|search)\b", re.I), "read the Linux keyring"),
     (re.compile(_SAFE + r"security\s+(?:find-\w+-password|dump-keychain|export)\b", re.I),
      "read the macOS keychain"),
-    (re.compile(_SAFE + r"cmdkey(?:\.exe)?\b", re.I), "read Windows stored credentials"),
-    (re.compile(r"\b(?:Get-Secret|Get-SecretInfo|Get-StoredCredential|PasswordVault|CredRead|CredEnumerate|vaultcmd)\b", re.I),
+    (re.compile(r"(?<![\w-])cmdkey(?:\.exe)?(?![\w-])", re.I), "read Windows stored credentials"),
+    (re.compile(r"\b(?:Get-Secret|Get-SecretInfo|Get-StoredCredential|Get-VaultCredential|PasswordVault|"
+                r"Cred(?:Read|Enumerate|ReadDomainCredentials|Backup|Unmarshal)\w*|CryptUnprotectData|"
+                r"win32cred|vaultcmd|vaultcli|keymgr|credwiz|mimikatz|lazagne|sekurlsa|"
+                r"Windows\.Security\.Credentials)\b", re.I),
      "read Windows stored credentials"),
+    (re.compile(r"\bgit(?:\.exe)?\s+(?:-\S+\s+)*credential(?:-manager(?:-core)?)?\s+"
+                r"(?:fill|approve|reject|get|list|erase)\b|"
+                r"\bgit-credential-\w+(?:\.exe)?\s+(?:get|list)\b", re.I),
+     "read the credentials git has stored"),
+    (re.compile(r"ConsoleHost_history|PSReadLine[/\\]|Get-PSReadLineOption|"
+                r"\.(?:bash|zsh|fish|sh|ash|ksh|python|node_repl|psql|mysql|lesshst)_history|\.zhistory|"
+                r"\bGet-History\b|\bfish_history\b|"
+                + _CMD + r"(?:history|fc\s+-l\w*)(?:\s+-?\w+)*\s*" + _END, re.I),
+     "read the shell history (keys typed on a command line end up there)"),
+    (re.compile(r"\.(?:dmp|mdmp|hdmp)(?![\w])|Windows Error Reporting|[/\\]WER\b|ReportArchive|ReportQueue|"
+                r"CrashDumps|\bMiniDump\w*|\bprocdump(?:64)?\b|\bcomsvcs(?:\.dll)?\b|\bcreatedump\b|\bgcore\b|"
+                r"\bReadProcessMemory\b|\bOut-Minidump\b|/proc/[\w$*{}]+/(?:mem|maps|cmdline)\b", re.I),
+     "read a crash dump or another program's memory (keys sit in memory)"),
+    (re.compile(r"\.EnvironmentVariables\b|\bStartInfo\.Environment\b|\bps\s+-?[a-z]*e[a-z]*ww?\b", re.I),
+     "read another program's environment"),
+    (re.compile(r"ClipboardHistory|Windows\.ApplicationModel\.DataTransfer|Microsoft[/\\]Windows[/\\]Clipboard|"
+                r"\bcbdhsvc\b|\bwin32clipboard\b|\bOpenClipboard\b|Clipboard\]?\s*::\s*Get\w*|"
+                r"(?<![\w-])gcb(?![\w-])", re.I),
+     "read the clipboard or its history"),
+    (re.compile(r"\b(?:iex|Invoke-Expression)\b[^\n]{0,400}(?:FromBase64String|\[char\]\s*\d)|"
+                r"\b(?:exec|eval)\s*\(\s*(?:__import__\(\s*['\"]base64['\"]\s*\)|\b(?:base64|codecs|"
+                r"bytes\.fromhex|zlib\.decompress)\b)", re.I),
+     "run code that is hidden (decoded only as it runs), which could read stored keys"),
     (re.compile(_SAFE + r"(?:kwallet-query|gnome-keyring-query|keyring\s+(?:get|--list)|pass\s+show)\b", re.I),
      "read a password store"),
     (re.compile(r"\b(?:import|from)\s+keyring\b|\bkeyring\.get_password\b", re.I), "read the keyring from code"),
@@ -209,6 +241,15 @@ STEAL_RULES = (
 # `set -e`, `export X=1`, `python -m venv env` and `printenv PATH` stay allowed:
 # only the dumping forms count.
 DUMP_RULES = (
+    (re.compile(r"(?:^|[\s;&|(@])(?:echo|set|type|call|for|more|print)\b[^\n;&|]{0,200}%\w*"
+                + _SECRET_WORD + r"\w*%|"
+                r"\b(?:p?print|sys\.std(?:out|err)\.write|logging\.\w+|json\.dumps)\s*\([^\n)]{0,100}"
+                r"\b(?:os\.)?(?:environ|getenv)\b[^\n]{0,100}" + _SECRET_WORD + r"|"
+                r"\bconsole\.\w+\s*\([^\n)]{0,100}process\.env\b[^\n]{0,80}" + _SECRET_WORD, re.I),
+     "print a key from an environment variable"),
+    (re.compile(r"\bfor\b[^\n]{0,80}\bin\s+(?:os\.)?environ\s*\.\s*(?:items|values|copy)\s*\(\s*\)|"
+                r"\bfor\b[^\n]{0,60}\bin\s+(?:os\.)?environ\s*[:\])]", re.I),
+     "loop over every environment variable (that is where keys live)"),
     (re.compile(_CMD + r"(?:(?:env|printenv)(?:\s+-[0-9A-Za-z]+)*|set|export(?:\s+-p)?|"
                 r"(?:declare|typeset)\s+-[a-z]*[px][a-z]*)\s*" + _END, re.I),
      "print every environment variable (that is where keys live)"),
@@ -321,22 +362,151 @@ def globs_to_our_folder(text: str) -> bool:
     return False
 
 
+# ---- disguised commands: strings glued together, character codes, base64, hex
+#
+# `& ('cmd'+'key') /list`, `[char]99+...`, `\x63md...`, `-EncodedCommand ...`,
+# `base64 -d <<< ...`: the text of the call does not say "cmdkey", but the
+# program that runs it does. Each form below is undone into an extra piece of
+# text that the same rules read. Still a speed bump: a command built from a
+# variable, a file or the network at run time gets past it.
+_GLUE_RE = re.compile(r"""["']\s*(?:\+|\.|,|&)?\s*["']""")
+_LITERAL_RE = re.compile(r"""'([^'\n]{1,400})'|"([^"\n]{1,400})\"""")
+_CHAR_CALL_RE = re.compile(r"(?:\[\s*char\s*\]\s*|\bchr\s*\(\s*)(\d{2,3})\b\s*\)?", re.I)
+_ESCAPE_RE = re.compile(r"\\x([0-9a-fA-F]{2})|\\u([0-9a-fA-F]{4})")
+_B64_TOKEN_RE = re.compile(r"(?<![A-Za-z0-9+/_=-])[A-Za-z0-9+/_-]{12,}={0,2}(?![A-Za-z0-9+/_-])")
+_HEX_TOKEN_RE = re.compile(r"(?<![0-9A-Fa-f])(?:[0-9A-Fa-f]{2}){6,}(?![0-9A-Fa-f])")
+_VAR_PERCENT_RE = re.compile(r"%[^%\s]{0,40}%")
+MAX_DECODED = 20      # decoded base64/hex pieces looked at per piece of text
+MAX_DISGUISED = 30    # extra variants of one piece of text
+
+
+def _printable_text(raw: bytes) -> str | None:
+    """`raw` as text when it reads as text (UTF-16 as PowerShell's
+    -EncodedCommand writes it, or UTF-8), else None."""
+    if len(raw) < 6:
+        return None
+    candidates = []
+    if len(raw) % 2 == 0 and raw[1::2].count(0) >= 0.8 * (len(raw) // 2):
+        candidates.append("utf-16-le")
+    candidates.append("utf-8")
+    for enc in candidates:
+        try:
+            text = raw.decode(enc)
+        except UnicodeDecodeError:
+            continue
+        shown = sum(1 for c in text if c.isprintable() or c in "\r\n\t")
+        if shown >= 0.9 * len(text):
+            return text
+    return None
+
+
+def _decoded_pieces(text: str) -> list[str]:
+    out: list[str] = []
+    for m in _B64_TOKEN_RE.finditer(text):
+        if len(out) >= MAX_DECODED:
+            break
+        token = m.group().replace("-", "+").replace("_", "/")
+        try:
+            raw = base64.b64decode(token + "=" * (-len(token) % 4))
+        except (ValueError, binascii.Error):
+            continue
+        decoded = _printable_text(raw)
+        if decoded:
+            out.append(decoded)
+    for m in _HEX_TOKEN_RE.finditer(text):
+        if len(out) >= MAX_DECODED:
+            break
+        decoded = _printable_text(bytes.fromhex(m.group()))
+        if decoded:
+            out.append(decoded)
+    return out
+
+
+def _disguised(text: str, depth: int = 0) -> list[str]:
+    """Extra readings of `text` with the common disguises undone (empty when
+    there is nothing to undo)."""
+    out: list[str] = []
+    glued = _GLUE_RE.sub("", text)
+    if glued != text:
+        out.append(glued)
+    chars = _CHAR_CALL_RE.sub(lambda m: "'" + chr(int(m.group(1)) % 256) + "'", text)
+    if chars != text:
+        out.append(_GLUE_RE.sub("", chars))
+    escaped = _ESCAPE_RE.sub(lambda m: chr(int(m.group(1) or m.group(2), 16)), text)
+    if escaped != text:
+        out.append(escaped)
+    if "%" in text:
+        spliced = _VAR_PERCENT_RE.sub("", text)
+        if spliced != text:
+            out.append(spliced)
+    literals = [a or b for a, b in _LITERAL_RE.findall(text)]
+    if len(literals) > 1:
+        out.append("".join(literals))
+        out.append(" ".join(s[::-1] for s in literals))
+    if depth < 2:
+        for piece in _decoded_pieces(text):
+            out.append(piece)
+            out.extend(_disguised(piece, depth + 1)[:4])
+    return out[:MAX_DISGUISED]
+
+
+_READERS_RE = re.compile(r"(?:^|[\s;&|(`])(?:cat|type|gc|Get-Content|more|less|head|tail|grep|egrep|rg|ag|"
+                         r"sls|Select-String|findstr|sed|awk|bat|nl|xxd|od|strings|base64|tac|cut|sort|"
+                         r"uniq|cp|copy|xcopy|mv|move|scp|curl|source|python3?|node|powershell|pwsh)\b|"
+                         r"(?:^|[\s;&|(`])\.\s", re.I)
+_ENV_NAMES = (".env", ".envrc", ".env.local", ".env.production", ".env.development")
+
+
+def globs_to_env_file(text: str, need_reader: bool = True) -> bool:
+    """Does a path word in `text` use wildcards that could expand to a .env
+    file (`cat .e*`, `type .en?`, `gc .?nv`)? With `need_reader` only when a
+    command that reads files is also there, so `ls .e*` stays allowed. A
+    word with no literal letter (`.*`) is too general to count."""
+    if need_reader and not _READERS_RE.search(text):
+        return False
+    for word in _DOT_TOKEN.findall(text):
+        if not re.search(r"[*?\[]", word):
+            continue
+        if not re.search(r"[A-Za-z]", re.sub(r"\[[^\]]*\]", "", word)):
+            continue
+        try:
+            if any(fnmatch.fnmatchcase(n, word) for n in _ENV_NAMES):
+                return True
+        except re.error:
+            continue
+    return False
+
+
 def steals_key(text: str, shell: bool = False) -> str | None:
     """What a shell command / path would do to a stored key, or None. A speed
     bump, not a lock: it reads the text of the call, and a program that builds
     its command at run time gets past it. `shell`: the text is a shell
     command, so DUMP_RULES apply too."""
     flat = text.replace("\\", "/") if "stuntkey" in text else text
-    variants = (text, flat, *_squash(text))
+    variants = [text, flat, *_squash(text)]
     if any(globs_to_our_folder(v) for v in variants):
         return "touch stuntkey's own store (a wildcard that matches its folder)"
-    for rx, what in STEAL_RULES + (DUMP_RULES if shell else ()):
+    if shell and globs_to_env_file(text):
+        return "read a .env file (a wildcard that matches it)"
+    rules = STEAL_RULES + (DUMP_RULES if shell else ())
+    for rx, what in rules:
         if any(rx.search(v) for v in variants):
             return what
     for variant in variants:
         for rx, what in CONSENT_RULES:
             if rx.search(variant):
                 return what
+    plain_envs = {n for v in variants for n in find_env_files(v)}
+    for extra in _disguised(text):
+        for v in (extra, *_squash(extra)):
+            if globs_to_our_folder(v):
+                return "touch stuntkey's own store (a wildcard that matches its folder)"
+            for rx, what in rules + CONSENT_RULES:
+                if rx.search(v):
+                    return what
+            # a .env name that only shows once the text is joined or decoded
+            if shell and any(n not in plain_envs for n in find_env_files(v)):
+                return "read a .env file (hidden by joining or decoding text)"
     return None
 
 
@@ -482,6 +652,12 @@ def decide_steal(payload) -> str | None:
     shell = payload.get("tool_name") in SHELL_TOOLS
     mcp = _is_mcp(payload)
     settings_rx, settings_what = _SETTINGS_WRITE_RULE
+    if payload.get("tool_name") == "Grep":
+        args = payload.get("tool_input")
+        for k in ("glob", "path"):
+            v = args.get(k) if isinstance(args, dict) else None
+            if isinstance(v, str) and globs_to_env_file(v, need_reader=False):
+                return "read a .env file (a wildcard that matches it)"
     for text in touched_text(payload):
         for piece in _pieces(text, budget):
             if mcp:
@@ -646,6 +822,9 @@ def decide_protected_write(payload) -> str | None:
 # and an MCP config also when a key in a known format is written in it.
 _CRED_PATH_RE = re.compile(r"(?:^|[/\\])" + _CRED_FILE, re.I)
 _MCP_CONFIG_RE = re.compile(r"(?:^|[/\\])\.(?:mcp|claude)\.json\Z", re.I)
+# a temp folder: programs leave keys there (a downloaded .env, a response body)
+_TEMP_PATH_RE = re.compile(r"(?:^|[/\\])(?:temp|tmp)[/\\]|[/\\]AppData[/\\]Local[/\\]Temp[/\\]|"
+                           r"%TE?MP%|\$env:TE?MP|^/var/tmp/", re.I)
 
 
 def _file_head(path: str) -> str | None:
@@ -683,6 +862,8 @@ def decide_secret_read(payload) -> str | None:
         prints = (b"", frozenset())
     if scrub_mod.has_stored_key(text, prints):
         return "show a file that holds one of your stored keys"
+    if _TEMP_PATH_RE.search(path) and scrub_mod.mask_secrets(text, (b"", frozenset()))[1]:
+        return "show a temporary file that holds a key"
     if _MCP_CONFIG_RE.search(path) and scrub_mod.mask_secrets(text, (b"", frozenset()))[1]:
         return "show an MCP config with a key written in it"
     return None
@@ -740,7 +921,10 @@ def check(stdin_text: str) -> tuple[int, str]:
     finds nothing is it a non-blocking error (status 1): a broken hook must
     not stop all work unless you installed it with --fail-closed."""
     oversized_write = False
-    if len(stdin_text) > 2 * WRITE_SCAN_BUDGET:
+    if (len(stdin_text) > 2 * WRITE_SCAN_BUDGET
+            and not _POST_EVENT_RE.search(stdin_text[:SCAN_BUDGET])):
+        # (not for PostToolUse: the output of a big command must be masked
+        # whole - cut in half it is not even JSON, and it would be shown as it is)
         # only ever look at a bounded amount: the start and the end. A write
         # this big cannot be scanned whole, so it is refused below rather
         # than let padding carry code past the scan.
@@ -816,8 +1000,9 @@ def check(stdin_text: str) -> tuple[int, str]:
 
 # Claude Code reads a matcher with anything beyond letters, digits, "_" and "|"
 # as a regular expression, so this is anchored: Bash, or a tool named mcp__*.
-POST_MATCHER = "^(Bash|mcp__.*)$"
+POST_MATCHER = "^(Bash|PowerShell|mcp__.*)$"
 POST_FIELDS = ("stdout", "stderr")
+POST_BUDGET = 4.0            # seconds to mask one call's output, of HOOK_TIMEOUT (10)
 POST_NOTE = ("stuntkey hid {n} secret value(s) in this output as [REDACTED]. "
              "Do not try to recover them; if a command needs a key, ask the "
              "person to run `stuntkey run <service> -- <command>`.")
@@ -829,7 +1014,7 @@ def post_check(payload: dict, err=None) -> str:
     try:
         if _is_mcp(payload):
             return _post_mcp(payload.get("tool_response"))
-        if payload.get("tool_name") != "Bash":
+        if payload.get("tool_name") not in ("Bash", "PowerShell"):
             return ""
         resp = payload.get("tool_response")
         if not isinstance(resp, dict):
@@ -837,10 +1022,14 @@ def post_check(payload: dict, err=None) -> str:
         from . import scrub as scrub_mod
         prints = scrub_mod.load_fingerprints()
         new, total = dict(resp), 0
+        # one time allowance for the whole call (Claude Code kills this program
+        # after HOOK_TIMEOUT and then shows the output as it is); an output too
+        # big or odd to check in time is withheld whole, never shown unchecked
+        deadline = time.monotonic() + POST_BUDGET
         for field in POST_FIELDS:
             value = resp.get(field)
             if isinstance(value, str) and value:
-                new[field], n = scrub_mod.mask_secrets(value, prints)
+                new[field], n = scrub_mod.mask_secrets(value, prints, deadline)
                 total += n
         if not total:
             return ""
@@ -854,19 +1043,22 @@ def post_check(payload: dict, err=None) -> str:
         return ""
 
 
-def _mask_all(value, prints, depth: int = 0):
+def _mask_all(value, prints, depth: int = 0, deadline: float | None = None):
     """(a copy of value with every string in it masked, how many were
-    hidden). The shape stays: dicts, lists, numbers and keys as they were."""
+    hidden). The shape stays: dicts, lists, numbers and keys as they were.
+    `deadline` (time.monotonic) is shared by every string of the call."""
     from . import scrub as scrub_mod
+    if deadline is None:
+        deadline = time.monotonic() + POST_BUDGET
     if isinstance(value, str):
-        return scrub_mod.mask_secrets(value, prints)
+        return scrub_mod.mask_secrets(value, prints, deadline)
     if depth > MAX_DEPTH:
         return value, 0
     if isinstance(value, dict):
-        done = {k: _mask_all(v, prints, depth + 1) for k, v in value.items()}
+        done = {k: _mask_all(v, prints, depth + 1, deadline) for k, v in value.items()}
         return {k: v for k, (v, _n) in done.items()}, sum(n for _v, n in done.values())
     if isinstance(value, list):
-        done = [_mask_all(v, prints, depth + 1) for v in value]
+        done = [_mask_all(v, prints, depth + 1, deadline) for v in value]
         return [v for v, _n in done], sum(n for _v, n in done)
     return value, 0
 

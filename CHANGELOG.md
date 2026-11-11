@@ -1,6 +1,24 @@
 # Changelog
 
-## Unreleased
+## 0.9.2 - 2026-11-10
+
+Round-3 review release. Summary (details below and in the sections under it):
+
+- **Security:** the activity log is now keyed (tamper-evident); the allow-list reads its own
+  environment variable; the Claude Code hook blocks reads of the Windows Credential Manager.
+- **Plainer errors:** messages say what happened and what to do, in everyday words.
+- **Try mode:** a way to try a command without storing or sending a real key.
+- **Import:** bring existing keys in from a `.env` file in one step.
+- **Branded page:** the local page (`stuntkey/web/`) ships inside the wheel and is branded.
+- **Shared caller helper:** scripts that call stuntkey use one helper that finds the program,
+  uses a time limit, and reports a missing key (exit code 3) in plain words.
+- **Tests:** no `STUNTKEY_*` variable leaks into or out of a test, and a guard test proves the
+  suite never touches the real `~/.stuntkey`.
+- **Version:** one source, `stuntkey/__init__.py`; `--version`, the MCP server info and the
+  User-Agent strings read it.
+
+(Items above that depend on other changes in this release are marked pending in the release
+checklist until the lead has seen them land.)
 
 ### Hook status
 

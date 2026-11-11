@@ -25,8 +25,10 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import secrets
 import subprocess
 import sys
+import threading
 
 from .recipes import printable
 
@@ -112,14 +114,29 @@ def test_backend() -> str | None:
     raise KeychainError(f"{TEST_ENV} must be `memory` or `file:<folder>`")
 
 
+_memory_lock = threading.Lock()
+
+
 def _test_store(op: str, backend: str, service: str, account: str,
                 key: str | None, prefix: str) -> str | None:
     name = f"{target_name(service, prefix)}|{account}"
-    path = None
     if backend == TEST_MEMORY:
-        data = _memory
-    else:
-        path = os.path.join(backend[len(TEST_FILE):], "stuntkey-test-keychain.json")
+        with _memory_lock:
+            if op == "read":
+                return _memory.get(name)
+            if op == "store":
+                _memory[name] = key or ""
+                return None
+            if name in _memory:
+                del _memory[name]
+                return None
+            return ""
+    from . import store as store_mod
+    path = os.path.join(backend[len(TEST_FILE):], "stuntkey-test-keychain.json")
+    # Read, change and replace under a lock, and replace through a temp file:
+    # two writers at once must not lose each other's entry, and a crash
+    # half-way must not leave a cut-off file (the old O_TRUNC write did both).
+    with store_mod.file_lock(path):
         try:
             with open(path, encoding="utf-8") as f:
                 data = json.load(f)
@@ -128,19 +145,15 @@ def _test_store(op: str, backend: str, service: str, account: str,
         except (OSError, ValueError) as e:
             raise KeychainError(f"test keychain file {path} unreadable "
                                 f"({type(e).__name__})") from None
-    if op == "read":
-        return data.get(name)
-    if op == "store":
-        data[name] = key or ""
-    elif name in data:
-        del data[name]
-    else:
-        return ""
-    if path:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(data, f)
+        if op == "read":
+            return data.get(name)
+        if op == "store":
+            data[name] = key or ""
+        elif name in data:
+            del data[name]
+        else:
+            return ""
+        store_mod.write_private(path, json.dumps(data))
     return None
 
 
@@ -215,6 +228,21 @@ def _secret_tool(op: str, service: str, account: str, key: str | None, run,
 
 CRED_TYPE_GENERIC = 1
 CRED_PERSIST_LOCAL_MACHINE = 2
+# Why LOCAL_MACHINE, and not ENTERPRISE or SESSION (weighed on purpose):
+# - SESSION is gone at log-off: a key would vanish every reboot.
+# - ENTERPRISE is kept for the signed-in user and, on a company domain, is
+#   ROAMED to the person's other computers. An API key must stay on the one
+#   machine it was saved on, so roaming is the wrong default.
+# - LOCAL_MACHINE survives log-off and reboot, is not roamed, and is the same
+#   store `cmdkey` uses. Either way Windows locks the blob with the user's own
+#   DPAPI key: other Windows accounts cannot read it, but a program running
+#   AS this user can (the same is true of every Credential Manager entry).
+# Extra DPAPI "entropy" (a second secret mixed in) was NOT added: CredWriteW
+# has no entropy argument, so it would mean our own CryptProtectData layer and
+# a new blob format that cmdkey and older StuntKey versions cannot read. And
+# the entropy would have to live in this source or beside the data, so a
+# program running as the user could use it just the same: it adds a format
+# break and no real protection, and would be untestable off Windows.
 
 
 def _win_structs(ctypes_mod):
@@ -296,6 +324,99 @@ def _windows(op: str, service: str, account: str, key: str | None,
     return None if ok else ""
 
 
+# ------------------------------------------------- integrity key (HMAC)
+# One random secret per install signs the activity log's chain and the key-dates
+# file, so a change made without it is seen. It lives in the OS keychain for
+# the real ~/.stuntkey folder; for any other folder (tests, trials, a log kept
+# somewhere else) in an owner-only file beside the data, so a test can never
+# reach the real keychain.
+
+INTEGRITY_SERVICE = "integrity"
+INTEGRITY_ACCOUNT = "AUDIT_HMAC_KEY"   # + a purpose: AUDIT, LEDGER
+
+
+def _same_dir(a: str, b: str) -> bool:
+    return os.path.normcase(os.path.realpath(a)) == os.path.normcase(os.path.realpath(b))
+
+
+def integrity_key(directory: str, create: bool = False,
+                  purpose: str = "audit") -> tuple[bytes | None, str]:
+    """(key, where) for one purpose ("audit" log, "ledger" index; each has its
+    own key). where: "keychain", "file", or "unavailable" (key None).
+    Never raises; `create` makes a new key when none exists yet."""
+    from . import remote, store as store_mod
+    try:
+        forced = test_backend()
+    except KeychainError:
+        return None, "unavailable"
+    try:
+        default = _same_dir(directory, remote.home_dir())
+    except OSError:
+        default = False
+    backend = None
+    if default:
+        if forced:
+            backend = forced
+        elif not os.environ.get("STUNTKEY_TEST_HOME"):
+            backend = detect_backend()
+            if backend is None:
+                return None, "unavailable"
+    try:
+        if backend:
+            return _integrity_in_keychain(backend, create, purpose), "keychain"
+        return _integrity_in_file(directory, create, store_mod, purpose), "file"
+    except (KeychainError, OSError, ValueError):
+        return None, "unavailable"
+
+
+def _integrity_in_keychain(backend: str, create: bool, purpose: str) -> bytes | None:
+    account = f"{purpose.upper()}_HMAC_KEY"
+    got = _dispatch("read", backend, INTEGRITY_SERVICE, account,
+                    None, subprocess.run, None)
+    if got:
+        return bytes.fromhex(got)
+    if not create:
+        return None
+    fresh = secrets.token_hex(32)
+    _dispatch("store", backend, INTEGRITY_SERVICE, account, fresh,
+              subprocess.run, None)
+    back = _dispatch("read", backend, INTEGRITY_SERVICE, account,
+                     None, subprocess.run, None)
+    if back != fresh:
+        raise KeychainError("the signing key could not be saved")
+    return bytes.fromhex(back)
+
+
+def _integrity_in_file(directory: str, create: bool, store_mod,
+                       purpose: str) -> bytes | None:
+    path = os.path.join(directory, f"integrity-{purpose}.key")
+    if store_mod.private_path_problem(path):
+        raise OSError("the signing key file cannot be trusted")
+
+    def _read():
+        try:
+            with open(path, encoding="ascii") as f:
+                return bytes.fromhex(f.read().strip())
+        except FileNotFoundError:
+            return None
+    got = _read()
+    if got or not create:
+        return got
+    os.makedirs(directory, exist_ok=True)
+    with store_mod.file_lock(path):
+        got = _read()               # another process may have made it meanwhile
+        if got:
+            return got
+        store_mod.write_private(path, secrets.token_hex(32) + "\n")
+    return _read()
+
+
+def sign(key: bytes, data: bytes) -> str:
+    import hashlib
+    import hmac
+    return hmac.new(key, data, hashlib.sha256).hexdigest()
+
+
 # ------------------------------------------------------------- dispatch
 
 _TOOL_NAMES = {MACOS: "the `security` command", LINUX: "`secret-tool`",
@@ -306,6 +427,12 @@ def _dispatch(op: str, backend: str, service: str, account: str,
               key: str | None, run, ctypes_mod,
               prefix: str = TARGET_PREFIX) -> str | None:
     tool = _TOOL_NAMES.get(backend, "the keychain")
+    # STUNTKEY_KEYCHAIN wins in EVERY path, even when a caller names a real
+    # backend itself (0.9.0 let that through and touched the real Credential
+    # Manager during tests).
+    forced = test_backend()
+    if forced:
+        backend = forced
     if backend.startswith(TEST_PREFIX):
         return _test_store(op, backend, service, account, key, prefix)
     try:

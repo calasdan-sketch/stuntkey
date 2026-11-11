@@ -1,0 +1,68 @@
+﻿..................................s..................................... [  3%]
+......................sss.......................................... [  6%]
+..................................... [  7%]
+...s........s.s...ss..s.s.............................................s. [ 11%]
+........................................................................ [ 14%]
+.............s..........................................s....... [ 17%]
+.............................................................................................................. [ 22%]
+..................................................................................................... [ 26%]
+.................................... [ 28%]
+....s.............................................s...... [ 30%]
+....................................................s.................s..xx........................s.........s...................... [ 36%]
+...s.............s.........ss........................................... [ 40%]
+s....................................................................... [ 43%]
+........ssssssssssss..........................s......................... [ 46%]
+................................................................... [ 49%]
+s.....................................ss.s.s..s.....s. [ 51%]
+.......s.sssss.......................................s.s......sss... [ 54%]
+s....................................................................... [ 58%]
+........................................................................ [ 61%]
+.....................................................s............ss.... [ 64%]
+...........ss....................................s...................... [ 67%]
+........................................................................ [ 71%]
+........................................................................ [ 74%]
+.............................................................ssssssss.s. [ 77%]
+.........sssssss.......................s................................ [ 80%]
+.......................................s.....s............s............. [ 84%]
+........................................................................ [ 87%]
+......ss.............sssssssss.................s........................ [ 90%]
+........................................s...................s.........s. [ 93%]
+........................................................................ [ 96%]
+............................................................ [ 99%]
+.......                                                                  [100%]
+============================== warnings summary ===============================
+tests/test_r11_cli.py::GetForSitesWithoutARecipe::test_get_run_forget_example_com
+  C:\Users\danie\AppData\Local\Programs\Python\Python312\Lib\site-packages\_pytest\threadexception.py:54: PytestUnhandledThreadExceptionWarning: Exception in thread Thread-1826 (_pump)
+  
+  Traceback (most recent call last):
+    File "C:\Users\danie\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1075, in _bootstrap_inner
+      self.run()
+    File "C:\Users\danie\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1012, in run
+      self._target(*self._args, **self._kwargs)
+    File "C:\Users\danie\oathkey\stuntkey\runner.py", line 42, in _pump
+      dst.write(out)
+  TypeError: string argument expected, got 'bytes'
+  
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+    warnings.warn(pytest.PytestUnhandledThreadExceptionWarning(msg))
+
+tests/test_r11_cli.py::PracticeRun::test_try_touches_nothing_real
+  C:\Users\danie\AppData\Local\Programs\Python\Python312\Lib\site-packages\_pytest\threadexception.py:54: PytestUnhandledThreadExceptionWarning: Exception in thread Thread-1832 (_pump)
+  
+  Traceback (most recent call last):
+    File "C:\Users\danie\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1075, in _bootstrap_inner
+      self.run()
+    File "C:\Users\danie\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1012, in run
+      self._target(*self._args, **self._kwargs)
+    File "C:\Users\danie\oathkey\stuntkey\runner.py", line 42, in _pump
+      dst.write(out)
+  TypeError: string argument expected, got 'bytes'
+  
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+    warnings.warn(pytest.PytestUnhandledThreadExceptionWarning(msg))
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+2128 passed, 98 skipped, 2 xfailed, 2 warnings, 1667 subtests passed in 207.14s (0:03:27)
+DONE

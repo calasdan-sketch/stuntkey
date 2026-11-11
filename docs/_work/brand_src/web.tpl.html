@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en-CA">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>StuntKey by Calas Automations</title>
+<meta name="description" content="StuntKey keeps your API keys in your computer's keychain and lets your AI use them without ever seeing them.">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#0B2E45">
+<meta name="referrer" content="no-referrer">
+<!-- Local page: no external requests. Libre Baskerville / IBM Plex are used if installed on this computer, else Georgia / system fonts. -->
+<style>
+/*@@CSS@@*/
+</style>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="bar"><div class="in">
+  <a class="lock" href="#top" aria-label="StuntKey by Calas Automations">
+    <span class="crest" aria-hidden="true"></span>
+    <span><span class="name">StuntKey</span><span class="sub">BY CALAS AUTOMATIONS</span></span>
+  </a>
+  <nav aria-label="Page"><a href="#keys">Your keys</a><a href="#add">Add a key</a><a href="#practice">Practice</a><a href="#safe">Safety</a></nav>
+</div></header>
+
+<main id="main">
+<section class="hero" id="top"><div class="wrap">
+  <p class="eyebrow">Running on this computer only</p>
+  <h1>Your AI uses your keys. <em>It never sees them.</em></h1>
+  <p class="lede">StuntKey is a stand-in for your API keys. Your AI works with the stand-in. The real key stays locked away.</p>
+  <ul class="tick" style="color:#D3E3EE;margin:0 0 22px;font-size:18px">
+    <li>Real keys live in your computer's own keychain.</li>
+    <li>Your AI gets a stunt double, never the real thing.</li>
+    <li>You can set a spending limit on every key.</li>
+  </ul>
+  <div class="ctas"><a class="btn gold" href="#add">Add a key</a><a class="btn ghost" href="#practice">Try practice mode first</a></div>
+</div></section>
+
+<section id="keys"><div class="wrap">
+  <h2>Your keys</h2>
+  <div class="card">
+    <p class="say" id="keys-intro">Names only. The secret part is never shown on this page.</p>
+    <ul class="keys" id="keys-list" aria-live="polite"></ul>
+    <p class="empty" id="keys-empty" hidden>No keys yet. Add your first one below. It takes about a minute.</p>
+  </div>
+  <p class="say" style="font-size:14px;margin-top:10px">StuntKey <span id="ver"></span><span id="mode"></span></p>
+</div></section>
+
+<section class="sunk" id="add"><div class="wrap">
+  <p class="eyebrow">Add a key</p>
+  <h2>Three steps. You never type your key into this page.</h2>
+  <ol class="steps">
+    <li><b>Say which service.</b>
+      <p>For example OpenAI, GitHub or Stripe. Type it here and the command below updates.</p>
+      <label for="svc" class="say" style="font-size:15px">Service name</label><br>
+      <input id="svc" type="text" value="openai" maxlength="40" autocomplete="off" spellcheck="false" aria-describedby="svc-help"
+        style="font:inherit;font-family:var(--mono);padding:10px 12px;border:1.5px solid var(--accent);border-radius:6px;background:var(--paper);color:var(--ink);width:min(100%,320px);min-height:44px">
+      <p class="say" id="svc-help" style="font-size:14px;margin-top:6px">Letters and numbers only.</p></li>
+    <li><b>Copy this command and paste it into a terminal.</b>
+      <div class="cmd"><code id="cmd">stuntkey get openai</code><button type="button" class="btn copy" id="copy" aria-describedby="copy-live">Copy</button></div>
+      <p class="live" id="copy-live" role="status"></p></li>
+    <li><b>Follow the prompts.</b>
+      <p>StuntKey opens the key page for you. Click that site's own Copy button. StuntKey takes the key from your copy, tests it, and locks it in your keychain.</p></li>
+  </ol>
+</div></section>
+
+<section id="practice"><div class="wrap">
+  <p class="eyebrow">Practice mode</p>
+  <h2>Want to see it work first?</h2>
+  <div class="card">
+    <p class="big">Run a safe practice. StuntKey saves a pretend key, uses it, then forgets it, in a throwaway place that is deleted afterwards. No real key is used. Nothing real is changed.</p>
+    <div class="cmd"><code id="pcmd">stuntkey try</code><button type="button" class="btn copy" id="pcopy" aria-describedby="pcopy-live">Copy</button></div>
+    <p class="live" id="pcopy-live" role="status"></p>
+  </div>
+</div></section>
+
+<section class="sunk" id="safe"><div class="wrap">
+  <p class="eyebrow">Safety, in plain words</p>
+  <h2>What StuntKey does, and what it does not.</h2>
+  <div class="grid">
+    <div class="card"><h3>What it does</h3><ul class="tick">
+      <li>Keeps your real keys in the keychain your computer already has.</li>
+      <li>Lets your AI make calls without ever holding the key.</li>
+      <li>Hides a key if one shows up in what the AI would read.</li>
+      <li>Lets you set a daily limit per key, and a stop switch.</li></ul></div>
+    <div class="card"><h3>What it does not do</h3><ul class="tick">
+      <li>It lowers the risk. It cannot make it zero.</li>
+      <li>It cannot stop an AI misusing a key it is allowed to use. Give each key only the permissions it needs.</li>
+      <li>It does not protect against a virus already running as you.</li></ul></div>
+    <div class="card"><h3>This page</h3><ul class="tick">
+      <li>Only opens on this computer.</li>
+      <li>Shows names, never secrets.</li>
+      <li>Has no box to type a key into, on purpose.</li>
+      <li>Sends nothing anywhere.</li></ul></div>
+  </div>
+  <div class="note"><p><b>Leaked a key?</b> Run <code>stuntkey panic openai</code>. It walks you through cancelling it and making a new one.</p></div>
+</div></section>
+</main>
+
+<footer class="foot"><div class="in">
+  <a class="lock" href="#top" aria-label="Back to top"><span class="crest" aria-hidden="true"></span><span><span class="name">StuntKey</span><span class="sub">BY CALAS AUTOMATIONS</span></span></a>
+  <p class="fine">Free and open source, MIT licence. &copy; Calas Automations Inc., Winnipeg, Manitoba. Questions: <a href="mailto:office@calasautomations.com">office@calasautomations.com</a></p>
+</div></footer>
+
+<!-- Filled in by stuntkey/httpd.py: the status is JSON with every less-than sign written as a unicode escape. -->
+<script type="application/json" id="sk-status">{{status_json}}</script>
+<script>
+(function(){
+  "use strict";
+  var raw = document.getElementById("sk-status").textContent || "";
+  var st = {};
+  try { if (raw.indexOf("{{") !== 0) st = JSON.parse(raw) || {}; } catch (e) { st = {}; }
+  var ver = "{{version}}";
+  var ve = document.getElementById("ver");
+  if (ver.indexOf("{{") !== 0) ve.textContent = "version " + ver;
+  if (raw.indexOf("{{") === 0) document.getElementById("mode").textContent = " - preview (not connected)";
+  function el(tag, cls, text){ var n = document.createElement(tag); if (cls) n.className = cls; if (text != null) n.textContent = text; return n; }
+  var list = document.getElementById("keys-list"), keys = st.keys || [];
+  if (!keys.length) { document.getElementById("keys-empty").hidden = false; }
+  keys.forEach(function(k){
+    var li = el("li"), left = el("span");
+    left.appendChild(el("span", "nm", String(k.name || k.service || "key")));
+    var meta = [];
+    if (k.age_days != null) meta.push("added " + k.age_days + " day" + (k.age_days === 1 ? "" : "s") + " ago");
+    if (k.cap) meta.push("limit: " + k.cap);
+    if (meta.length) { left.appendChild(document.createElement("br")); left.appendChild(el("span", "meta", meta.join(" - "))); }
+    var s = el("span", "st"); s.appendChild(el("i")); s.appendChild(document.createTextNode("Locked"));
+    li.appendChild(left); li.appendChild(s); list.appendChild(li);
+  });
+  if (st.practice_cmd && /^stuntkey [a-z0-9 .-]{1,40}$/.test(st.practice_cmd)) document.getElementById("pcmd").textContent = st.practice_cmd;
+  var svc = document.getElementById("svc"), cmd = document.getElementById("cmd");
+  svc.addEventListener("input", function(){
+    var v = svc.value.toLowerCase().replace(/[^a-z0-9._-]/g, "").slice(0, 40);
+    cmd.textContent = "stuntkey get " + (v || "openai");
+  });
+  function wire(btnId, codeId, liveId){
+    var b = document.getElementById(btnId), live = document.getElementById(liveId);
+    b.addEventListener("click", function(){
+      var text = document.getElementById(codeId).textContent;
+      function done(ok){ live.textContent = ok ? "Copied. Now paste it into your terminal." : "Could not copy. Select the command and press Ctrl+C."; setTimeout(function(){ live.textContent = ""; }, 4000); }
+      if (navigator.clipboard && navigator.clipboard.writeText) { navigator.clipboard.writeText(text).then(function(){ done(true); }, function(){ fallback(); }); }
+      else fallback();
+      function fallback(){
+        var ta = document.createElement("textarea"); ta.value = text; ta.setAttribute("readonly", ""); ta.style.position = "fixed"; ta.style.opacity = "0";
+        document.body.appendChild(ta); ta.select(); var ok = false;
+        try { ok = document.execCommand("copy"); } catch (e) {}
+        document.body.removeChild(ta); done(ok);
+      }
+    });
+  }
+  wire("copy", "cmd", "copy-live"); wire("pcopy", "pcmd", "pcopy-live");
+})();
+</script>
+</body>
+</html>

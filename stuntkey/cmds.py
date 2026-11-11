@@ -39,7 +39,9 @@ def _emit(obj, as_json: bool, text: str) -> None:
 def cmd_status(catalog: dict, env_file: str, as_json: bool) -> int:
     rows = [{"service": s, "key_stored": _have_key(r, env_file)}
             for s, r in sorted(catalog.items())]
-    ok, n = broker.AuditLog(os.path.join(_home(), "audit.log")).verify()
+    alog = broker.AuditLog(os.path.join(_home(), "audit.log"))
+    ok, n = alog.verify()
+    warn = alog.describe()
     info = {"python": sys.version.split()[0], "services": len(rows),
             "with_keys": sum(r["key_stored"] for r in rows),
             "audit_log_ok": ok, "audit_entries": n,
@@ -52,6 +54,12 @@ def cmd_status(catalog: dict, env_file: str, as_json: bool) -> int:
             f"  connected: {', '.join(info['connected']) or 'none yet'}\n"
             f"  activity log: {'intact' if ok else 'check FAILED - run `stuntkey audit show`'} "
             f"({n} entries)")
+    if warn:
+        text += f"\n  {warn}"
+        info["audit_note"] = warn
+    text += "\n" + ("  Next: `stuntkey get <service>` to connect a key, or `stuntkey try` to practise."
+                    if not info["with_keys"] else
+                    "  Next: `stuntkey install` to plug it into your AI app, or `stuntkey doctor` to check.")
     _emit(info, as_json, text)
     return OK if ok else PROBLEM
 
@@ -60,6 +68,12 @@ def cmd_status(catalog: dict, env_file: str, as_json: bool) -> int:
 
 def cmd_call(recipe: dict, args) -> int:
     from . import remote
+    word = str(args.method or "")
+    if word.upper() not in broker.READ_METHODS | broker.WRITE_METHODS:
+        from .recipes import printable
+        print(f"{printable(word).upper()} is not a method I know. "
+              "Use GET, POST, PUT, PATCH or DELETE.", file=sys.stderr)
+        return USAGE
     query = {}
     for item in args.query or []:
         k, sep, v = item.partition("=")
@@ -141,8 +155,10 @@ def cmd_audit(action: str, as_json: bool, last: int = 20) -> int:
         return OK if intact else PROBLEM
     ok, n = log.verify()
     why = "" if ok else f" - {log.broken_reason() or 'the log does not check out'}"
-    _emit({"intact": ok, "entries": n}, as_json,
-          f"activity log: {'intact' if ok else 'TAMPERED'} ({n} entries){why}")
+    note = log.describe()
+    _emit({"intact": ok, "entries": n, **({"note": note} if note else {})}, as_json,
+          f"activity log: {'intact' if ok else 'TAMPERED'} ({n} entries){why}"
+          + (f"\n{note}" if note else ""))
     return OK if ok else PROBLEM
 
 
@@ -154,13 +170,23 @@ def cmd_serve(catalog: dict, port: int, env_file: str) -> int:
     token = httpd.load_or_make_token(tokfile)
     policy = broker.Policy(approve=approve_mod.ask_person)
     audit = broker.AuditLog(os.path.join(_home(), "audit.log"))
+    import stuntkey
+
+    def page_status() -> dict:
+        # names only, never a key or the token
+        return {"keys": [{"name": r.get("display") or s}
+                         for s, r in sorted(catalog.items()) if _have_key(r, env_file)],
+                "practice_cmd": "stuntkey try"}
     srv = httpd.make_server(catalog, lambda r: remote.collect_values(r, env_file),
-                            token, policy, audit, port=port)
+                            token, policy, audit, port=port,
+                            page_status=page_status, version=stuntkey.__version__)
     p = srv.server_address[1]
     print(f"stuntkey web door is open at http://127.0.0.1:{p}\n"
+          f"  Your page (one-time link, works once, for 2 minutes):\n"
+          f"    http://127.0.0.1:{p}/?c={srv.new_launch_code()}\n"
           f"  token file (keep private): {tokfile}\n"
           f"  AIs send:  Authorization: Bearer <token>   GET /tools   POST /call\n"
-          f"  Only this computer can reach it. Ctrl+C to close.")
+          f"  Only this computer can reach it. Ctrl+C to close.", flush=True)
     httpd.serve_forever(srv)
     return OK
 

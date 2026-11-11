@@ -21,11 +21,33 @@ import sys
 import tempfile
 import threading
 import time
+import zlib
 from urllib.parse import quote, quote_plus
 
 REDACTED = b"[REDACTED]"
 MIN_LEN = 6          # shorter "secrets" would mangle ordinary text
 MIN_B64 = 8          # a base64 piece shorter than this is left alone
+
+# Hard time limits. The text a scrubber reads is chosen by someone else (a
+# program, a web server, a prompt-injected agent), so no input may make it run
+# for minutes. Work grows in a straight line with the size of the text, and a
+# deadline is checked between every small step; when it runs out the WHOLE text
+# is replaced by WITHHELD_NOTICE. Never a half-checked text.
+MASK_BUDGET_S = 4.0          # one text masked (the PostToolUse hook has 10 s in all)
+LOOSE_BUDGET_S = 8.0         # one loosely_contains() call
+MASK_MAX_CHARS = 32 * 1024 * 1024
+WITHHELD_NOTICE = ("[stuntkey withheld this output: it was too large or too odd to "
+                   "check for secrets in time, so none of it is shown. Ask for a "
+                   "smaller piece, for example only the first lines.]")
+
+
+class CheckTimeout(Exception):
+    """The time allowance for a check ran out."""
+
+
+def _tick(deadline) -> None:
+    if deadline is not None and time.monotonic() > deadline:
+        raise CheckTimeout
 
 
 def _b64_pieces(raw: bytes) -> set[bytes]:
@@ -197,7 +219,19 @@ PARTIAL_RUN = 32     # letters and digits of a secret in a row that count as a l
 PARTIAL_OFFSETS = 64  # most start offsets tried per secret, whatever its length
 
 
-def loosely_contains(text: str, secrets) -> bool:
+def loosely_contains(text: str, secrets, deadline: float | None = None) -> bool:
+    """`_loosely_contains` under a time limit (LOOSE_BUDGET_S, or `deadline`,
+    a time.monotonic() value). Out of time counts as True: the caller then
+    withholds the whole text, which is the safe answer for a text this odd."""
+    if deadline is None:
+        deadline = time.monotonic() + LOOSE_BUDGET_S
+    try:
+        return _loosely_contains(text, secrets, deadline)
+    except (CheckTimeout, MemoryError, RecursionError):
+        return True
+
+
+def _loosely_contains(text: str, secrets, deadline) -> bool:
     """True if, after undoing common disguises, any secret (in a plain,
     base64 or hex form) is still in the text. The caller then withholds the
     whole text instead of trying to patch it.
@@ -207,9 +241,12 @@ def loosely_contains(text: str, secrets) -> bool:
     run must be PARTIAL_RUN characters, far longer than the 6 to 12 character
     hint vendors show on purpose ("sk-...Zk"), so a key hint does not trip it."""
     text = text.replace("\x00", "")
+    _tick(deadline)
     norm = _normalize(text)
+    _tick(deadline)
     squashed = _squash(norm)
     for s in secrets:
+        _tick(deadline)
         if len(s) < MIN_LEN:
             continue
         whole = _squash(s)
@@ -221,10 +258,12 @@ def loosely_contains(text: str, secrets) -> bool:
             # has to be that much longer than PARTIAL_RUN to be noticed.
             span = len(whole) - PARTIAL_RUN + 1
             step = max(1, -(-span // PARTIAL_OFFSETS))
-            if any(whole[i:i + PARTIAL_RUN] in squashed
-                   for i in range(0, span, step)):
-                return True
+            for i in range(0, span, step):
+                _tick(deadline)
+                if whole[i:i + PARTIAL_RUN] in squashed:
+                    return True
         for f in forms(s):
+            _tick(deadline)
             try:
                 needle = _normalize(f.decode("utf-8"))
             except UnicodeDecodeError:
@@ -235,6 +274,7 @@ def loosely_contains(text: str, secrets) -> bool:
             if len(sq) >= 14 and sq in squashed:
                 return True
         for extra in _extra_forms(s):
+            _tick(deadline)
             sq = _squash(extra)
             if len(sq) >= 14 and sq in squashed:
                 return True
@@ -310,8 +350,9 @@ class _Prints(frozenset):
     frozenset still, so every caller that passes it around is unchanged).
     `delimited`: ((length, fingerprints), ...) for keys that hold a character
     _WORD_RE splits on (see _delimited_spans)."""
-    lengths: tuple = ()
+    lengths: tuple = ()      # key lengths searched for inside a word by HMAC (older files)
     delimited: tuple = ()
+    crcs: tuple = ()         # ((length, {16-bit checksums}), ...): the quick way to find them
 
 
 # A key with one of these in it is cut into pieces by _WORD_RE, so no word of
@@ -336,6 +377,15 @@ def remember_key(name: str, secret: str, path: str | None = None) -> None:
         data["keys"][name] = (sorted(_fp(salt, f) for f in _fingerprint_forms(secret))
                               if len(secret) >= MIN_LEN else [])
         data.setdefault("lengths", {})[name] = [len(secret)] if len(secret) >= MIN_LEN else []
+        # a 16-bit salted checksum of the key: only a first filter that says
+        # "try the real fingerprint here" (the HMAC still decides), and it
+        # makes the search inside a long word about 8 times quicker
+        crc = data.setdefault("crc", {})
+        if len(secret) >= MIN_LEN:
+            crc[name] = {"n": len(secret), "c": _crc(zlib.crc32(salt),
+                                                     secret.encode("utf-8", "surrogateescape"))}
+        else:
+            crc.pop(name, None)
         delimited = data.setdefault("delimited", {})
         if len(secret) >= MIN_LEN and _DELIM_RE.search(secret) and not re.search(r"\s", secret):
             delimited[name] = {"length": len(secret), "fp": _fp(salt, secret),
@@ -356,6 +406,8 @@ def forget_key(name: str, path: str | None = None) -> bool:
         del data["keys"][name]
         if isinstance(data.get("lengths"), dict):
             data["lengths"].pop(name, None)
+        if isinstance(data.get("crc"), dict):
+            data["crc"].pop(name, None)
         if isinstance(data.get("delimited"), dict):
             data["delimited"].pop(name, None)
         _write_fingerprints(path, data)
@@ -369,8 +421,19 @@ def load_fingerprints(path: str | None = None) -> tuple[bytes, frozenset]:
         return b"", frozenset()
     prints = _Prints(h for hs in data["keys"].values() if isinstance(hs, list) for h in hs)
     lens = data.get("lengths")
+    # (a file with no "lengths" is from before glued keys were searched for:
+    # its checksums, if any, are not used either)
+    sums = data.get("crc") if isinstance(data.get("crc"), dict) and isinstance(lens, dict) else {}
+    by_len: dict[int, set] = {}
+    for d in sums.values():
+        if (isinstance(d, dict) and isinstance(d.get("n"), int) and d["n"] >= MIN_LEN
+                and isinstance(d.get("c"), int)):
+            by_len.setdefault(d["n"], set()).add(d["c"])
+    prints.crcs = tuple((n, frozenset(by_len[n])) for n in sorted(by_len)[:MAX_LENGTHS])
     if isinstance(lens, dict):
-        prints.lengths = tuple(sorted({n for ls in lens.values() if isinstance(ls, list)
+        # keys stored before checksums existed are still found, by HMAC
+        prints.lengths = tuple(sorted({n for name, ls in lens.items() if isinstance(ls, list)
+                                       and name not in sums
                                        for n in ls if isinstance(n, int) and n >= MIN_LEN}))[:MAX_LENGTHS]
     found: dict[int, dict] = {}
     delimited = data.get("delimited")
@@ -381,6 +444,13 @@ def load_fingerprints(path: str | None = None) -> tuple[bytes, frozenset]:
             found.setdefault(d["length"], {})[d["roll"]] = d["fp"]
     prints.delimited = tuple((n, found[n]) for n in sorted(found)[:MAX_LENGTHS])
     return bytes.fromhex(data["salt"]), prints
+
+
+CRC_MASK = 0xFFFF
+
+
+def _crc(seed: int, data: bytes) -> int:
+    return zlib.crc32(data, seed) & CRC_MASK
 
 
 _ROLL_MOD = (1 << 61) - 1
@@ -399,7 +469,24 @@ def _roll(word: str, base: int) -> int:
     return h
 
 
-def _delimited_spans(text: str, salt: bytes, entries):
+_RUN_PIECE = 4096   # a long run of non-space characters is looked at in pieces this long
+
+
+def _pieces_of(word: str, start: int, overlap: int):
+    """(offset, piece) of `word` in overlapping pieces: no piece is more than
+    max(_RUN_PIECE, 2 x overlap) long, so the work per piece is fixed."""
+    size = max(_RUN_PIECE, 2 * overlap + 1)
+    if len(word) <= size:
+        yield start, word
+        return
+    step = size - overlap
+    for i in range(0, len(word), step):
+        yield start + i, word[i:i + size]
+        if i + size >= len(word):
+            break
+
+
+def _delimited_spans(text: str, salt: bytes, entries, deadline=None):
     """Where a stored key that holds delimiter characters sits in `text`.
     `entries`: ((length, {rolling hash: fingerprint}), ...). A window of the
     key's length is slid over each whitespace-delimited run (the key has no
@@ -407,60 +494,102 @@ def _delimited_spans(text: str, salt: bytes, entries):
     matches, then confirmed with the fingerprint."""
     base = _roll_base(salt)
     shortest = min(n for n, _ in entries)
+    longest = max(n for n, _ in entries)
     for run in re.finditer(r"\S{%d,}" % shortest, text):
-        word, start = run.group(), run.start()
-        if not _DELIM_RE.search(word):
-            continue
-        pre = list(itertools.accumulate(word, lambda h, ch: (h * base + ord(ch)) % _ROLL_MOD,
-                                        initial=0))
-        for n, table in entries:
-            if n > len(word):
+        for start, word in _pieces_of(run.group(), run.start(), longest):
+            _tick(deadline)
+            if not _DELIM_RE.search(word):
                 continue
-            top = pow(base, n, _ROLL_MOD)
-            last = 0
-            for i in [i for i in range(len(word) - n + 1)
-                      if (pre[i + n] - pre[i] * top) % _ROLL_MOD in table]:
-                if i >= last and _fp(salt, word[i:i + n]) == table[(pre[i + n] - pre[i] * top) % _ROLL_MOD]:
-                    yield start + i, start + i + n
-                    last = i + n
+            pre = list(itertools.accumulate(word, lambda h, ch: (h * base + ord(ch)) % _ROLL_MOD,
+                                            initial=0))
+            for n, table in entries:
+                if n > len(word):
+                    continue
+                top = pow(base, n, _ROLL_MOD)
+                last = 0
+                for i in [i for i in range(len(word) - n + 1)
+                          if (pre[i + n] - pre[i] * top) % _ROLL_MOD in table]:
+                    if i >= last and _fp(salt, word[i:i + n]) == table[(pre[i + n] - pre[i] * top) % _ROLL_MOD]:
+                        yield start + i, start + i + n
+                        last = i + n
 
 
-def _stored_spans(text: str, salt: bytes, prints: frozenset):
+MAX_SPLITS = 16      # "=" and ":" in one word that are tried as the start of a key
+
+
+def _stored_spans(text: str, salt: bytes, prints: frozenset, deadline=None):
     """(start, end) of every word, or the part after = or : in it, whose
-    fingerprint is a stored key's."""
+    fingerprint is a stored key's. The work per word is fixed (at most
+    MAX_SPLITS splits and MAX_LENGTHS key lengths), so the time grows in a
+    straight line with the text."""
+    seed = zlib.crc32(salt)
+    crcs = getattr(prints, "crcs", ())
+    legacy = getattr(prints, "lengths", ())
     for m in _WORD_RE.finditer(text):
+        _tick(deadline)
         word, base = m.group(), m.start()
-        cands = {(0, len(word))}
+        size = len(word)
+        cands = {(0, size)}
+        splits = 0
         for i, ch in enumerate(word):
             if ch in "=:":
-                cands.update(((i + 1, len(word)), (0, i)))
+                cands.update(((i + 1, size), (0, i)))
+                splits += 1
+                if splits >= MAX_SPLITS:
+                    break
         for a, b in cands:
             piece = word[a:b].rstrip(".")
             if len(piece) >= MIN_LEN and _fp(salt, piece) in prints:
                 yield base + a, base + a + len(piece)
         # always: a key glued inside the word (URL path, id-KEY, ...), even when
         # another copy of it matched whole above. Overlaps are skipped in mask_secrets.
-        for n in getattr(prints, "lengths", ()):
+        raw = word.encode("ascii") if word.isascii() else None
+        for n, table in crcs:
+            if n >= size:
+                continue
+            if raw is not None:
+                hits = [i for i in range(size - n + 1)
+                        if zlib.crc32(raw[i:i + n], seed) & CRC_MASK in table]
+            else:
+                hits = [i for i in range(size - n + 1)
+                        if zlib.crc32(word[i:i + n].encode("utf-8", "surrogateescape"), seed)
+                        & CRC_MASK in table]
+            last = 0
+            for i in hits:
+                if i >= last and _fp(salt, word[i:i + n]) in prints:
+                    yield base + i, base + i + n
+                    last = i + n
+        for n in legacy:
             i = 0
-            while i + n <= len(word):
-                if n < len(word) and _fp(salt, word[i:i + n]) in prints:
+            while i + n <= size:
+                if i % 256 == 0:
+                    _tick(deadline)
+                if n < size and _fp(salt, word[i:i + n]) in prints:
                     yield base + i, base + i + n
                     i += n
                 else:
                     i += 1
 
 
-def _all_stored_spans(text: str, salt: bytes, prints: frozenset):
-    yield from _stored_spans(text, salt, prints)
+def _all_stored_spans(text: str, salt: bytes, prints: frozenset, deadline=None):
+    yield from _stored_spans(text, salt, prints, deadline)
     entries = getattr(prints, "delimited", ())
     if entries:
-        yield from _delimited_spans(text, salt, entries)
+        yield from _delimited_spans(text, salt, entries, deadline)
 
 
-def has_stored_key(text: str, prints: tuple[bytes, frozenset]) -> bool:
-    """Does `text` hold a stored key (by fingerprint only, never by format)?"""
+def has_stored_key(text: str, prints: tuple[bytes, frozenset], deadline: float | None = None) -> bool:
+    """Does `text` hold a stored key (by fingerprint only, never by format)?
+    Out of time counts as yes: whoever asks refuses or withholds the text."""
     salt, hashes = prints
-    return bool(hashes) and next(_all_stored_spans(text, salt, hashes), None) is not None
+    if not hashes:
+        return False
+    if deadline is None:
+        deadline = time.monotonic() + MASK_BUDGET_S
+    try:
+        return next(_all_stored_spans(text, salt, hashes, deadline), None) is not None
+    except (CheckTimeout, MemoryError, RecursionError):
+        return True
 
 
 _RULES = None
@@ -482,37 +611,91 @@ def _format_rules():
 _MAYBE_KEY_RE = re.compile(r"[A-Za-z0-9_\-+/=.~]{16,}|PRIVATE KEY|://[^\s@/]+:|"
                            r"[=:]\s*[\"']?[A-Za-z0-9_\-+/=.~]{8,}")
 
+FORMAT_WINDOW = 65536    # the key-format patterns run on pieces this long ...
+FORMAT_OVERLAP = 2048    # ... that overlap by this much (a key is shorter than that)
+_PEM_END_RE = re.compile(r"-----END [A-Z ]*PRIVATE KEY-----")
 
-def _format_spans(text: str):
+
+def _windows(text: str):
+    if len(text) <= FORMAT_WINDOW:
+        yield 0, text, True
+        return
+    step = FORMAT_WINDOW - FORMAT_OVERLAP
+    for i in range(0, len(text), step):
+        last = i + FORMAT_WINDOW >= len(text)
+        yield i, text[i:i + FORMAT_WINDOW], last
+        if last:
+            break
+
+
+def _format_spans(text: str, deadline=None):
+    import bisect
     from . import scan as scan_mod
-    for rx in _format_rules():
-        for m in rx.finditer(text):
-            yield m.span()
-    for m in scan_mod.PRIVATE_KEY_RE.finditer(text):
-        end = re.compile(r"-----END [A-Z ]*PRIVATE KEY-----").search(text, m.end())
-        yield m.start(), end.end() if end else len(text)
-    for m in scan_mod.BEARER_RE.finditer(text):
-        yield m.span("value")
-    for m in scan_mod.URL_PASSWORD_RE.finditer(text):
-        if not scan_mod.is_placeholder(m.group("password")):
-            yield m.span("password")
-    for m in scan_mod.ASSIGN_RE.finditer(text):
-        name, value = m.group("name"), m.group("value")
-        if scan_mod.NOT_SECRET_NAME_RE.search(name):
+    # a private key block: from its BEGIN line to its END line (or to the end of
+    # the text when it has none). Found over the whole text in one pass, so a
+    # text of nothing but BEGIN lines costs no more than any other.
+    ends = [(m.start(), m.end()) for m in _PEM_END_RE.finditer(text)]
+    starts = [e[0] for e in ends]
+    covered = 0
+    for k, m in enumerate(scan_mod.PRIVATE_KEY_RE.finditer(text)):
+        if k % 256 == 0:
+            _tick(deadline)
+        if m.start() < covered:
             continue
-        if ((scan_mod.SECRET_NAME_RE.search(name) and scan_mod._secret_value_ok(value))
-                or (scan_mod.PASSWORD_NAME_RE.search(name) and scan_mod._password_value_ok(value))):
-            yield m.span("value")
+        at = bisect.bisect_left(starts, m.end())
+        covered = ends[at][1] if at < len(ends) else len(text)
+        yield m.start(), covered
+    rules = _format_rules()
+    for off, win, final in _windows(text):
+        def span(a, b):
+            # a match that runs into the end of a piece, and is longer than the
+            # overlap, may go on in the next piece: not safe to cut it here
+            if not final and b >= len(win) and b - a >= FORMAT_OVERLAP:
+                raise CheckTimeout
+            return a + off, b + off
+        for rx in rules:
+            _tick(deadline)
+            for m in rx.finditer(win):
+                yield span(*m.span())
+        _tick(deadline)
+        for m in scan_mod.BEARER_RE.finditer(win):
+            yield span(*m.span("value"))
+        _tick(deadline)
+        for m in scan_mod.URL_PASSWORD_RE.finditer(win):
+            if not scan_mod.is_placeholder(m.group("password")):
+                yield span(*m.span("password"))
+        _tick(deadline)
+        for m in scan_mod.ASSIGN_RE.finditer(win):
+            name, value = m.group("name"), m.group("value")
+            if scan_mod.NOT_SECRET_NAME_RE.search(name):
+                continue
+            if ((scan_mod.SECRET_NAME_RE.search(name) and scan_mod._secret_value_ok(value))
+                    or (scan_mod.PASSWORD_NAME_RE.search(name) and scan_mod._password_value_ok(value))):
+                yield span(*m.span("value"))
 
 
-def mask_secrets(text: str, prints: tuple[bytes, frozenset] | None = None) -> tuple[str, int]:
+def mask_secrets(text: str, prints: tuple[bytes, frozenset] | None = None,
+                 deadline: float | None = None) -> tuple[str, int]:
     """`text` with every stored key (by fingerprint) and every text in a
     known key format replaced by [REDACTED]; and how many were. `prints` is
-    load_fingerprints() (read here when not given)."""
+    load_fingerprints() (read here when not given).
+
+    Time-limited (MASK_BUDGET_S, or `deadline`, a time.monotonic() value; a
+    caller masking several texts passes one deadline for all). A text too big,
+    or too odd to check in time, is replaced WHOLE by WITHHELD_NOTICE (counted
+    as one hit): it is never shown half checked."""
     salt, hashes = prints if prints is not None else load_fingerprints()
-    spans = list(_all_stored_spans(text, salt, hashes)) if hashes else []
-    if _MAYBE_KEY_RE.search(text):
-        spans += _format_spans(text)
+    if len(text) > MASK_MAX_CHARS:
+        return WITHHELD_NOTICE, 1
+    if deadline is None:
+        deadline = time.monotonic() + MASK_BUDGET_S
+    try:
+        spans = list(_all_stored_spans(text, salt, hashes, deadline)) if hashes else []
+        if _MAYBE_KEY_RE.search(text):
+            spans += _format_spans(text, deadline)
+        _tick(deadline)
+    except (CheckTimeout, MemoryError, RecursionError):
+        return WITHHELD_NOTICE, 1
     if not spans:
         return text, 0
     out, last, n = [], 0, 0

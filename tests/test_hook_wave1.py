@@ -172,7 +172,7 @@ class InstallBothEvents(unittest.TestCase):
         data = {}
         self.assertEqual(hook_mod.merge_install(data, hook_mod.hook_handler()), "added")
         group = data["hooks"]["PostToolUse"][0]
-        self.assertEqual(group["matcher"], "^(Bash|mcp__.*)$")
+        self.assertEqual(group["matcher"], "^(Bash|PowerShell|mcp__.*)$")
         self.assertNotIn("onFailure", group["hooks"][0])
         self.assertEqual(hook_mod.merge_install(data, hook_mod.hook_handler()), "unchanged")
         self.assertEqual(hook_mod.merge_uninstall(data), 2)

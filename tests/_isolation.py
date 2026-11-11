@@ -113,6 +113,55 @@ def _cleanup() -> None:
             pass
 
 
+def real_stuntkey_state(home: str) -> dict:
+    """Read-only fingerprint of a real ~/.stuntkey: name -> (size, mtime_ns), plus
+    the sha256 of index.json. Never writes, never opens a log for append."""
+    import hashlib
+    state: dict = {}
+    base = os.path.join(home, ".stuntkey")
+    for root, _dirs, files in os.walk(base):
+        for f in files:
+            p = os.path.join(root, f)
+            try:
+                st = os.stat(p)
+            except OSError:
+                continue
+            state[os.path.relpath(p, base)] = (st.st_size, st.st_mtime_ns)
+    try:
+        with open(os.path.join(base, "index.json"), "rb") as fh:
+            state["index.json#sha256"] = hashlib.sha256(fh.read()).hexdigest()
+    except OSError:
+        pass
+    return state
+
+
+# the real user's folder, fingerprinted BEFORE HOME is pointed elsewhere
+REAL_HOME = os.path.expanduser("~")
+REAL_STATE_AT_START = real_stuntkey_state(REAL_HOME)
+
+
+def scrub_env() -> None:
+    """Remove every STUNTKEY_* variable the caller exported (STUNTKEY_KEYCHAIN=memory
+    and friends) so none can leak INTO a test. The test-home variable is kept."""
+    for k in [k for k in os.environ
+              if k.startswith("STUNTKEY_") and k != "STUNTKEY_TEST_HOME"]:
+        del os.environ[k]
+
+
+def snapshot_env() -> dict:
+    return {k: v for k, v in os.environ.items() if k.startswith("STUNTKEY_")}
+
+
+def restore_env(snap: dict) -> None:
+    """Put the STUNTKEY_* variables back exactly as they were: nothing a test set
+    stays set, nothing it removed stays removed (nothing leaks OUT)."""
+    for k in [k for k in os.environ if k.startswith("STUNTKEY_") and k not in snap]:
+        del os.environ[k]
+    os.environ.update(snap)
+
+
+scrub_env()
+
 _TEMP_DIRS: list = []
 FAKE_HOME = os.environ.get("STUNTKEY_TEST_HOME") or tempfile.mkdtemp(prefix="seh")
 for _var in ENV_VARS:

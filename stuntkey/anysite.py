@@ -103,10 +103,10 @@ def build_recipe(domain: str, catalog: dict) -> dict:
         "display": domain,
         "key_url": f"https://{domain}/",
         "env_var": env_var,
-        "steps": [f"Sign in to {domain} (your browser opens a search for its API key page)",
+        "steps": [f"Sign in to {domain} (the page that opens is a search for its API key page)",
                   "Create an API key, or open one you have - pick the fewest "
                   "permissions it offers",
-                  "Click Copy next to the key"],
+                  "Copy the key"],
         "validate": {"method": "GET", "url": f"https://api.{domain}/",
                      "auth": {"type": "bearer"}, "expect": [200]},
         "unverified": ["validate.url", "validate.auth"],

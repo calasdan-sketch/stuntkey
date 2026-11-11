@@ -243,6 +243,13 @@ def cmd_status(args, catalog: dict, out=None, check_keychain=True,
             if r["hint"]:
                 out.write(f"  {'':14} -> {printable(r['hint'])}\n")
         out.write("\n")
+        try:        # say so plainly when the activity log is not signed
+            from . import broker, remote
+            note = broker.AuditLog(os.path.join(remote.home_dir(), "audit.log")).describe()
+        except Exception:
+            note = ""
+        if note:
+            out.write(f"  {printable(note)}\n\n")
     bad = [r for r in rows if r["state"] != "stored"]
     old = [r for r in rows if r["state"] == "stored" and r["hint"]]
     return 1 if bad or old else 0

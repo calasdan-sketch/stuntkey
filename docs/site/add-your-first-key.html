@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en-CA">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Add your first key - StuntKey by Calas Automations</title>
+<meta name="description" content="Add your first API key to StuntKey in about a minute: install, check, add, connect.">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#0B2E45">
+<link rel="canonical" href="https://calasautomations.com/devtools/stuntkey/add-your-first-key.html">
+<link rel="icon" type="image/png" href="favicon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Libre+Baskerville:ital,wght@0,400;0,700;1,400&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="bar"><div class="in">
+  <a class="lock" href="index.html" aria-label="StuntKey by Calas Automations, home"><span class="crest" aria-hidden="true"></span><span><span class="name">StuntKey</span><span class="sub">BY CALAS AUTOMATIONS</span></span></a>
+  <nav aria-label="Primary"><a href="index.html">Home</a><a href="how-it-works.html">How it works</a><a href="add-your-first-key.html" aria-current="page">Add your first key</a><a href="https://github.com/calasdan-sketch/stuntkey">GitHub</a></nav>
+</div></header>
+<main id="main">
+<div class="page"><div class="wrap">
+  <p class="crumbs"><a href="index.html">StuntKey</a> / Add your first key</p>
+  <h1>Add your <em>first key</em></h1>
+  <p class="lede">About a minute. You never type a key into a web page, and you never paste it into your AI chat.</p>
+  <ol class="steps">
+    <li><b>Install StuntKey.</b><p>You need Python 3.10 or newer. In a terminal:</p>
+      <div class="cmd"><code>pip install stuntkey</code></div></li>
+    <li><b>Check your computer.</b><p>This looks for keys lying around and says what to do next. It changes nothing.</p>
+      <div class="cmd"><code>stuntkey start</code></div></li>
+    <li><b>Add the key.</b><p>Swap <code>openai</code> for your service. StuntKey opens that service's key page. Click the site's own Copy button. StuntKey takes the key from your copy, tests it, and locks it in your keychain.</p>
+      <div class="cmd"><code>stuntkey get openai</code></div></li>
+    <li><b>Plug it into your AI tools.</b><p>Shows the change first and asks before it does anything. Run it in your project folder.</p>
+      <div class="cmd"><code>stuntkey install</code></div></li>
+    <li><b>Check it worked.</b><p>Shows where each key lives and how old it is. Names only, never the key.</p>
+      <div class="cmd"><code>stuntkey status</code></div></li>
+  </ol>
+  <div class="note"><p><b>Want to see it work first?</b> <code>stuntkey try</code> saves a pretend key, uses it, then forgets it, in a throwaway place. No real key is used.</p>
+  <p><b>Leaked a key?</b> <code>stuntkey panic openai</code> walks you through cancelling it and making a new one.</p></div>
+  <p class="say">Stuck? Email <a href="mailto:office@calasautomations.com">office@calasautomations.com</a>.</p>
+</div></div>
+</main>
+<footer class="foot"><div class="in">
+  <a class="lock" href="index.html" aria-label="StuntKey home"><span class="crest" aria-hidden="true"></span><span><span class="name">StuntKey</span><span class="sub">BY CALAS AUTOMATIONS</span></span></a>
+  <nav aria-label="Footer"><a href="index.html">Home</a><a href="how-it-works.html">How it works</a><a href="add-your-first-key.html" aria-current="page">Add your first key</a><a href="https://github.com/calasdan-sketch/stuntkey">GitHub</a><a href="https://pypi.org/project/stuntkey/">PyPI</a><a href="https://github.com/calasdan-sketch/stuntkey/blob/main/docs/THREAT_MODEL.md">Threat model</a><a href="https://calasautomations.com/devtools/">All dev tools</a></nav>
+  <p class="fine">Free and open source, MIT licence. Python standard library only. Formerly OathKey and SafeEasyAPI.<br>
+  &copy; Calas Automations Inc., Winnipeg, Manitoba. Questions: <a href="mailto:office@calasautomations.com">office@calasautomations.com</a>. Security problem? <a href="mailto:security@calasautomations.com">security@calasautomations.com</a></p>
+</div></footer>
+</body>
+</html>
