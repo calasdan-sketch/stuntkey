@@ -343,7 +343,14 @@ def integrity_key(directory: str, create: bool = False,
                   purpose: str = "audit") -> tuple[bytes | None, str]:
     """(key, where) for one purpose ("audit" log, "ledger" index; each has its
     own key). where: "keychain", "file", or "unavailable" (key None).
-    Never raises; `create` makes a new key when none exists yet."""
+    Never raises; `create` makes a new key when none exists yet.
+
+    Where the key lives depends on `directory`: the keychain ONLY when it is
+    the folder this process uses as its home (remote.home_dir(), normally
+    ~/.stuntkey); any other folder - including the same files seen by a
+    process started with a different HOME - gets a key FILE beside the data,
+    which is a different key. (None, "keychain"/"file") means that place can be
+    reached but holds no key yet; (None, "unavailable") means it cannot."""
     from . import remote, store as store_mod
     try:
         forced = test_backend()

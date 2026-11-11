@@ -8,6 +8,7 @@ so a program that prints a key does not put it on your screen.
 
 from __future__ import annotations
 
+import io
 import os
 import signal
 import subprocess
@@ -31,7 +32,11 @@ def env_file_value(path: str, var: str) -> str | None:
     return value if value else None
 
 
-def _pump(src, dst, redactor: redact_mod.Redactor) -> None:
+def _pump(src, dst, redactor: redact_mod.Redactor, crashes: list | None = None) -> None:
+    """Copy the child's output to `dst` through the redactor. A closed pipe is
+    quiet (OSError/ValueError). Anything else is OUR bug: it is appended to
+    `crashes` (run_redacted raises it after the child ends) so it cannot hide
+    in a background thread."""
     try:
         while True:
             chunk = src.read1(redact_mod.CHUNK) if hasattr(src, "read1") else src.read(redact_mod.CHUNK)
@@ -47,6 +52,11 @@ def _pump(src, dst, redactor: redact_mod.Redactor) -> None:
             dst.flush()
     except (OSError, ValueError):
         pass        # our reader went away (closed pipe): keep draining quietly
+    except Exception as e:      # a bug, e.g. TypeError from a stream that wants text
+        if crashes is not None:
+            crashes.append(e)
+        else:
+            raise
     finally:
         try:
             src.close()
@@ -88,8 +98,35 @@ class _interrupt_held_back:
         return False
 
 
+class _TextSink:
+    """Takes bytes and writes them, decoded, to a text stream that has no
+    .buffer (a StringIO, a wrapper). Without this the reader thread handed
+    bytes to a text stream, raised TypeError, and the exception vanished in a
+    background thread while the program's output was lost."""
+
+    def __init__(self, stream):
+        self._s = stream
+
+    def write(self, data):
+        if isinstance(data, (bytes, bytearray)):
+            data = bytes(data).decode("utf-8", "replace")
+        return self._s.write(data)
+
+    def flush(self):
+        flush = getattr(self._s, "flush", None)
+        if flush:
+            flush()
+
+
 def _binary(stream):
-    return getattr(stream, "buffer", stream)
+    """A stream that accepts bytes: the real byte stream under a text one, or a
+    small adapter when there is none."""
+    buf = getattr(stream, "buffer", None)
+    if buf is not None:
+        return buf
+    if isinstance(stream, io.TextIOBase):       # text only (a StringIO): adapt
+        return _TextSink(stream)
+    return stream                               # already takes bytes (BytesIO, a pipe)
 
 
 def run_redacted(cmd: list[str], child_env: dict, secrets, popen=subprocess.Popen,
@@ -101,6 +138,7 @@ def run_redacted(cmd: list[str], child_env: dict, secrets, popen=subprocess.Pope
     err = _binary(stderr if stderr is not None else sys.stderr)
     proc = popen(cmd, env=child_env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     threads = []
+    crashes: list = []
     try:
         # Ctrl-C must not land while the readers are being started: raised
         # inside Thread.start it can leave threading's own locks broken
@@ -111,7 +149,7 @@ def run_redacted(cmd: list[str], child_env: dict, secrets, popen=subprocess.Pope
         with _interrupt_held_back() as held:
             for src, dst in ((proc.stdout, out), (proc.stderr, err)):
                 t = threading.Thread(target=_pump,
-                                     args=(src, dst, redact_mod.Redactor(secrets)),
+                                     args=(src, dst, redact_mod.Redactor(secrets), crashes),
                                      daemon=True)
                 t.start()
                 threads.append(t)
@@ -142,4 +180,6 @@ def run_redacted(cmd: list[str], child_env: dict, secrets, popen=subprocess.Pope
                     pipe.close()
             except (OSError, ValueError):
                 pass
+    if crashes:
+        raise crashes[0]        # loud, not hidden in a thread
     return 128 - status if status < 0 else status

@@ -136,7 +136,7 @@ def _tool_defs() -> list[dict]:
                          "properties": {"name": {"type": "string"}},
                          "required": ["name"]}},
         {"name": "call_api",
-         "description": ("Call a connected service's API without seeing its key. "
+         "description": ("Call a connected service's API; the key is added for you and never placed in your environment. "
                          "Give service, method, path, optional query_json/body_json "
                          "(JSON text). Writes ask the person first. If refused, do NOT "
                          "retry: tell the person. Never put keys in any argument."),
@@ -164,6 +164,32 @@ def _session_policy():
         from . import approve as approve_mod
         _POLICY = broker.Policy(approve=approve_mod.ask_person)
     return _POLICY
+
+
+def _outgoing_has_key(values: dict, *parts) -> bool:
+    """Would this request carry a key OUT? The agent's own path, query and body
+    are checked with the same disguise-aware tools the answers use: this
+    recipe's key in plain, encoded, partial (a 32-character run) and REVERSED
+    form (scrub.loosely_contains), then every stored key by fingerprint and any
+    text in a known key format (scrub.mask_secrets) on the text as written, with
+    percent/escape disguises undone, and read backwards. Anything that cannot be
+    checked counts as a leak (fail closed)."""
+    try:
+        from . import scrub as scrub_mod
+        text = "\n".join(str(p) for p in parts if p is not None)
+        if not text:
+            return False
+        mine = [v for v in (values or {}).values() if isinstance(v, str) and v]
+        if scrub_mod.loosely_contains(text, mine + [s[::-1] for s in mine]):
+            return True
+        prints = scrub_mod.load_fingerprints()
+        plain = scrub_mod._normalize(text)
+        for form in (text, text[::-1], plain, plain[::-1]):
+            if scrub_mod.mask_secrets(form, prints)[1]:
+                return True
+        return False
+    except Exception:
+        return True
 
 
 def _call_api(catalog: dict, args: dict) -> dict:
@@ -197,6 +223,11 @@ def _call_api(catalog: dict, args: dict) -> dict:
         env_file = (os.environ.get("STUNTKEY_ENV_FILE")
                     or os.path.join(remote.home_dir(), "no-env-file"))
         values = remote.collect_values(recipe, env_file)
+        if _outgoing_has_key(values, args.get("path"), args.get("query_json"),
+                             args.get("body_json")):
+            return fail("That request has what looks like an API key in it (in the "
+                        "path, query or body), so no call was made. Never put a key "
+                        "in a request: stuntkey adds the right one for you.")
         audit = broker.AuditLog(os.path.join(remote.home_dir(), "audit.log"))
         result = broker.call(recipe, values, args["method"], args["path"],
                              query, body, policy=_session_policy(), audit=audit,

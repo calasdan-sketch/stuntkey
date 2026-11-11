@@ -16,6 +16,8 @@ import random
 import shutil
 import subprocess
 import sys
+import threading
+import time
 
 from . import safeexec
 
@@ -62,8 +64,48 @@ def _window_env(msg: str) -> dict:
     return dict(safeexec.env(), SEA_MSG=msg)
 
 
+MAX_WINDOWS_PER_MINUTE = 6       # more pop-ups than this in a minute are refused unseen
+_shown: list = []                 # when each pop-up was shown (monotonic seconds)
+_shown_lock = threading.Lock()
+
+
+def _say(text: str) -> None:
+    """A plain line for the person on standard error (never standard output:
+    an MCP server talks on that). Never raises."""
+    try:
+        print("stuntkey: " + text, file=sys.stderr, flush=True)
+    except Exception:
+        pass
+
+
+def _too_many_windows(now: float | None = None) -> bool:
+    """Approval-fatigue guard: an agent that keeps asking cannot wear the
+    person down with modal pop-ups. Counts pop-ups shown in the last minute."""
+    now = time.monotonic() if now is None else now
+    with _shown_lock:
+        _shown[:] = [t for t in _shown if now - t < 60]
+        if len(_shown) >= MAX_WINDOWS_PER_MINUTE:
+            return True
+        _shown.append(now)
+        return False
+
+
 def dialog(summary: str) -> bool | None:
-    """True/False from a pop-up, or None if no pop-up could be shown."""
+    """True/False from a pop-up, or None if no pop-up could be shown.
+
+    STUNTKEY_NO_WINDOW=1 means the person turned pop-up windows off: the answer
+    is NO, with a plain message (never a fall-back to guessing). More than
+    MAX_WINDOWS_PER_MINUTE pop-ups in one minute are also answered NO without
+    showing one (approval fatigue)."""
+    if os.environ.get("STUNTKEY_NO_WINDOW") == "1":
+        _say("a permission window was asked for, but windows are turned off "
+             "(STUNTKEY_NO_WINDOW=1), so the answer is no. Nothing was done.")
+        return False
+    if _too_many_windows():
+        _say("too many permission windows in the last minute, so this one was "
+             "refused without being shown. Nothing was done. Wait a minute, "
+             "then ask again.")
+        return False
     msg = _safe(summary) + "\n\nAllow this?"
     env = _window_env(msg)
     try:

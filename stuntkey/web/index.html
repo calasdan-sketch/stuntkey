@@ -165,11 +165,11 @@ ul.tick{padding-left:20px}ul.tick li{margin:0 0 8px}
 <main id="main">
 <section class="hero" id="top"><div class="wrap">
   <p class="eyebrow">Running on this computer only</p>
-  <h1>Your AI uses your keys. <em>It never sees them.</em></h1>
+  <h1>Your AI uses your keys. <em>The key stays out of its environment.</em></h1>
   <p class="lede">StuntKey is a stand-in for your API keys. Your AI works with the stand-in. The real key stays locked away.</p>
   <ul class="tick" style="color:#D3E3EE;margin:0 0 22px;font-size:18px">
     <li>Real keys live in your computer's own keychain.</li>
-    <li>Your AI gets a stunt double, never the real thing.</li>
+    <li>Your AI gets a stunt double, not the real key.</li>
     <li>You can set a spending limit on every key.</li>
   </ul>
   <div class="ctas"><a class="btn gold" href="#add">Add a key</a><a class="btn ghost" href="#practice">Try practice mode first</a></div>
@@ -219,13 +219,14 @@ ul.tick{padding-left:20px}ul.tick li{margin:0 0 8px}
   <div class="grid">
     <div class="card"><h3>What it does</h3><ul class="tick">
       <li>Keeps your real keys in the keychain your computer already has.</li>
-      <li>Lets your AI make calls without ever holding the key.</li>
-      <li>Hides a key if one shows up in what the AI would read.</li>
+      <li>Lets your AI make calls through the broker, so the key stays out of its environment.</li>
+      <li>With the Claude Code hook, hides a key that shows up in a command's output.</li>
       <li>Lets you set a daily limit per key, and a stop switch.</li></ul></div>
     <div class="card"><h3>What it does not do</h3><ul class="tick">
       <li>It lowers the risk. It cannot make it zero.</li>
       <li>It cannot stop an AI misusing a key it is allowed to use. Give each key only the permissions it needs.</li>
-      <li>It does not protect against a virus already running as you.</li></ul></div>
+      <li>It does not protect against a virus already running as you: anything running as you can read your keychain.</li>
+      <li>Cursor, Codex, Gemini and Claude Desktop have no hook for their file tools, and screenshots and the clipboard are not covered.</li></ul></div>
     <div class="card"><h3>This page</h3><ul class="tick">
       <li>Only opens on this computer.</li>
       <li>Shows names, never secrets.</li>

@@ -1,4 +1,4 @@
-"""The broker: let an AI call an API without ever holding the key.
+"""The broker: let an AI call an API without the key entering its environment.
 
 The AI says only: service, method, path, query, body. The broker picks the
 host (from the recipe, never from the AI), adds the credential itself,
@@ -513,28 +513,45 @@ def _log(audit, recipe, values, method, host, path, status, size, result, ms=0):
         pass            # ready() already refused to act when the log is unwritable or busy
 
 
+LOCK_WAIT = 30.0      # seconds a writer waits for the log before giving up
+BUSY_TEXT = ("The activity log is busy (another StuntKey program is writing to "
+             "it right now). Wait a few seconds and try again")
+
+
+def _lock_pause(attempt: int) -> float:
+    """Seconds to wait before the next try: short at first, growing to a quarter
+    second, with a little jitter so waiting writers do not move in step."""
+    import random
+    return min(0.01 * (1.5 ** attempt), 0.25) * (0.5 + random.random() / 2)
+
+
 @contextlib.contextmanager
-def _file_lock(path: str):
+def _file_lock(path: str, timeout: float | None = None):
     """One writer at a time across processes (MCP + serve + call may all run).
-    Yields True when the lock is held; callers fail closed when it is not."""
+    Yields True when the lock is held; callers fail closed when it is not.
+    Waits up to LOCK_WAIT seconds (backing off) before giving up."""
     fd = None
     locked = False
+    deadline = time.monotonic() + (LOCK_WAIT if timeout is None else timeout)
     try:
         fd = os.open(path + ".lock", os.O_RDWR | os.O_CREAT, 0o600)
-        if os.name == "nt":
-            import msvcrt
-            for _ in range(100):
-                try:
+        attempt = 0
+        while True:
+            try:
+                if os.name == "nt":
+                    import msvcrt
                     os.lseek(fd, 0, 0)
                     msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
-                    locked = True
+                else:
+                    import fcntl
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                locked = True
+                break
+            except OSError:
+                if time.monotonic() >= deadline:
                     break
-                except OSError:
-                    time.sleep(0.05)
-        else:
-            import fcntl
-            fcntl.flock(fd, fcntl.LOCK_EX)
-            locked = True
+                time.sleep(_lock_pause(attempt))
+                attempt += 1
     except OSError:
         pass
     try:
@@ -556,6 +573,20 @@ _BAD = object()      # an end-marker file that exists but cannot be read
 UNKEYED_NOTE = ("This log is not signed with a secret key on this computer "
                 "(the keychain could not keep one). It still catches mistakes "
                 "and clumsy edits, but not someone who rewrites the whole log.")
+
+
+LOST_KEY_WHY = ("the signing key was lost (it was kept in the keychain), so the "
+                "older entries can no longer be checked - this is not the same "
+                "as someone changing them. Run `stuntkey audit reset` to start "
+                "a new log; the old one is kept beside it")
+
+NO_KEY_YET_NOTE = ("The entries so far were written before log signing existed. "
+                   "The signing key will be created with the next entry "
+                   "(`stuntkey doctor` can create it now).")
+
+TAIL_BYTES = 65536            # how much of the end of the log a write re-checks
+MAX_GAP_BYTES = 8 * 1024 * 1024
+_ROTATED = re.compile(r"\.(\d{4}-\d{2})(-\d+)?$")
 
 
 OLDER_ENTRIES_NOTE = ("The entries so far were written before log signing existed, so they are "
@@ -652,15 +683,65 @@ class AuditLog:
                               "nothing was sent.", 5) from None
         with _file_lock(self.path) as got:
             if not got:
-                raise BrokerError("The activity log is busy or locked, so "
-                                  "nothing was sent. Try again.", 5)
+                raise BrokerError(BUSY_TEXT + ", so nothing was sent.", 5)
 
     # ---- the signing key
 
-    def _key(self, create: bool = False):
+    def _key_info(self, create: bool = False):
+        """(key or None, where): where is "keychain" or "file" when that place
+        can be reached (key None then means "none made yet"), "unavailable"
+        when it cannot. The key lives in the keychain only for a log in the
+        folder this program uses as its home (~/.stuntkey); a log anywhere
+        else, or seen from a program run with another HOME, uses a key file
+        beside the log - so a different HOME sees a different (or no) key."""
         from . import keychain
         return keychain.integrity_key(
-            os.path.dirname(os.path.abspath(self.path)), create=create)[0]
+            os.path.dirname(os.path.abspath(self.path)), create=create)
+
+    def _key(self, create: bool = False):
+        return self._key_info(create)[0]
+
+    def key_state(self) -> str:
+        """"present", "none_yet" (the keychain works; the key will be made with
+        the next entry) or "unavailable" (no key can be kept here)."""
+        try:
+            key, where = self._key_info()
+        except Exception:
+            return "unavailable"
+        if key is not None:
+            return "present"
+        return "none_yet" if where in ("keychain", "file") else "unavailable"
+
+    def ensure_key(self) -> dict:
+        """Make the signing key now (best effort, never raises). Call it from
+        `install` / `doctor` so a log that has not been written since signing
+        began does not look unsigned. Returns {"state": "ready" (already
+        there) | "created" | "unavailable" | "busy", "where": ...,
+        "note": plain words}. An older unsigned log gets its CHAIN-NOW-SIGNED
+        marker here, exactly as a first write would add it."""
+        try:
+            with AuditLog._lock, _file_lock(self.path, timeout=5.0) as got:
+                if not got:
+                    return {"state": "busy", "where": "", "note": BUSY_TEXT + "."}
+                key, where = self._key_info()
+                if key is not None:
+                    return {"state": "ready", "where": where, "note": "The signing key is in place."}
+                key, where = self._key_info(create=True)
+                if key is None:
+                    return {"state": "unavailable", "where": where, "note": UNKEYED_NOTE}
+                s = self._scan_full(key)
+                a = self._read_anchor()
+                if (s["n"] > 0 and s["keyed_n"] == 0 and self.broken_reason() is None
+                        and self._problem(s, a, key, migrating=True) is None):
+                    last = self._append(self._marker(
+                        "CHAIN-NOW-SIGNED",
+                        "lines from here on are signed with a secret key; "
+                        "older lines were not"), s["last"], key)
+                    self._save_anchor(s["n"] + 1, last, key)
+                return {"state": "created", "where": where,
+                        "note": "A signing key was created for the activity log."}
+        except (OSError, BrokerError, ValueError):
+            return {"state": "unavailable", "where": "", "note": UNKEYED_NOTE}
 
     def _digest(self, entry: dict, key: bytes | None = None) -> str:
         data = json.dumps(entry, sort_keys=True).encode()
@@ -676,12 +757,27 @@ class AuditLog:
 
     # ---- reading
 
-    def _scan_full(self, key: bytes | None) -> dict:
+    def _missing_key_why(self) -> str:
+        try:
+            where = self._key_info()[1]
+        except Exception:
+            where = "unavailable"
+        if where == "file":
+            return ("this log is signed, but the signing key is not in this "
+                    "program's key folder (it was signed under a different "
+                    "home folder, or the key file was lost)")
+        return LOST_KEY_WHY
+
+    def _scan_full(self, key: bytes | None, path: str | None = None) -> dict:
+        """Read and check every line (slow on a big log: used by `audit
+        verify`, the first write, and whenever the quick tail check cannot
+        vouch for the end)."""
         s = {"n": 0, "last": "0" * 64, "ok": True, "exists": False,
              "anchored": False, "keyed_n": 0, "problem_seen": False,
-             "unkeyed_marked": False, "why": None}
+             "unkeyed_marked": False, "why": None, "keyed_seen": False,
+             "link": None, "rotated_file": None, "last_ts": None}
         try:
-            with open(self.path, "rb") as f:
+            with open(path or self.path, "rb") as f:
                 data = f.read()
         except FileNotFoundError:
             return s
@@ -698,9 +794,18 @@ class AuditLog:
                 e = json.loads(line)
                 h = e.pop("hash")
                 keyed = e.get("k") == 1
+                if keyed:
+                    s["keyed_seen"] = True
+                if (n == 0 and keyed and key is not None
+                        and e.get("result") == "LOG-ROTATED"
+                        and isinstance(e.get("prev"), str)):
+                    # a monthly log starts by pointing at the last line of the
+                    # one before it; the signature covers that pointer
+                    prev = e["prev"]
+                    s["link"] = prev
+                    s["rotated_file"] = e.get("rotated_file")
                 if keyed and key is None:
-                    s["why"] = ("this log is signed but its secret key is "
-                                "missing (it is kept in the keychain)")
+                    s["why"] = self._missing_key_why()
                     good = False
                 elif not keyed and s["keyed_n"] > 0:
                     s["why"] = "a signed line is followed by an unsigned one"
@@ -710,6 +815,7 @@ class AuditLog:
                 if n == 0:
                     s["anchored"] = e.get("anchored") is True
                 if good:
+                    s["last_ts"] = e.get("ts") if isinstance(e.get("ts"), int) else None
                     s["keyed_n"] += 1 if keyed else 0
                     if e.get("result") == "LOG-PROBLEM-FOUND":
                         s["problem_seen"] = True
@@ -723,6 +829,66 @@ class AuditLog:
             prev, n = h, n + 1
         s.update(n=n, last=prev)
         return s
+
+    def _scan_tail(self, key: bytes | None, a):
+        """The log's state from the signed end-marker plus only the END of the
+        file, or None when that cannot vouch for it (the caller then reads the
+        whole log). Finds the line the end-marker names in the last
+        TAIL_BYTES, checks every line from there to the end chains and is
+        signed, and counts them. Cutting the end off, replacing the last lines
+        or rewinding the marker all make the named line vanish or the chain
+        break, so None comes back and the full check decides. A change in the
+        MIDDLE of a long log is found by `audit verify`, not by each write."""
+        if key is None or a is None or a is _BAD or a[2] is None:
+            return None
+        count, want, mac = a
+        if not hmac.compare_digest(mac, self._mac(key, count, want)):
+            return None
+        try:
+            total = os.path.getsize(self.path)
+            start = max(0, total - TAIL_BYTES)
+            with open(self.path, "rb") as f:
+                f.seek(start)
+                data = f.read()
+        except OSError:
+            return None
+        if not data.endswith(b"\n"):
+            data = data[:data.rfind(b"\n") + 1]      # a write in progress
+        lines = data.split(b"\n")[:-1]
+        pos = start
+        if start > 0 and lines:
+            pos += len(lines[0]) + 1
+            lines = lines[1:]                          # the first may be cut in half
+        prev, found, after, last_ts = None, False, 0, None
+        for line in lines:
+            at, pos = pos, pos + len(line) + 1
+            try:
+                e = json.loads(line)
+                h = e.pop("hash")
+                if e.get("k") != 1 or h != self._digest(e, key):
+                    return None
+                if prev is not None and e.get("prev") != prev:
+                    return None
+                if e.get("result") == "LOG-PROBLEM-FOUND":
+                    return None
+                if "off" in e and e["off"] != at:
+                    return None                        # something was cut out before here
+                if h == want and "off" not in e:
+                    return None                        # written before offsets: read it all once
+            except (ValueError, KeyError, TypeError, AttributeError):
+                return None
+            prev = h
+            last_ts = e.get("ts") if isinstance(e.get("ts"), int) else None
+            if found:
+                after += 1
+            elif h == want:
+                found = True
+        if not found or len(data) > MAX_GAP_BYTES:
+            return None
+        return {"n": count + after, "last": prev, "ok": True, "exists": True,
+                "anchored": True, "keyed_n": 1, "problem_seen": False,
+                "unkeyed_marked": False, "why": None, "keyed_seen": True,
+                "link": None, "rotated_file": None, "last_ts": last_ts}
 
     def _scan(self):
         """(entries, last good hash, chain intact, file exists, first entry
@@ -801,11 +967,15 @@ class AuditLog:
         entry = dict(entry, ts=int(time.time()), prev=prev)
         if first:
             entry["anchored"] = True       # this log has a .head file
-        if key is not None:
-            entry["k"] = 1
-        entry["hash"] = self._digest({k: v for k, v in entry.items() if k != "hash"}, key)
         fd = self._open_for_append()
         try:
+            if key is not None:
+                entry["k"] = 1
+                # where in the file this line starts (signed with the line): a
+                # write checks it on the last lines it re-reads, so a line cut
+                # out of the front or middle of a long log shifts it and shows
+                entry["off"] = os.fstat(fd).st_size
+            entry["hash"] = self._digest({k: v for k, v in entry.items() if k != "hash"}, key)
             os.write(fd, (json.dumps(entry, sort_keys=True) + "\n").encode())
             os.fsync(fd)
         finally:
@@ -817,20 +987,76 @@ class AuditLog:
         return {"service": None, "method": "-", "host": "-", "path": "-",
                 "status": 0, "bytes": 0, "ms": 0, "result": result, "note": note}
 
+    def _rotate_if_due(self, s: dict, key: bytes):
+        """On the first write of a new month, move last month's log aside
+        (audit.log.YYYY-MM) and start a new file whose first line is a signed
+        LOG-ROTATED marker pointing at the last hash of the old file, so the
+        pieces still verify as one chain. Returns (1, marker hash) when it
+        rotated, else None. Never loses the old file: any failure puts it back."""
+        ts = s.get("last_ts")
+        if not isinstance(ts, int) or s["n"] == 0:
+            return None
+        old_month = time.strftime("%Y-%m", time.gmtime(ts))
+        if old_month == time.strftime("%Y-%m", time.gmtime(time.time())):
+            return None
+        base = f"{self.path}.{old_month}"
+        target, i = base, 1
+        while os.path.exists(target):
+            i += 1
+            target = f"{base}-{i}"
+        try:
+            os.replace(self.path, target)
+        except OSError:
+            return None                  # in use right now: try again next write
+        marker = self._marker("LOG-ROTATED", "a new monthly log starts here; "
+                              "the lines before it are in the file named in rotated_file")
+        marker.update(rotated_file=os.path.basename(target), rotated_entries=s["n"])
+        try:
+            h = self._append(marker, s["last"], key, first=True)
+        except (OSError, BrokerError):
+            try:
+                if os.path.exists(self.path):
+                    os.remove(self.path)
+                os.replace(target, self.path)
+            except OSError:
+                pass
+            return None
+        self._save_anchor(1, h, key)
+        return 1, h
+
     def write(self, entry: dict) -> None:
         with AuditLog._lock, _file_lock(self.path) as got:   # one writer at a time
             if not got:
-                raise BrokerError("The activity log is busy or locked.", 5)
-            fresh = self._key() is None          # no key yet: this write starts signing
-            key = self._key(create=True)
-            s = self._scan_full(key)
+                raise BrokerError(BUSY_TEXT + ".", 5)
+            key0 = self._key()
+            fresh = key0 is None                 # no key yet: this write starts signing
             a = self._read_anchor()
+            s = None
+            if not fresh and self.broken_reason() is None:
+                s = self._scan_tail(key0, a)     # quick: only the end of the log
+            lost = False
+            if fresh:
+                try:                              # a signed log but no key at all: lost
+                    lost = self._scan_full(None)["keyed_seen"]
+                except Exception:
+                    lost = False
+            key = key0 if s is not None else self._key(create=True)
+            if s is None:
+                s = self._scan_full(key)
+                a = self._read_anchor()
             reason = self._problem(s, a, key, migrating=fresh)
+            if lost and reason:
+                reason = LOST_KEY_WHY
             if (reason is None and s["problem_seen"]
                     and self.broken_reason() is None):
                 reason = "the problem flag was deleted"
             n, last = s["n"], s["last"]
             flagged = self.broken_reason() is not None
+            if (reason is None and not flagged and key is not None
+                    and not fresh and s["keyed_n"] > 0):
+                rotated = self._rotate_if_due(s, key)
+                if rotated:
+                    n, last = rotated
             if reason and not flagged:
                 try:
                     with open(self.broken_path, "w", encoding="utf-8") as f:
@@ -872,9 +1098,79 @@ class AuditLog:
             reason = self._problem(s, a, key)
             if reason is None and s["problem_seen"]:
                 reason = "the problem flag was deleted"
+        rotated = []
+        if reason is None and s["link"] is not None:
+            reason, rotated = self._check_rotated(s, key)
+        if key is not None:
+            note = OLDER_ENTRIES_NOTE
+        else:
+            note = (NO_KEY_YET_NOTE if (not s["unkeyed_marked"] and self.key_state() == "none_yet")
+                    else UNKEYED_NOTE)
         return {"ok": reason is None, "n": s["n"], "mode": mode, "reason": reason,
-                "note": ((UNKEYED_NOTE if key is None else OLDER_ENTRIES_NOTE)
-                         if mode == "unkeyed" else "")}
+                "note": note if mode == "unkeyed" else "",
+                "key": "present" if key is not None else self.key_state(),
+                "rotated_files": rotated}
+
+    def _check_rotated(self, s: dict, key: bytes | None):
+        """Follow the signed links back through the monthly files. Returns
+        (problem text or None, names of the files that checked out)."""
+        folder = os.path.dirname(os.path.abspath(self.path))
+        seen, link, name = [], s["link"], s["rotated_file"]
+        for _ in range(600):
+            if not isinstance(name, str) or not name:
+                return "an older monthly log is not named in the chain", seen
+            name = os.path.basename(name)
+            p = os.path.join(folder, name)
+            old = self._scan_full(key, p) if os.path.isfile(p) else None
+            if old is None:
+                return f"the older monthly log {name} is missing", seen
+            if not old["ok"] or old["last"] != link:
+                return f"the older monthly log {name} was changed or does not match", seen
+            seen.append(name)
+            if old["link"] is None:
+                return None, seen
+            link, name = old["link"], old["rotated_file"]
+        return "too many monthly logs to follow", seen
+
+    def rotated_files(self) -> list:
+        """Names of the monthly files kept beside the log, oldest first."""
+        folder = os.path.dirname(os.path.abspath(self.path))
+        base = os.path.basename(self.path)
+        try:
+            names = os.listdir(folder)
+        except OSError:
+            return []
+        out = [n for n in names if n.startswith(base + ".")
+               and _ROTATED.search(n[len(base):]) and not n.endswith((".lock", ".head", ".tmp"))]
+        return sorted(out)
+
+    def stats(self) -> dict:
+        """{"entries", "bytes", "last_write" (seconds since 1970, or None),
+        "rotated_files" (names), "key"} - cheap, nothing is verified. For the
+        status command."""
+        size, last_write = 0, None
+        try:
+            st = os.stat(self.path)
+            size, last_write = st.st_size, int(st.st_mtime)
+        except OSError:
+            pass
+        entries = None
+        a = self._read_anchor()
+        if a not in (None, _BAD):
+            entries = a[0]                       # kept up to date by every write
+        if entries is None or (a not in (None, _BAD) and not os.path.exists(self.path)):
+            entries = 0
+            try:
+                with open(self.path, "rb") as f:
+                    while True:
+                        chunk = f.read(1 << 20)
+                        if not chunk:
+                            break
+                        entries += chunk.count(b"\n")
+            except OSError:
+                pass
+        return {"entries": entries, "bytes": size, "last_write": last_write,
+                "rotated_files": self.rotated_files(), "key": self.key_state()}
 
     def verify(self) -> tuple[bool, int]:
         d = self.verify_detail()

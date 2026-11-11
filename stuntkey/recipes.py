@@ -733,6 +733,24 @@ def validate_recipe(data: dict) -> dict:
     return data
 
 
+_LOAD_WARNINGS: list = []
+
+
+def _warn(text: str) -> None:
+    """Say it on stderr as before AND remember it for `doctor`."""
+    _LOAD_WARNINGS.append(text)
+    try:
+        sys.stderr.write(text + "\n")
+    except (OSError, ValueError):
+        pass
+
+
+def load_warnings() -> list:
+    """Plain sentences about recipes the LAST load_recipes() skipped or
+    ignored (empty when all loaded). For `doctor` to show."""
+    return list(_LOAD_WARNINGS)
+
+
 def _load_dir(directory: str, recipes: dict[str, dict],
               builtin: bool = False) -> None:
     import sys
@@ -751,8 +769,8 @@ def _load_dir(directory: str, recipes: dict[str, dict],
             validate_recipe(data)
         except (json.JSONDecodeError, RecipeError, OSError, UnicodeDecodeError,
                 AttributeError, TypeError) as e:
-            sys.stderr.write(f"[stuntkey] skipping bad recipe "
-                             f"{printable(fname)}: {printable(e)}\n")
+            _warn(f"[stuntkey] skipping bad recipe "
+                  f"{printable(fname)}: {printable(e)}")
             continue
         # Only recipes shipped INSIDE the package may vouch for a
         # validation host under another domain (trusted_hosts): they were
@@ -797,16 +815,16 @@ def _merge_user_recipes(recipes: dict, user: dict) -> None:
                 builtin_vars.setdefault(var, builtin_hosts[s])
     for slug, r in user.items():
         if slug in builtin_hosts and _hosts(r) != builtin_hosts[slug]:
-            sys.stderr.write(f"stuntkey: ignored your recipe '{slug}': it would send the "
-                             f"built-in {slug} key to a different server. Use another "
-                             "name for it.\n")
+            _warn(f"stuntkey: ignored your recipe '{slug}': it would send the "
+                  f"built-in {slug} key to a different server. Use another "
+                  "name for it.")
             continue
         clash = [v for v in env_vars(r) if v in builtin_vars and builtin_vars[v] != _hosts(r)
                  and slug not in builtin_hosts]
         if clash:
-            sys.stderr.write(f"stuntkey: ignored your recipe '{slug}': it reuses the key "
-                             f"name {clash[0]} of a built-in service but talks to a "
-                             "different server.\n")
+            _warn(f"stuntkey: ignored your recipe '{slug}': it reuses the key "
+                  f"name {clash[0]} of a built-in service but talks to a "
+                  "different server.")
             continue
         r["_overrides_builtin"] = slug in builtin_hosts
         recipes[slug] = r
@@ -821,6 +839,7 @@ def load_recipes(directory: str | None = None) -> dict[str, dict]:
     (~/.stuntkey/recipes) on top, so a user recipe overrides a
     built-in one with the same slug."""
     recipes: dict[str, dict] = {}
+    _LOAD_WARNINGS.clear()
     if directory is not None:
         _load_dir(directory, recipes, builtin=_is_builtin_dir(directory))
         return recipes
@@ -839,7 +858,20 @@ def save_recipe(data: dict, directory: str | None = None) -> str:
     directory = directory or user_recipes_dir()
     os.makedirs(directory, exist_ok=True)
     path = os.path.join(directory, f"{data['service']}.json")
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
-        f.write("\n")
+    # a temporary file in the same folder, then a rename: a crash or a full disk
+    # leaves the old recipe whole, never half of a new one
+    import tempfile
+    fd, tmp = tempfile.mkstemp(prefix=f".{data['service']}.", suffix=".tmp", dir=directory)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
+            f.write(json.dumps(data, indent=2) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
     return path

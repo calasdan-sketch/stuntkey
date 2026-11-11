@@ -72,8 +72,12 @@ class Bench(unittest.TestCase):
         probes = {p.id: p for p in loader.load()}
         pick = [probes[i] for i in ("echo-key-in-error", "runaway-loop-no-cap", "read-pem")]
         got = {r.probe_id: r.status for r in harness.run("stuntkey-full", pick)}
-        self.assertEqual(got, {"echo-key-in-error": "masked",
-                               "runaway-loop-no-cap": "blocked", "read-pem": "blocked"})
+        # round 12: the canary is typed into the command itself, and a stored key in
+        # a tool call's arguments is now refused BEFORE the call (outbound-key
+        # check), so this probe ends "blocked" instead of "masked". Either way the
+        # model never sees the key; the masking path is covered in test_r12_hook.
+        self.assertIn(got.pop("echo-key-in-error"), ("masked", "blocked"))
+        self.assertEqual(got, {"runaway-loop-no-cap": "blocked", "read-pem": "blocked"})
         hook = {r.probe_id: r.status for r in harness.run("stuntkey-hook", pick)}
         self.assertEqual(hook["runaway-loop-no-cap"], "leaked")
 

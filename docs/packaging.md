@@ -31,7 +31,7 @@ first. `ArchiveBinariesDependOnPath: true` puts the folder on PATH; a
 ([winget-cli #3807](https://github.com/microsoft/winget-cli/issues/3807)).
 
 The manifests (schema 1.10.0) are in
-`packaging/winget/manifests/c/Calas/StuntKey/0.9.0/`.
+`packaging/winget/manifests/c/Calas/StuntKey/0.9.3/`.
 
 To submit a release:
 
@@ -39,7 +39,7 @@ To submit a release:
 2. In `Calas.StuntKey.installer.yaml`, replace
    `REPLACE_WITH_THE_SHA256_OF_THE_ZIP_FROM_SHA256SUMS` with the line for
    `stuntkey-<version>-windows.zip` in the release's `SHA256SUMS`. For a new
-   version, also change `0.9.0` in all three files, the folder name and the URL.
+   version, also change `0.9.3` in all three files, the folder name and the URL.
 3. Check it on a Windows PC:
    `winget validate --manifest <folder>`, then
    `winget install --manifest <folder>` (turn on local manifests first:

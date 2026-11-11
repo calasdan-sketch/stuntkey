@@ -427,6 +427,7 @@ stuntkey start                       # first run: check this computer, look for 
 stuntkey start --simple              # plain-English setup, one question at a time, for apps made with Lovable, Bolt, Replit or Vercel
 stuntkey overview [--json]           # what is connected, and is the activity log intact
 stuntkey doctor [--json]             # is this computer ready (keychain, ssh, git, a quick self-attack)
+stuntkey doctor --self               # are the installed stuntkey files unchanged since you installed them (compares with the installer's list)
 stuntkey trust-server user@host      # make a server trust this PC (used by remote and deploy)
 stuntkey scan [PATH]                 # find keys an AI agent can read (offline)
 stuntkey scan --validate [--yes]     # also check if they still work (sends them; asks first)
@@ -480,7 +481,7 @@ stuntkey proxy --map NAME=service -- <command> # make the variable NAME hold the
 stuntkey proxy --tunnel -- <command> # also set HTTPS_PROXY to a tunnel that reaches only the AI services' hosts (it adds no key and sees nothing inside)
 stuntkey proxy --allow-host api.example.com -- <command> # with the tunnel: one more host the program may reach (repeat for more)
 stuntkey caps show                   # spending limits per key and today's usage
-stuntkey caps set <service> --calls-session N --calls-day N --tokens-day N   # limit a key (counted across every program)
+stuntkey caps set <service> --calls-session N --calls-hour N --calls-day N --tokens-day N   # limit a key (counted across every program)
 stuntkey caps set <service> --clear  # remove that key's limits
 stuntkey stop | resume               # kill switch for every brokered and proxied call (resume asks you)
 stuntkey policy show | approve       # stuntkey.policy: allowed methods and paths per service; a new or changed file needs your approval
@@ -506,6 +507,8 @@ The program starts with only a short list of settings (an allow-list): where pro
 - `--map NAME=service` makes the variable `NAME` hold the proxy address of one service, for a program that reads its web address from `NAME`.
 - `--tunnel` also sets `HTTPS_PROXY` to a tunnel that reaches only the AI services' hosts. It adds no key and cannot see inside the traffic.
 - `--allow-host HOST` (with the tunnel) lets the program reach one more host, for example `api.github.com`. Repeat it for more.
+
+Asking: AI calls (chat, responses, messages, embeddings, the model list) go through without a window. The first read (GET) to any other address of a service asks once per service, like a brokered call, and after three refusals nothing more is sent in that run. A write that a policy file allows asks every time.
 
 ## A connect, annotated
 
@@ -1232,7 +1235,10 @@ is UTF-8 bytes regardless of console code page, console output is
 reconfigured to replace unencodable characters instead of crashing, and
 every text file is opened as UTF-8.
 
-## Scope / limits (v0.9.2)
+## Scope / limits (v0.9.3)
+
+- **Honest summary.** The key never enters the agent's environment when used through the broker, and a Claude Code hook blocks common leaks. Not covered: any program running as you can read the OS keychain (on Windows, the Credential Manager); Cursor, Codex, Gemini and Claude Desktop file tools have no hook; screenshots and the clipboard; and code that leaks by running, which no list of patterns can fully stop. The `leakbench` fake key is registered with stuntkey first, which flatters its score.
+- `proxy`: from 0.9.3 a read (GET) to anything that is not an AI endpoint asks once per service (it used to go through without asking), and a write that a policy allows asks every time. AI calls (chat, responses, messages, embeddings) still do not ask.
 
 - `scan` finds keys by their shape. It misses a key with no recognisable
   prefix under a name that does not end in KEY, TOKEN, SECRET or PASSWORD, and

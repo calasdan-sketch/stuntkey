@@ -1,6 +1,6 @@
 # stuntkey (npm)
 
-Let your AI use your API keys without ever holding them.
+Keep your API keys out of your AI's environment: the key never enters it when used through the broker.
 
 ```
 npx stuntkey start --simple

@@ -23,7 +23,11 @@ MAX_BYTES = 2_000_000
 _NAME_COLS = ("name", "title", "label", "key", "env", "variable")
 _VALUE_COLS = ("password", "login_password", "value", "secret", "credential",
                "api key", "api_key")
-_ASSIGN = re.compile(r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$")
+# Linear-time on purpose: no lazy group followed by a space run (a 40,000-space
+# line made the older pattern take seconds). The value is stripped by hand.
+_ASSIGN = re.compile(r"^[ \t]*(?:export[ \t]+)?([A-Za-z_][A-Za-z0-9_]*)[ \t]*=(.*)$")
+_COMMENT = re.compile(r"[ \t]+#")
+MAX_JSON_DEPTH = 100
 
 
 class ImportProblem(Exception):
@@ -32,21 +36,35 @@ class ImportProblem(Exception):
 
 def _unquote(raw: str) -> str:
     raw = raw.strip()
-    if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in "'\"":
-        return raw[1:-1]
+    if raw[:1] in ("'", "\""):
+        quote, i = raw[0], 1
+        while i < len(raw):
+            if quote == "\"" and raw[i] == "\\":
+                i += 2
+                continue
+            if raw[i] == quote:
+                return raw[1:i]          # whatever follows (a # comment) is dropped
+            i += 1
+        # no closing quote: treat it as plain text below
     # an unquoted value ends at a space-hash comment
-    return re.split(r"\s+#", raw, maxsplit=1)[0].strip()
+    return _COMMENT.split(raw, maxsplit=1)[0].strip()
 
 
 def parse_env(text: str) -> list[tuple[str, str]]:
-    out = []
+    """NAME=value lines. A name given twice: the LAST one wins (the .env
+    convention), and a later empty value cancels an earlier one."""
+    found: dict[str, str] = {}
     for line in text.splitlines():
         if line.lstrip().startswith("#"):
             continue
         m = _ASSIGN.match(line)
-        if m and (val := _unquote(m.group(2))):
-            out.append((m.group(1), val))
-    return out
+        if not m:
+            continue
+        name, val = m.group(1), _unquote(m.group(2))
+        found.pop(name, None)            # last wins, and the order is the last one's
+        if val:
+            found[name] = val
+    return list(found.items())
 
 
 def _envify(name: str) -> str:
@@ -57,8 +75,12 @@ def _envify(name: str) -> str:
 def parse_json(text: str) -> list[tuple[str, str]]:
     try:
         data = json.loads(text)
+    except RecursionError:
+        raise ImportProblem("that JSON file is nested too deeply to be a key export") from None
     except ValueError:
         raise ImportProblem("that file is not valid JSON") from None
+    if _too_deep(data):
+        raise ImportProblem("that JSON file is nested too deeply to be a key export")
     out: list[tuple[str, str]] = []
     if isinstance(data, dict) and isinstance(data.get("items"), list):
         for item in data["items"]:          # Bitwarden
@@ -68,7 +90,8 @@ def parse_json(text: str) -> list[tuple[str, str]]:
             login = item.get("login") if isinstance(item.get("login"), dict) else {}
             if name and login.get("password"):
                 out.append((_envify(name), str(login["password"])))
-            for f in item.get("fields") or []:
+            fields = item.get("fields")
+            for f in (fields if isinstance(fields, list) else []):
                 if isinstance(f, dict) and f.get("name") and f.get("value"):
                     out.append((_envify(f["name"]), str(f["value"])))
         return out
@@ -85,6 +108,24 @@ def parse_json(text: str) -> list[tuple[str, str]]:
     raise ImportProblem("I do not recognise this JSON layout")
 
 
+def _too_deep(data, limit: int = MAX_JSON_DEPTH) -> bool:
+    """True when lists/objects nest deeper than `limit` (checked without
+    recursion, so a hostile file cannot crash this check either)."""
+    stack = [(data, 1)]
+    while stack:
+        node, depth = stack.pop()
+        if isinstance(node, dict):
+            kids = node.values()
+        elif isinstance(node, list):
+            kids = node
+        else:
+            continue
+        if depth > limit:
+            return True
+        stack.extend((k, depth + 1) for k in kids if isinstance(k, (dict, list)))
+    return False
+
+
 def _from_row(row: dict) -> list[tuple[str, str]]:
     name = next((row[c] for c in _NAME_COLS if row.get(c)), None)
     value = next((row[c] for c in _VALUE_COLS if row.get(c)), None)
@@ -92,18 +133,33 @@ def _from_row(row: dict) -> list[tuple[str, str]]:
 
 
 def parse_csv(text: str) -> list[tuple[str, str]]:
-    reader = csv.DictReader(io.StringIO(text))
-    if not reader.fieldnames:
-        raise ImportProblem("that CSV file is empty")
     out: list[tuple[str, str]] = []
-    for row in reader:
-        out.extend(_from_row({str(k).strip().lower(): v for k, v in row.items()
-                              if k is not None and isinstance(v, str)}))
+    try:
+        reader = csv.DictReader(io.StringIO(text))
+        if not reader.fieldnames:
+            raise ImportProblem("that CSV file is empty")
+        for row in reader:
+            out.extend(_from_row({str(k).strip().lower(): v for k, v in row.items()
+                                  if k is not None and isinstance(v, str)}))
+    except csv.Error:
+        raise ImportProblem("that CSV file has a cell that is far too big, or "
+                            "is not a normal CSV file") from None
     return out
 
 
+def last_wins(pairs) -> list[tuple[str, str]]:
+    """A name listed twice keeps its last value."""
+    found: dict[str, str] = {}
+    for name, value in pairs:
+        found.pop(name, None)
+        found[name] = value
+    return list(found.items())
+
+
 def parse_text(text: str, kind: str) -> list[tuple[str, str]]:
-    return {"json": parse_json, "csv": parse_csv}.get(kind, parse_env)(text)
+    if len(text) > MAX_BYTES:
+        raise ImportProblem("that is too much text to be a key file (over 2 MB)")
+    return last_wins({"json": parse_json, "csv": parse_csv}.get(kind, parse_env)(text))
 
 
 def sniff(path: str, text: str) -> str:
@@ -126,20 +182,70 @@ def read_source(path: str) -> str:
                             "file (over 2 MB)")
     try:
         with open(path, "rb") as f:
-            return f.read().decode("utf-8-sig", "replace")
+            return decode_text(f.read(MAX_BYTES + 1))
     except OSError as e:
         raise ImportProblem(f"I cannot read {recipes_mod.printable(path)}: "
                             f"{e.strerror or e}") from None
 
 
+def decode_text(raw: bytes) -> str:
+    """Text from a file. Windows PowerShell's `>` writes UTF-16 (with or
+    without a byte-order mark); other editors add a UTF-8 mark. All read."""
+    if raw[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        return raw.decode("utf-16", "replace")
+    if raw[:3] == b"\xef\xbb\xbf":
+        return raw[3:].decode("utf-8", "replace")
+    if len(raw) >= 4 and len(raw) % 2 == 0:       # UTF-16 with no mark: every other byte is 0
+        even, odd = raw[0::2].count(0), raw[1::2].count(0)
+        half = len(raw) // 2
+        if odd > half * 0.8 and even == 0:
+            return raw.decode("utf-16-le", "replace")
+        if even > half * 0.8 and odd == 0:
+            return raw.decode("utf-16-be", "replace")
+    return raw.decode("utf-8", "replace")
+
+
+def shape_problem(recipe: dict, var: str, value: str, strict_name: bool = True):
+    """None when the value looks like this service's key (or the recipe has no
+    shape to check); otherwise a plain reason. `strict_name`: the entry was
+    matched by its exact variable name, so only a documented shape (or a
+    known one) is held against it; a match by title alone must also pass the
+    looser `detect` shape."""
+    for f in recipes_mod.fields(recipe):
+        if f["env_var"] != var:
+            continue
+        pat = f.get("accept")
+        if not pat and (not strict_name or f.get("detect_confidence") == "known"):
+            pat = f.get("detect")
+        if not pat:
+            return None
+        try:
+            if re.search(pat, value):
+                return None
+        except re.error:
+            return None
+        name = recipe.get("display") or recipe.get("service") or var
+        return f"does not look like a {recipes_mod.printable(str(name))} key"
+    return None
+
+
 def match_services(pairs, catalog: dict):
     """(matched, unknown_names): matched is [(recipe, env_var, value)]; a name
     must be one a recipe stores, so `stuntkey run <service>` can use it."""
+    matched, unknown, _info = match_services_ex(pairs, catalog)
+    return matched, unknown
+
+
+def match_services_ex(pairs, catalog: dict):
+    """Like match_services, plus info: {"by_title": set of env vars matched only
+    by a title, "merged": names that collapsed into another entry}."""
+    pairs = last_wins(pairs)
+    info = {"by_title": set(), "merged": []}
     by_var = {}
     for recipe in catalog.values():
         for var in recipes_mod.env_vars(recipe):
             by_var.setdefault(var, recipe)
-    matched, unknown, seen = [], [], set()
+    matched, unknown, seen = [], [], {}
     for name, value in pairs:
         key = name.upper()
         recipe = by_var.get(key)
@@ -160,9 +266,13 @@ def match_services(pairs, catalog: dict):
             if name not in unknown:
                 unknown.append(name)
         elif key not in seen:
-            seen.add(key)
+            seen[key] = name
             matched.append((recipe, key, value))
-    return matched, unknown
+            if name.upper() != key:
+                info["by_title"].add(key)
+        else:
+            info["merged"].append(name)       # a second name for the same key: not saved
+    return matched, unknown, info
 
 
 def _shred(path: str) -> None:
@@ -207,7 +317,25 @@ def _read_pasted(out, reader=None) -> str:
 
 def cmd_import(args, catalog: dict, out=None, reader=None, keychain=keychain_mod,
                interactive=None) -> int:
+    """Run the import. Whatever goes wrong, the person gets a plain sentence
+    (never a traceback, never a value) and the file is left alone."""
     out = out or sys.stdout
+    try:
+        return _cmd_import(args, catalog, out, reader, keychain, interactive)
+    except KeyboardInterrupt:
+        out.write("\n  Stopped. Your file was not touched. Run `stuntkey overview` "
+                  "to see which keys are saved.\n")
+        return 1
+    except BaseException as e:           # noqa: BLE001 - last line of defence
+        if isinstance(e, SystemExit):
+            raise
+        out.write("\n  Something unexpected went wrong while importing "
+                  f"({type(e).__name__}). Your file was not deleted. Some keys may "
+                  "already be saved: `stuntkey overview` shows which.\n")
+        return 1
+
+
+def _cmd_import(args, catalog, out, reader, keychain, interactive) -> int:
     if interactive is None:
         try:
             interactive = bool(sys.stdin and sys.stdin.isatty())
@@ -231,8 +359,22 @@ def cmd_import(args, catalog: dict, out=None, reader=None, keychain=keychain_mod
         return 1
     finally:
         text = ""
-    matched, unknown = match_services(pairs, catalog)
+    names_in_file = len(pairs)
+    matched, unknown, info = match_services_ex(pairs, catalog)
     pairs = None
+    skipped = []                      # (name, why): right name, wrong-looking value
+    good = []
+    for recipe, var, value in matched:
+        why = shape_problem(recipe, var, value, strict_name=var not in info["by_title"])
+        if why:
+            skipped.append((var, why))
+        else:
+            good.append((recipe, var, value))
+    matched = good
+    for var, why in skipped:
+        out.write(f"  skipped: {recipes_mod.printable(var)} {why}\n")
+    # the file may only be erased when EVERY name in it was saved
+    leftovers = bool(unknown or skipped or info["merged"])
     if not matched:
         out.write("  I found no key for a service stuntkey knows.\n")
         if unknown:
@@ -277,6 +419,8 @@ def cmd_import(args, catalog: dict, out=None, reader=None, keychain=keychain_mod
             done.append(var)
         except keychain.KeychainError as e:
             failed.append((var, str(e)))
+        except Exception:           # noqa: BLE001 - never show a value or a traceback
+            failed.append((var, "the keychain refused it"))
     matched = None
     for var in done:
         out.write(f"  ✓ saved {recipes_mod.printable(var)}\n")
@@ -284,7 +428,11 @@ def cmd_import(args, catalog: dict, out=None, reader=None, keychain=keychain_mod
         out.write(f"  ✗ could not save {recipes_mod.printable(var)}: "
                   f"{recipes_mod.printable(why)}\n")
     if source:
-        if args.delete_source and not failed:
+        if args.delete_source and leftovers and not failed:
+            out.write("  I did NOT delete the file: it still holds names I did not "
+                      "save (listed above), and they would be lost.\n")
+            out.write("\n" + delete_advice(source))
+        elif args.delete_source and not failed:
             try:
                 _shred(source)
                 out.write("  ✓ the file was overwritten and deleted. On an SSD or "

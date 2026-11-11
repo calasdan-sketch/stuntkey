@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>StuntKey by Calas Automations</title>
-<meta name="description" content="StuntKey keeps your API keys in your keychain and lets your AI use them without ever seeing them. Free, open source.">
+<meta name="description" content="StuntKey keeps your API keys in your keychain and lets your AI use them through a broker, so the key stays out of its environment. Free, open source.">
 <meta name="color-scheme" content="light dark">
 <meta name="theme-color" content="#0B2E45">
 <link rel="canonical" href="https://calasautomations.com/devtools/stuntkey/">
@@ -21,14 +21,14 @@
 <main id="main">
 <section class="hero"><div class="wrap">
   <p class="eyebrow">Free and open source &middot; Windows, Mac, Linux</p>
-  <h1>Your AI uses your keys. <em>It never sees them.</em></h1>
+  <h1>Your AI uses your keys. <em>The key stays out of its environment.</em></h1>
   <p class="lede">StuntKey keeps your API keys in your computer's own keychain. Your AI works with a stand-in, a stunt double, and StuntKey adds the real key on the way out.</p>
   <div class="ctas"><a class="btn gold" href="add-your-first-key.html">Add your first key</a><a class="btn ghost" href="how-it-works.html">How it works</a></div>
 </div></section>
 <section><div class="wrap">
   <h2>Why it matters</h2>
   <div class="grid">
-    <div class="card"><h3>Keys stay hidden</h3><p>Your AI can use a key without ever holding it. If it never holds it, it cannot leak it.</p></div>
+    <div class="card"><h3>Keys stay hidden</h3><p>Used through the broker, the key never enters your AI's environment. A key it does not hold is much harder to leak.</p></div>
     <div class="card"><h3>Spending limits</h3><p>Set a daily limit on each key, and stop everything with one command.</p></div>
     <div class="card"><h3>Fix a leak fast</h3><p>Leaked one? <code>stuntkey panic openai</code> walks you through it, step by step.</p></div>
   </div>
@@ -42,7 +42,7 @@
 <section><div class="wrap">
   <h2>Honest about the limits</h2>
   <div class="note"><p>StuntKey lowers the risk. It does not remove it. It is beta and has not had an independent security review yet.</p>
-  <p>It cannot stop an AI misusing a key it is allowed to use, so give each key only the permissions it needs. It does not protect against a virus already running as you. Details: the <a href="https://github.com/calasdan-sketch/stuntkey/blob/main/docs/THREAT_MODEL.md">threat model</a>.</p></div>
+  <p>It cannot stop an AI misusing a key it is allowed to use, so give each key only the permissions it needs. It does not protect against a virus already running as you: anything running as you can read your keychain. The Claude Code hook blocks common leaks, but Cursor, Codex, Gemini and Claude Desktop have no such hook for their file tools, screenshots and the clipboard are not covered, and code that hides what it does can get past pattern checks. Details: the <a href="https://github.com/calasdan-sketch/stuntkey/blob/main/docs/THREAT_MODEL.md">threat model</a>.</p></div>
   <p>We publish an Agent Leak Benchmark, a set of ways an AI agent can expose a key. Run it yourself with <code>python -m leakbench</code> from the repository.</p>
 </div></section>
 </main>

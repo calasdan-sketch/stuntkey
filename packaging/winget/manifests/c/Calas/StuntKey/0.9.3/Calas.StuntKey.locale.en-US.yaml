@@ -1,7 +1,7 @@
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.10.0.schema.json
 
 PackageIdentifier: Calas.StuntKey
-PackageVersion: 0.9.0
+PackageVersion: 0.9.3
 PackageLocale: en-US
 Publisher: Calas Automations Inc.
 PublisherUrl: https://github.com/calasdan-sketch

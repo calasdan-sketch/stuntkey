@@ -495,7 +495,9 @@ class TestHookNeverRunsWhatItReads(Settings):
 
 class TestTheMatcher(unittest.TestCase):
     def test_powershell_and_monitor_are_covered(self):
-        self.assertEqual(hook_mod.MATCHER, "Read|Grep|Bash|PowerShell|Monitor|Edit|Write|MultiEdit|NotebookEdit|mcp__.*")
+        # round 12 added WebFetch|WebSearch|Task|Agent (outbound-key check)
+        self.assertEqual(hook_mod.MATCHER, "Read|Grep|Bash|PowerShell|Monitor|Edit|Write|MultiEdit|NotebookEdit|"
+                                           "WebFetch|WebSearch|Task|Agent|mcp__.*")
         self.assertTrue(hook_mod.check(call("PowerShell", command="Get-Content .env"))[1])
         self.assertTrue(hook_mod.check(call("PowerShell", command="gc C:\\app\\.env.local"))[1])
         self.assertTrue(hook_mod.check(call("Monitor", command="tail -f .env", timeout_ms=1000))[1])

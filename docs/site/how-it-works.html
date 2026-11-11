@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>How StuntKey works - Calas Automations</title>
-<meta name="description" content="How StuntKey lets your AI use your API keys without seeing them, in plain words.">
+<meta name="description" content="How StuntKey keeps your API keys out of your AI's environment, in plain words.">
 <meta name="color-scheme" content="light dark">
 <meta name="theme-color" content="#0B2E45">
 <link rel="canonical" href="https://calasautomations.com/devtools/stuntkey/how-it-works.html">
@@ -22,15 +22,15 @@
 <div class="page"><div class="wrap">
   <p class="crumbs"><a href="index.html">StuntKey</a> / How it works</p>
   <h1>How it <em>works</em></h1>
-  <p class="lede">The idea is simple. The key that matters never goes where the AI can read it.</p>
+  <p class="lede">The idea is simple. Through the broker, the key does not go where the AI can read it.</p>
   <h2>The stunt double</h2>
   <p>In a film, the stunt double does the risky part. StuntKey does the same for your keys. Your AI gets a stand-in and uses that. StuntKey swaps in the real key only at the last moment, outside the AI's sight.</p>
   <h2>Step by step</h2>
   <ol class="steps">
     <li><b>You save a key once.</b><p>StuntKey locks it in your computer's keychain: Windows Credential Manager, macOS Keychain, or the Linux keyring.</p></li>
-    <li><b>Your AI asks for a call.</b><p>It says "call this service", or it talks to a local stand-in address. It never gets the key.</p></li>
+    <li><b>Your AI asks for a call.</b><p>It says "call this service", or it talks to a local stand-in address. The key is not in its environment.</p></li>
     <li><b>StuntKey makes the call.</b><p>It adds the real key, sends the request to the right website, and hands back only the answer.</p></li>
-    <li><b>StuntKey keeps watch.</b><p>It blocks the sneaky routes: dumping environment variables, reading your private keys, opening your <code>.env</code> file. If a key appears in output, it is hidden before the AI sees it.</p></li>
+    <li><b>StuntKey keeps watch.</b><p>It blocks the sneaky routes: dumping environment variables, reading your private keys, opening your <code>.env</code> file. With the Claude Code hook, a key that appears in a command's output is hidden before the AI reads it.</p></li>
   </ol>
   <h2>You stay in charge</h2>
   <ul class="tick">
@@ -40,7 +40,7 @@
     <li>Find keys already lying around: <code>stuntkey scan</code>.</li>
   </ul>
   <h2>What it does not do</h2>
-  <div class="note"><p>It lowers risk, it does not remove it. It cannot stop an AI misusing a key it is allowed to use, and it does not protect against malware already running as you. It is beta and has not had an independent security review.</p></div>
+  <div class="note"><p>It lowers risk, it does not remove it. It cannot stop an AI misusing a key it is allowed to use, and it does not protect against malware already running as you (anything running as you can read your keychain). Other AI apps (Cursor, Codex, Gemini, Claude Desktop) have no hook for their file tools. It is beta and has not had an independent security review.</p></div>
   <div class="ctas"><a class="btn" href="add-your-first-key.html">Add your first key</a></div>
 </div></div>
 </main>

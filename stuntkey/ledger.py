@@ -52,28 +52,54 @@ def _signing_key(index_path: str, create: bool = False):
                                   create=create, purpose="ledger")[0]
 
 
+def _signing_key_info(index_path: str):
+    from . import keychain
+    try:
+        return keychain.integrity_key(os.path.dirname(os.path.abspath(index_path)),
+                                      create=False, purpose="ledger")
+    except Exception:
+        return None, "unavailable"
+
+
 def _canonical(version, projects) -> bytes:
     return json.dumps({"version": version, "projects": projects},
                       sort_keys=True, separators=(",", ":")).encode("utf-8")
 
 
+def _v1_to_v2(data: dict) -> dict:
+    """Skeleton for the first real format change: take a version-1 document
+    and return it in version-2 shape (the caller sets "version"). It changes
+    nothing yet. To use it, set CURRENT_VERSION = 2 and register it as
+    MIGRATIONS = {1: _v1_to_v2}; a version-1 file is then read, brought
+    forward in memory and written back as version 2 on the next save."""
+    return dict(data)
+
+
 def _migrate(data: dict, index_path: str) -> dict:
-    version = data.get("version", 1)
-    if not isinstance(version, int) or isinstance(version, bool) or version < 1:
-        version = 1
-    if version > CURRENT_VERSION:
-        raise LedgerError("This key list was made by a newer StuntKey. "
-                          "Update StuntKey: pipx upgrade stuntkey", index_path)
-    while version < CURRENT_VERSION:
-        step = MIGRATIONS.get(version)
-        if step is None:
-            raise LedgerError("This key list is in an old format that this "
-                              "StuntKey cannot read. Update StuntKey: "
-                              "pipx upgrade stuntkey", index_path)
-        data = step(data)
-        version += 1
-        data["version"] = version
-    return data
+    try:
+        return store_mod.migrate_document(data, CURRENT_VERSION, MIGRATIONS,
+                                          "This key list", index_path)
+    except OSError as e:
+        raise LedgerError(e.strerror or "This key list cannot be read by this "
+                          "StuntKey. Update StuntKey: pipx upgrade stuntkey",
+                          index_path) from None
+
+
+def reset(index_path: str | None = None) -> str | None:
+    """Start the key dates afresh WITHOUT losing the old file: move it aside to
+    index.json.old-<time> and return that path (None when there was no file).
+    The file holds no keys, only dates; after this, old keys show as 'added
+    before records'."""
+    index_path = index_path or path()
+    if not os.path.exists(index_path):
+        return None
+    base = f"{index_path}.old-{int(_now().timestamp())}"
+    kept, i = base, 1
+    while os.path.exists(kept):
+        i += 1
+        kept = f"{base}-{i}"
+    os.replace(index_path, kept)
+    return kept
 
 
 def path() -> str:
@@ -108,24 +134,49 @@ def _checked(index_path: str, resign: bool) -> dict:
     data = _read_file(index_path)
     if data is None:
         return {}
-    data = _migrate(data, index_path)
     projects = data.get("projects")
     if not isinstance(projects, dict):
         return {}
     sig = data.get("sig")
-    key = _signing_key(index_path)
-    if isinstance(sig, str):
+    key, where = _signing_key_info(index_path)
+    signed_version = data.get("version", 1)      # the signature covers THIS version,
+    if isinstance(sig, str):                     # checked before any migration
         if key is not None:
             from . import keychain
             import hmac
             if not hmac.compare_digest(
-                    sig, keychain.sign(key, _canonical(data.get("version", 1), projects))):
+                    sig, keychain.sign(key, _canonical(signed_version, projects))):
                 raise LedgerError(
-                    f"The key dates file ({index_path}) was changed by something "
-                    "other than StuntKey, or its signing key was lost, so it was "
-                    "not trusted. It holds no keys. To start fresh, delete that "
-                    "file and run the command again (old keys will show as "
-                    "'added before records').", index_path)
+                    f"The key dates file ({index_path}) does not match its "
+                    "signature: it was changed by something other than StuntKey. "
+                    "It holds no keys. To start fresh, delete that file (or rename it to keep a copy) "
+                    "and run the command again; "
+                    "old keys will show as 'added before records'.", index_path)
+        elif where in ("keychain", "file"):
+            # signed once, but the signing key is gone: not the same as tampering
+            raise LedgerError(
+                f"The key dates file ({index_path}) was signed, but the signing "
+                "key that goes with it is gone from this computer (a cleared "
+                "keychain, or StuntKey is running under a different home folder). "
+                "Nothing says the file was changed, but it cannot be checked. "
+                "It holds no keys. To start fresh, delete that file (or rename it to keep a copy) "
+                "and run the command again; "
+                "old keys will show as 'added before records'.", index_path)
+    elif key is not None:
+        # a signing key exists, so this file WAS signed: a missing signature
+        # means it was taken off, never "an old file from before signing"
+        raise LedgerError(
+            f"The key dates file ({index_path}) has lost its signature, so it "
+            "cannot be trusted: something other than StuntKey took it off. "
+            "It holds no keys. To start fresh, delete that file (or rename it to keep a copy) "
+            "and run the command again; "
+            "old keys will show as 'added before records'.", index_path)
+    data = _migrate(data, index_path)
+    projects = data.get("projects")
+    if not isinstance(projects, dict):
+        return {}
+    if isinstance(sig, str):
+        pass
     elif resign:
         # an unsigned file from an older StuntKey: accept it once, then sign it
         key = _signing_key(index_path, create=True)

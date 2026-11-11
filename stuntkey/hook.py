@@ -37,6 +37,7 @@ import hashlib
 import json
 import os
 import fnmatch
+import posixpath
 import re
 import shlex
 import shutil
@@ -58,10 +59,13 @@ from . import recipes as recipes_mod
 #   overwrite the person's keys. Templates (.env.example) stay writable, and
 #   STUNTKEY_HOOK_ALLOW_WRITE=1 turns the write check off. Glob (names
 #   only) is not matched.
-MATCHER = "Read|Grep|Bash|PowerShell|Monitor|Edit|Write|MultiEdit|NotebookEdit|mcp__.*"
+# Round 12 added WebFetch, WebSearch, Task and Agent: a key typed into a URL or
+# into a sub-agent prompt leaves the machine just as one typed into an MCP call.
+MATCHER = "Read|Grep|Bash|PowerShell|Monitor|Edit|Write|MultiEdit|NotebookEdit|WebFetch|WebSearch|Task|Agent|mcp__.*"
 # what earlier versions wrote; still recognised (is_ours goes by the marker), and
 # `hook install` rewrites it in place
-LEGACY_MATCHERS = ("Read|Grep|Bash|PowerShell|Monitor|Edit|Write|MultiEdit|NotebookEdit",
+LEGACY_MATCHERS = ("Read|Grep|Bash|PowerShell|Monitor|Edit|Write|MultiEdit|NotebookEdit|mcp__.*",
+                   "Read|Grep|Bash|PowerShell|Monitor|Edit|Write|MultiEdit|NotebookEdit",
                    "Read|Grep|Bash|PowerShell|Monitor")
 SHELL_TOOLS = frozenset({"Bash", "PowerShell", "Monitor"})
 KNOWN_TOOLS = frozenset({"Read", "Grep", "Edit", "Write", "MultiEdit", "NotebookEdit"}) | SHELL_TOOLS
@@ -81,6 +85,29 @@ MARKER = "stuntkey hook"      # the statusMessage that marks our handler
 LEGACY_MARKERS = ("oathkey hook",)   # what 0.8 (oathkey) wrote: replaced by `hook install`
 OUR_FOLDERS = (".stuntkey", ".oathkey")   # the store, and the 0.8 copy migration leaves behind
 HOOK_TIMEOUT = 10            # seconds (Claude Code's own default is 600)
+HOOK_BUDGET = 6.0           # seconds the whole PreToolUse check may take; then it says no
+
+
+class HookTimeout(Exception):
+    """The one time allowance for a PreToolUse check ran out. The answer is
+    then NO (deny), never "let it through": a command so odd that it could not
+    be read in HOOK_BUDGET seconds is not one to run unread."""
+
+
+_DEADLINE: list = [None]     # a time.monotonic() value while check() runs, else None
+
+
+def _tick() -> None:
+    """Called between the small steps of a check (each rule, each piece of text)."""
+    d = _DEADLINE[0]
+    if d is not None and time.monotonic() > d:
+        raise HookTimeout
+
+
+TIMEOUT_REASON = (
+    "stuntkey blocked this because it could not finish reading the call in "
+    "time (the text is very large or very odd). Nothing was run. Send it in "
+    "smaller pieces, or ask the person to run it.")
 MAX_STDIN = 64 * 1024 * 1024  # read this much of Claude Code's JSON, no less
 BACKUPS_TO_KEEP = 20
 TEMPLATE_SUFFIXES = frozenset({"example", "sample", "template", "dist",
@@ -156,40 +183,68 @@ CODE_ENV_REASON = (
 # (regex, what it does). They are matched against the whole command text.
 _SAFE = r"(?:^|[\s;&|`(\"'])"
 # the start of a command (not a word in the middle of one), and its end
-_CMD = (r"(?:^|[\n;&|(`{]|\bthen\b|\bdo\b|\bcmd(?:\.exe)?\s+/[ck]|\s-c)\s*(?:[\"']\s*)?"
-        r"(?:sudo\s+|command\s+|builtin\s+)?")
-_END = r"(?=$|\s*[\n|;&>)`}\"'])"
+#
+# Round 12: every `\s` in the part that can START a match is now `[ \t]`. A run
+# of blank lines used to be tried from every newline, each try swallowing the
+# whole rest of the run (quadratic: 12000 newlines took 15 s, past the 10 s
+# the hook is given). A newline now only ever STARTS a command; it is never
+# eaten as the space after one, so the work stays linear. A command on the
+# next line still matches, because that newline starts its own try.
+_CMD = (r"(?:^|[\n;&|(`{]|\bthen\b|\bdo\b|\bcmd(?:\.exe)?[ \t]+/[ck]|[ \t]-c)[ \t]*(?:[\"'][ \t]*)?"
+        r"(?:sudo[ \t]+|command[ \t]+|builtin[ \t]+)?")
+_END = r"(?=\s*(?:$|[\n|;&>)`}\"']))"   # ONE \s*: two in a row are quadratic
 # upper case only: `for key in ...; do echo $key` is not a key
 _SECRET_WORD = r"(?-i:KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL)"
 # private keys and the credentials files tools keep in your home folder
-_CRED_FILE = (r"(?:[\w.\-]*\.(?:pem|key|p12|pfx|jks|keystore)|id_(?:rsa|dsa|ecdsa|ed25519)|"
+_CRED_FILE = (r"(?:[\w.\-]{0,120}\.(?:pem|key|p12|pfx|jks|keystore)|id_(?:rsa|dsa|ecdsa|ed25519)|"
               r"\.netrc|_netrc|\.git-credentials|\.npmrc|\.pypirc|\.pgpass|"
               r"\.aws[/\\](?:credentials|config)|\.docker[/\\]config\.json|"
               r"\.kube[/\\]config|credentials\.json|application_default_credentials\.json|"
-              r"service[-_]account[\w.\-]*\.json|"
-              r"(?:[\w\-]+[-_.])?credentials?\.(?:json|ya?ml|toml|ini|txt|xml|csv|cfg|conf)|"
-              r"(?:[\w\-]+[-_.])?secrets?\.(?:json|ya?ml|toml|ini|cfg))(?=$|[\s\"'`;&|)>*])")
+              r"service[-_]account[\w.\-]{0,120}\.json|"
+              r"(?:[\w\-]{1,80}[-_.])?credentials?\.(?:json|ya?ml|toml|ini|txt|xml|csv|cfg|conf)|"
+              r"(?:[\w\-]{1,80}[-_.])?secrets?\.(?:json|ya?ml|toml|ini|cfg))(?=$|[\s\"'`;&|)>*])")
 # Bash text that writes, edits or removes the files that decide which hooks
 # and MCP servers run. Pattern-based: a script (python -c ...) gets past it.
 # The one STEAL_RULE also applied to an MCP tool's arguments (decide_steal).
 _SETTINGS_WRITE_RULE = (
-    re.compile(r"(?:>>?|\btee\b|\b(?:cp|mv|rm)\b|\bsed\b[^\n;&|]*?\s(?:-[A-Za-z]*i\b|--in-place))"
-               r"[^\n;&|]*?(?:\.claude[/\\]settings(?:\.local)?\.json|\.mcp\.json|\.claude\.json)"
+    re.compile(r"(?:(?<!>)>>?|\btee\b|\b(?:cp|mv|rm)\b|\bsed\b[^\n;&|]{0,400}?\s(?:-[A-Za-z]*i\b|--in-place))"
+               r"[^\n;&|]{0,400}?(?:\.claude[/\\]settings(?:\.local)?\.json|\.mcp\.json|\.claude\.json)"
                r"(?![\w.-])", re.I),
     "change the Claude settings files that decide which hooks and tools run "
     "(only the person may)")
+# A cheap look that must pass before the settings rule above is tried at all.
+_SETTINGS_HINT_RE = re.compile(r"\.claude|\.mcp\.json", re.I)
 STEAL_RULES = (
     (re.compile(r"(?:stuntkey|oathkey)\b(?:(?!\s--\s)[^\n;&|]){0,300}\s--no-r\w*", re.I),
      "run a command with the key and turn output hiding off"),
-    (re.compile(r"(?:(?:^|[\s;&|`(\"'/\\])(?:stuntkey|oathkey)(?:\.exe)?|\s-\w*m\s+(?:stuntkey|oathkey)(?:\.(?:cli|__main__))?)"
+    (re.compile(r"\s-\w*m\s+(?:stuntkey|oathkey)\.(?:proxy|mint|panic|remote|runner|httpd|keychain|capture|broker)\b", re.I),
+     "run a stuntkey command that uses or sends a stored key (only the person runs those)"),
+    (re.compile(r"(?:(?:^|[\s;&|`(\"'/\\])(?:stuntkey|oathkey)(?:\.exe)?[\"']?|\s-\w*m\s+(?:stuntkey|oathkey)(?:\.\w+){0,3})"
                 r"(?:\s+--project-dir(?:\s+|=)\S+)*\s+"
                 r"(?:remote|deploy|trust-server|export|run|serve|call|forget|stop|resume|rotate|"
+                r"proxy|mint|panic|setup-agent|skill\s+install|"
                 r"caps\s+(?:set|--clear)|policy\s+approve|(?:hook\s+)?uninstall|"
+                r"hook\s+install\b[^\n;&|]{0,200}--fail-open|"
                 r"install\s+(?:[^\n;&|]*\s)?--uninstall)(?![\w-])", re.I),
      "run a stuntkey command that uses, sends or removes a stored key, or switches "
      "its protection off (remote, deploy, trust-server, export, run, serve, call, "
+     "proxy (also --print-env, --tunnel, --generic), mint, panic, setup-agent, "
      "forget, stop, resume, rotate, caps set/--clear, policy approve, uninstall, hook uninstall: "
      "only the person runs those)"),
+    # stuntkey's own code used to reach the keys without going through the broker
+    (re.compile(r"\b(?:from|import)[ \t]+(?:stuntkey|oathkey)(?:\.|[ \t]+import[ \t]+)"
+                r"(?:keychain|store|broker|scrub|proxy|consent|capture|mint|remote|runner|httpd|mcp)\b|"
+                r"\b(?:stuntkey|oathkey)\.(?:keychain|store|broker|proxy|runner)\.\w+|"
+                r"__import__\(\s*['\"](?:stuntkey|oathkey)", re.I),
+     "use stuntkey's own code to reach the stored keys without going through it"),
+    # taking stuntkey itself apart
+    (re.compile(r"\bpipx[ \t]+(?:upgrade-all|reinstall-all|uninstall-all)\b|"
+                r"\b(?:pipx|pip3?|py(?:thon3?)?[ \t]+(?:-\d(?:\.\d+)?[ \t]+)?-m[ \t]+pip|uv|uvx|poetry|conda|mamba|winget|scoop|choco|npm)\b"
+                r"[^\n;&|]{0,200}?\b(?:uninstall|upgrade|update|inject|reinstall|runpip|remove|rm|"
+                # a plain `pip install stuntkey` is how it gets installed; only a forced one replaces it
+                r"install(?=[^\n;&|]{0,200}?(?:--force|--upgrade|--reinstall|--ignore-installed|(?<![\w-])-U(?![\w-]))))\b"
+                r"[^\n;&|]{0,200}?\b(?:stuntkey|oathkey)\b", re.I),
+     "remove, replace or change the installed stuntkey program (only the person may)"),
     _SETTINGS_WRITE_RULE,
     (re.compile(_SAFE + r"secret-tool\s+(?:lookup|search)\b", re.I), "read the Linux keyring"),
     (re.compile(_SAFE + r"security\s+(?:find-\w+-password|dump-keychain|export)\b", re.I),
@@ -207,7 +262,7 @@ STEAL_RULES = (
     (re.compile(r"ConsoleHost_history|PSReadLine[/\\]|Get-PSReadLineOption|"
                 r"\.(?:bash|zsh|fish|sh|ash|ksh|python|node_repl|psql|mysql|lesshst)_history|\.zhistory|"
                 r"\bGet-History\b|\bfish_history\b|"
-                + _CMD + r"(?:history|fc\s+-l\w*)(?:\s+-?\w+)*\s*" + _END, re.I),
+                + _CMD + r"(?:history|fc\s+-l\w*)(?:\s+-?\w+)*" + _END, re.I),
      "read the shell history (keys typed on a command line end up there)"),
     (re.compile(r"\.(?:dmp|mdmp|hdmp)(?![\w])|Windows Error Reporting|[/\\]WER\b|ReportArchive|ReportQueue|"
                 r"CrashDumps|\bMiniDump\w*|\bprocdump(?:64)?\b|\bcomsvcs(?:\.dll)?\b|\bcreatedump\b|\bgcore\b|"
@@ -251,14 +306,14 @@ DUMP_RULES = (
                 r"\bfor\b[^\n]{0,60}\bin\s+(?:os\.)?environ\s*[:\])]", re.I),
      "loop over every environment variable (that is where keys live)"),
     (re.compile(_CMD + r"(?:(?:env|printenv)(?:\s+-[0-9A-Za-z]+)*|set|export(?:\s+-p)?|"
-                r"(?:declare|typeset)\s+-[a-z]*[px][a-z]*)\s*" + _END, re.I),
+                r"(?:declare|typeset)\s+-[a-z]*[px][a-z]*)" + _END, re.I),
      "print every environment variable (that is where keys live)"),
-    (re.compile(r"\b(?:exec|ssh|run)\b[^\n;&|]{0,300}\s(?:env|printenv)\s*" + _END, re.I),
+    (re.compile(r"\b(?:exec|ssh|run)\b[^\n;&|]{0,300}\s(?:env|printenv)" + _END, re.I),
      "print every environment variable of a container or remote machine"),
     (re.compile(r"\bprintenv\s+\w*" + _SECRET_WORD + r"\w*|"
                 r"(?:^|[\s;&|(`])(?:echo|printf|Write-Output|Write-Host)\b[^\n;&|]{0,300}"
                 r"\$(?:\{|env:)?\w*" + _SECRET_WORD + r"|"
-                r"(?:^|[\s;&|(`(])\$env:\w*" + _SECRET_WORD + r"\w*\s*" + _END, re.I),
+                r"(?:^|[\s;&|(`(])\$env:\w*" + _SECRET_WORD + r"\w*" + _END, re.I),
      "print a key from an environment variable"),
     (re.compile(r"\b(?:Get-ChildItem|gci|ls|dir|Get-Item|gi|Get-Content|gc|cat|type)\s+"
                 r"(?:-\w+\s+)*Env::?(?:(?!\w)|\w*\*|\w*" + _SECRET_WORD + r")|"
@@ -292,6 +347,44 @@ DUMP_RULES = (
                 r"fgrep|rg|ag|sed|awk|bat|nl|xxd|od|strings|base64|tac|cut|sort|uniq|"
                 r"Select-String|sls)\b[^\n;&|]{0,300}?" + _CRED_FILE, re.I),
      "show a private key or a credentials file"),
+    # ---- round 12: more ways to dump or ship the environment ----
+    # Honest limit: these are PATTERNS on the text of a command. Code that builds
+    # its dump at run time (a variable holding "os.en"+"viron", a script fetched
+    # from the network, a program that reads /proc or the registry) cannot be
+    # stopped this way; what still covers it is the output mask (PostToolUse) and
+    # keeping the keys out of the environment in the first place.
+    (re.compile(r"\bperl\b[^\n]{0,300}(?:%ENV\b|\$ENV\{\s*['\"]?\w*" + _SECRET_WORD + r")|"
+                r"\bawk\b[^\n]{0,300}\bENVIRON\b|"
+                r"\b(?:ruby|irb)\b[^\n]{0,300}\bENV(?:\.(?:each|to_a|to_h|map|inspect|select|keys|values)|\s*\))|"
+                r"(?:^|[\n;&|(`{])[ \t]*compgen[ \t]+-[a-z]*[ev]\b|"
+                r"\b(?:node|deno|bun)\b[^\n]{0,300}(?:Object\.(?:keys|entries|values)\s*\(\s*process\.env|"
+                r"for\s*\([^)\n]{0,40}\bin\s+process\.env)", re.I),
+     "list or print every environment variable (that is where keys live)"),
+    (re.compile(r"\]\s*::\s*GetEnvironmentVariable\s*\(\s*['\"]\w*" + _SECRET_WORD, re.I),
+     "print a key from an environment variable"),
+    # an inline one-liner (python -c, node -p, ruby -e, php -r, pwsh -c) that reads a variable
+    # NAMED like a key. (Not applied to ordinary program files: code that reads its own key
+    # from the environment is normal; the one-liner form is what an agent uses to look at it.)
+    (re.compile(r"\b(?:python[\d.]*|py|node|deno|bun|ruby|php|perl|pwsh|powershell)(?:\.exe)?\b[^\n]{0,60}[ \t]-(?:c|e|p|r|Command|command)\b"
+                r"[^\n]{0,400}(?:process\.env(?:\.|\s*\[\s*['\"])|\benviron(?:\.get\s*\(|\s*\[)|\bgetenv\s*\(|\bENV\s*\[|"
+                r"\$ENV\{|GetEnvironmentVariable\s*\(|\$env:)\s*['\"]?\w*" + _SECRET_WORD, re.I),
+     "print a key from an environment variable"),
+    # (the WHOLE environment only: `environ["X"]`, `environ.get(..)`, `process.env.X` are how
+    # ordinary programs read one setting, so code that does that is not refused)
+    (re.compile(r"\b(?:requests|httpx|urllib\w*|aiohttp|http\.client|socket|smtplib|ftplib|paramiko)\b[^\n]{0,400}"
+                r"\b(?:os\.)?environ\b(?!\s*(?:\[|\.(?:get|pop|setdefault)\b))|"
+                r"\b(?:os\.)?environ\b(?!\s*(?:\[|\.(?:get|pop|setdefault)\b))[^\n]{0,400}"
+                r"\b(?:requests|httpx|urlopen|aiohttp|sendall|\.post|\.put)\b|"
+                r"\b(?:fetch|axios(?:\.\w+)?|got|https?\.request|XMLHttpRequest)\b[^\n]{0,400}"
+                r"\bprocess\.env\b(?!\s*(?:\.\w|\[))|"
+                r"\b(?:Invoke-WebRequest|Invoke-RestMethod|iwr|irm)\b[^\n]{0,400}"
+                r"(?:\[\s*(?:System\.)?Environment\s*\]|Get-ChildItem\s+Env:|\$\{?env:?\}?\b(?!:))", re.I),
+     "send the environment variables (keys among them) over the network from code"),
+    (re.compile(r"\b(?:https?|ftp)://[^\s\"'<>]{0,300}(?:\$\{?|\$env:|%)\w*" + _SECRET_WORD, re.I),
+     "put a key from an environment variable into a web address"),
+    (re.compile(r"\b(?:nslookup|dig|host|drill|resolvectl|Resolve-DnsName|ping|tracert|traceroute|nc|ncat|netcat|telnet)\b"
+                r"[^\n;&|]{0,300}(?:\$\{?|\$env:|%)\w*" + _SECRET_WORD, re.I),
+     "send a key from an environment variable out through a network lookup"),
 )
 
 
@@ -481,7 +574,8 @@ def steals_key(text: str, shell: bool = False) -> str | None:
     """What a shell command / path would do to a stored key, or None. A speed
     bump, not a lock: it reads the text of the call, and a program that builds
     its command at run time gets past it. `shell`: the text is a shell
-    command, so DUMP_RULES apply too."""
+    command, so DUMP_RULES apply too. Every rule is a step the hook's one time
+    allowance is checked between (see _tick)."""
     flat = text.replace("\\", "/") if "stuntkey" in text else text
     variants = [text, flat, *_squash(text)]
     if any(globs_to_our_folder(v) for v in variants):
@@ -490,18 +584,26 @@ def steals_key(text: str, shell: bool = False) -> str | None:
         return "read a .env file (a wildcard that matches it)"
     rules = STEAL_RULES + (DUMP_RULES if shell else ())
     for rx, what in rules:
-        if any(rx.search(v) for v in variants):
-            return what
+        _tick()
+        for v in variants:
+            if rx is _SETTINGS_WRITE_RULE[0] and not _SETTINGS_HINT_RE.search(v):
+                continue
+            if rx.search(v):
+                return what
     for variant in variants:
+        _tick()
         for rx, what in CONSENT_RULES:
             if rx.search(variant):
                 return what
     plain_envs = {n for v in variants for n in find_env_files(v)}
     for extra in _disguised(text):
+        _tick()
         for v in (extra, *_squash(extra)):
             if globs_to_our_folder(v):
                 return "touch stuntkey's own store (a wildcard that matches its folder)"
             for rx, what in rules + CONSENT_RULES:
+                if rx is _SETTINGS_WRITE_RULE[0] and not _SETTINGS_HINT_RE.search(v):
+                    continue
                 if rx.search(v):
                     return what
             # a .env name that only shows once the text is joined or decoded
@@ -660,6 +762,7 @@ def decide_steal(payload) -> str | None:
                 return "read a .env file (a wildcard that matches it)"
     for text in touched_text(payload):
         for piece in _pieces(text, budget):
+            _tick()
             if mcp:
                 # an MCP tool's arguments are data, not a command: a note that
                 # mentions `stuntkey run` or ~/.stuntkey/ is fine. Only the
@@ -787,6 +890,7 @@ def decide_code_leak(payload) -> tuple[str, str] | None:
         if hits:
             return "env", hits[0]
         for piece in _pieces(text, budget):
+            _tick()
             what = steals_key(piece, shell=True)
             if what:
                 return "dump", what
@@ -811,6 +915,183 @@ def decide_protected_write(payload) -> str | None:
         norm = re.sub(r"::\$DATA\Z", "", norm, flags=re.I).rstrip(" .")
         if _PROTECTED_RE.search(norm):
             return norm.rsplit("/", 1)[-1] if "/" in norm else norm
+    return None
+
+
+# ---- round 12: tamper protection, on every path ---------------------------------
+#
+# Only the person may change the files that decide which hooks and MCP servers
+# run, stuntkey's own folder, or the stuntkey program itself. The old check
+# looked at `>`, `tee`, `cp`, `mv`, `rm` and `sed -i` in a Bash command, and at
+# Edit/Write. This one also reads PowerShell (Set-Content, Out-File,
+# Remove-Item, Move-Item ...), python / node code (a write-mode file open, writeFileSync
+# ...), git (checkout / restore / reset of the files), pip / pipx, and the
+# Edit/Write tools for the whole of ~/.claude. Reading those files stays allowed.
+# Still pattern-based: a program that builds the path at run time gets past it.
+_HOMEISH = (r"(?:~|\$\{?HOME\}?|%USERPROFILE%|%HOMEPATH%|\$env:(?:USERPROFILE|HOME)|"
+            r"[A-Za-z]:/Users/[^/\s\"']{1,64}|/(?:home|Users)/[^/\s\"']{1,64}|/root)")
+# what Claude Code itself keeps under ~/.claude: not settings, so an agent's
+# note or plan written there is not tampering
+_CLAUDE_FREE = r"(?:plans|projects|todos|tasks|cache|logs|shell-snapshots|statsig|ide|session-env|file-history|worktrees)"
+_TAMPER_TARGET_RE = re.compile(
+    r"\.claude/settings(?:\.local)?\.json(?![\w.-])|(?<![\w-])\.mcp\.json(?![\w.-])|(?<![\w-])\.claude\.json(?![\w.-])|"
+    + _HOMEISH + r"/\.claude(?![\w.-])(?!/" + _CLAUDE_FREE + r"(?![\w-]))|"
+    r"site-packages/stuntkey(?![\w-])|pipx/venvs/stuntkey(?![\w-])|/Scripts/stuntkey(?:\.exe)?(?![\w.-])|"
+    r"\.local/bin/stuntkey(?:\.exe)?(?![\w.-])|(?<![\w-])stuntkey\.pyz(?![\w-])", re.I)
+# a verb that changes or removes a file (cmd, PowerShell and its short names, POSIX)
+_MUTATE_RE = re.compile(
+    r"(?<![\w.$-])(?:rm|del|erase|rd|rmdir|unlink|mv|move|ren|rename|cp|copy|xcopy|robocopy|ln|mklink|"
+    r"truncate|shred|dd|install|tee|touch|chmod|chown|icacls|attrib|takeown|ri|mi|ni|rni|cpi|ac|sc|clc|"
+    r"(?:Remove|Move|Copy|Rename|New|Set|Add|Out|Clear)-(?:Item|ItemProperty|Content|File|Acl)|"
+    r"(?:sed|perl)[ \t]+(?:[^\n;&|]{0,100}[ \t])?-[A-Za-z]*i|"
+    r"tar|unzip|7z|rsync|scp|ditto|patch|Expand-Archive|Invoke-WebRequest|Invoke-RestMethod|iwr|irm|"
+    r"(?:curl|wget)(?=[ \t](?:[^\n;&|]{0,200}[ \t])?(?:-o|-O|--output|--output-document|--remote-name)(?![\w-]))|"
+    r"git(?:\.exe)?[ \t]+(?:[^\n;&|]{0,80}?[ \t])?(?:checkout|restore|reset|stash|clean|rm|mv|apply|update-index|switch|am|"
+    r"merge|rebase|pull|cherry-pick|revert|sparse-checkout))(?![\w-])", re.I)
+# code that writes or removes a file
+_CODE_WRITE_RE = re.compile(
+    r"\bopen\s*\([^)\n]{0,300}?,\s*(?:mode\s*=\s*)?['\"][rbt]*[wax+][rwxabt+]*['\"]|"
+    r"\bmode\s*=\s*['\"][rbt]*[wax+][rwxabt+]*['\"]|\.write_(?:text|bytes)\b|"
+    r"\b(?:writeFile|appendFile|createWriteStream|unlink|rmSync|rmdirSync|renameSync|copyFileSync|truncate)(?:Sync)?\b|"
+    r"\bfs\.\w*(?:write|rm|unlink|rename|copy|append|truncate)\w*|"
+    r"\bos\.(?:remove|unlink|replace|rename|truncate|removedirs)\b|\bshutil\.(?:move|copy\w*|rmtree)\b|"
+    r"\bjson\.dump\b|\b(?:WriteAll(?:Text|Bytes|Lines)|File\]?::?(?:Delete|Move|Copy|Replace|Write\w*)|"
+    r"IO\.File\])\b|\.Delete\s*\(|\bFile\.(?:write|delete|rename|open)\b", re.I)
+_CD_INTO_RE = re.compile(
+    r"(?<![\w-])(?:cd|pushd|chdir|Set-Location|sl)[ \t]+(?:/d[ \t]+)?[\"']?[^\n;&|]{0,200}?(?:"
+    + _TAMPER_TARGET_RE.pattern + r")", re.I)
+_REDIRECT_TARGET_RE = re.compile(
+    r"(?:\d?>>?|\btee\b)[ \t]*(?:-\w+[ \t]+)*[\"']?[^\s\"'<>|;&]{0,300}?(?:" + _TAMPER_TARGET_RE.pattern + r")", re.I)
+MAX_TAMPER_LINES = 4000
+
+
+def _tamper_in(text: str) -> str | None:
+    """What this text (a shell command or code) would do to a protected file,
+    else None."""
+    flat = text.replace("\\", "/")
+    unquoted = re.sub(r"[\'\"`^]", "", flat)
+    for v in (flat, unquoted):
+        if not _TAMPER_TARGET_RE.search(v):
+            continue
+        _tick()
+        if _REDIRECT_TARGET_RE.search(v):
+            return "overwrite a file that only the person may change"
+        if _CODE_WRITE_RE.search(v):
+            return "write to or delete a file that only the person may change"
+        _tick()
+        for n, line in enumerate(v.split("\n")):
+            if n > MAX_TAMPER_LINES:
+                return "change a file that only the person may change (too many lines to check)"
+            if _TAMPER_TARGET_RE.search(line) and _MUTATE_RE.search(line):
+                return "change, move or delete a file that only the person may change"
+            # `cd ~/.claude && echo {} > settings.json`: the file is named relative to the folder
+            if (_CD_INTO_RE.search(line) and
+                    (">" in line or _MUTATE_RE.search(line) or _CODE_WRITE_RE.search(line))):
+                return "change a file inside a folder that only the person may change"
+    return None
+
+
+def _globs_to_claude_folder(text: str) -> bool:
+    """`rm -rf ~/.cl*`, `mv .c?aude x`: a wildcard word that could expand to
+    .claude / .claude.json, in a command that also changes or removes files."""
+    if not _MUTATE_RE.search(text):
+        return False
+    for word in _DOT_TOKEN.findall(text):
+        if not re.search(r"[*?\[]", word) or not re.search(r"[A-Za-z]", re.sub(r"\[[^\]]*\]", "", word)):
+            continue
+        try:
+            if any(fnmatch.fnmatchcase(n, word.lower()) for n in (".claude", ".claude.json")):
+                return True
+        except re.error:
+            continue
+    return False
+
+
+def decide_tamper(payload) -> str | None:
+    """None, or what a call would do to the settings files, ~/.claude,
+    stuntkey's folder or its installed program. Shell tools: the command
+    (pip / pipx are caught by STEAL_RULES). Edit / Write / MultiEdit /
+    NotebookEdit: the path, after `..`, links and the real home folder are
+    resolved. STUNTKEY_HOOK_ALLOW_WRITE=1 turns the write-tool half off."""
+    if not isinstance(payload, dict):
+        return None
+    tool = payload.get("tool_name")
+    if tool in SHELL_TOOLS:
+        budget = [SCAN_BUDGET]
+        for text in touched_text(payload):
+            for piece in _pieces(text, budget):
+                _tick()
+                what = _tamper_in(piece)
+                if what:
+                    return what
+                if _globs_to_claude_folder(piece):
+                    return "change a folder that only the person may change (a wildcard that matches it)"
+                for extra in _disguised(piece)[:6]:
+                    what = _tamper_in(extra)
+                    if what:
+                        return what
+        return None
+    if tool in WRITE_TOOLS and not writes_allowed():
+        for text in touched_text(payload):
+            hit = _protected_path(text)
+            if hit:
+                return hit
+    return None
+
+
+def _protected_path(text: str) -> str | None:
+    """The name of the protected file a write-tool path points at, else None."""
+    raw = text.strip()
+    if not raw:
+        return None
+    norm = re.sub(r"/+", "/", raw.replace("\\", "/"))
+    norm = re.sub(r"::\$DATA\Z", "", norm, flags=re.I).rstrip(" .")
+    cands = {posixpath.normpath(norm)}
+    try:
+        real = os.path.realpath(os.path.expanduser(raw))
+        cands.add(posixpath.normpath(real.replace("\\", "/")))
+    except (OSError, ValueError):
+        pass
+    home = os.path.expanduser("~").replace("\\", "/").rstrip("/")
+    for c in cands:
+        if _TAMPER_TARGET_RE.search(c):
+            return c.rsplit("/", 1)[-1] or c
+        if home and c.lower().startswith(home.lower() + "/.claude"):
+            rest = c[len(home) + len("/.claude"):]
+            if not re.match(r"/" + _CLAUDE_FREE + r"(?:/|\Z)", rest, re.I):
+                return ".claude" + rest
+    return None
+
+
+def decide_outbound_key(payload) -> str | None:
+    """A tool call (any tool: Bash, Write, Edit, WebFetch, Task, an MCP tool ...)
+    whose arguments carry one of your stored keys, in any form scrub knows
+    (as it is, encoded, reversed, in hex, split up, or a 16-character piece of
+    it). Everything the call says leaves the machine or lands in a file the
+    next program can read, so a key in it has already passed through the AI.
+    Out of time counts as yes (deny)."""
+    if not isinstance(payload, dict):
+        return None
+    args = payload.get("tool_input")
+    if not isinstance(args, dict):
+        return None
+    from . import scrub as scrub_mod
+    try:
+        prints = scrub_mod.load_fingerprints()
+    except (OSError, ValueError):
+        prints = (b"", frozenset())
+    secrets = scrub_mod.stored_secrets()
+    if not prints[1] and not secrets:
+        return None
+    texts = _all_strings(args)
+    deadline = _DEADLINE[0]
+    for t in texts:
+        if scrub_mod.has_stored_key(t, prints, deadline):
+            return "send one of your stored keys somewhere (it is in the call)"
+    if secrets:
+        joined = "".join(texts)[:WRITE_SCAN_BUDGET]
+        if scrub_mod.loosely_contains(joined, secrets, deadline):
+            return "send one of your stored keys somewhere (it is in the call, perhaps disguised or in part)"
     return None
 
 
@@ -911,6 +1192,18 @@ def _read_all(stdin) -> str:
 
 
 def check(stdin_text: str) -> tuple[int, str]:
+    """`_check` under the hook's one time allowance (HOOK_BUDGET). Out of time
+    means deny, in plain words: never a call let through unread."""
+    _DEADLINE[0] = time.monotonic() + HOOK_BUDGET
+    try:
+        return _check(stdin_text)
+    except HookTimeout:
+        return 0, json.dumps(decision_json(TIMEOUT_REASON)) + "\n"
+    finally:
+        _DEADLINE[0] = None
+
+
+def _check(stdin_text: str) -> tuple[int, str]:
     """The hook program: (exit status, stdout text). Only ever answers "deny";
     for everything else it says nothing, so Claude Code's normal permission
     rules still apply (an "allow" here would skip them).
@@ -957,7 +1250,7 @@ def check(stdin_text: str) -> tuple[int, str]:
             OVERSIZE_REASON.format(n=size, limit=MAX_COMMAND))) + "\n"
     name = decide(payload)
     if name is None:
-        target = decide_protected_write(payload)
+        target = decide_protected_write(payload) or decide_tamper(payload)
         if target:
             what = recipes_mod.printable(target)
             return 0, json.dumps(decision_json(
@@ -972,7 +1265,7 @@ def check(stdin_text: str) -> tuple[int, str]:
                 return 0, json.dumps(decision_json(
                     CODE_ENV_REASON.format(what=f"'{what}'"))) + "\n"
             return 0, json.dumps(decision_json(CODE_REASON.format(what=what))) + "\n"
-        what = decide_steal(payload) or decide_secret_read(payload) or decide_mcp_key(payload)
+        what = decide_steal(payload) or decide_secret_read(payload) or decide_outbound_key(payload)
         if what:
             return 0, json.dumps(decision_json(STEAL_REASON.format(what=what))) + "\n"
         return 0, ""
@@ -1008,9 +1301,77 @@ POST_NOTE = ("stuntkey hid {n} secret value(s) in this output as [REDACTED]. "
              "person to run `stuntkey run <service> -- <command>`.")
 
 
+# What the PostToolUse answer can and cannot cover (checked against the Claude
+# Code hooks docs and by hand): `updatedToolOutput` replaces what the model sees
+# only in the shape the tool itself uses. Bash / PowerShell ({stdout, stderr,
+# ...}) and MCP tools (any shape, strings masked in place) are covered. Read,
+# Grep, Glob, WebFetch, WebSearch and Task have no documented output shape, so
+# they are NOT masked after the fact; they are guarded BEFORE the call instead
+# (a Read of a file that holds a stored key is refused, an outbound call that
+# carries one is refused). If Claude Code documents a shape for them, add the
+# tool to POST_MATCHER and to post_check.
+POST_FAILED_RESULT = "HOOK-POST-FAILED"      # the audit-log result word `doctor` counts
+LOCKED_NOTICE = ("[stuntkey withheld this output: the key it checks with could not be "
+                 "read, so it could not tell whether a secret is in it. Run "
+                 "`stuntkey doctor`, then ask again.]")
+
+
+def _audit_post_failure(kind: str) -> None:
+    """Best effort: record in the activity log that the output check failed, so
+    `stuntkey doctor` can show repeated failures. Never raises."""
+    if os.environ.get("STUNTKEY_TEST_HOME") and not os.environ.get("STUNTKEY_KEYCHAIN"):
+        return          # a test run with no test keychain writes no log (same rule as keychain.integrity_key)
+    try:
+        from . import broker, remote
+        log = broker.AuditLog(os.path.join(remote.home_dir(), "audit.log"))
+        log.write(broker.AuditLog._marker(
+            POST_FAILED_RESULT, f"the output check failed ({kind[:60]}); "
+                                "the output was shown as it was or withheld"))
+    except BaseException:                      # noqa: BLE001 - it must never get in the way
+        pass
+
+
+def post_failures(path: str | None = None) -> int:
+    """How many output-check failures the activity log holds (for `doctor`)."""
+    try:
+        from . import broker, remote
+        # (AuditLog knows where a log really lives, test runs included)
+        path = broker.AuditLog(path or os.path.join(remote.home_dir(), "audit.log")).path
+        with open(path, "rb") as f:
+            data = f.read()
+    except (OSError, ImportError):
+        return 0
+    return data.count(b'"result": "' + POST_FAILED_RESULT.encode() + b'"')
+
+
+def _mask_text(value: str, prints, secrets, deadline: float):
+    """(`value` with stored keys and known key formats masked, how many). Then
+    every disguise of a stored key (hex, backwards, upper case, rot13, base32 /
+    base85, spaced, chunked, split by zero-width characters or colour codes,
+    double base64, full-width, or a 16-character piece of it) is looked for in
+    what is left: if one is there the WHOLE text is withheld, not patched
+    (the same fail-closed answer the run path gives). Out of time counts as
+    found."""
+    from . import scrub as scrub_mod
+    new, n = scrub_mod.mask_secrets(value, prints, deadline)
+    if secrets and new != scrub_mod.WITHHELD_NOTICE and scrub_mod.loosely_contains(new, secrets, deadline):
+        return scrub_mod.WITHHELD_NOTICE, n + 1
+    return new, n
+
+
+def _post_note(total: int) -> str:
+    return POST_NOTE.format(n=total)
+
+
 def post_check(payload: dict, err=None) -> str:
     """The PostToolUse answer for one tool call: "" (show the output as it
-    is) or the JSON that replaces it with the secrets masked."""
+    is) or the JSON that replaces it with the secrets masked. One time
+    allowance (POST_BUDGET) covers the whole call; the work is linear in the
+    size of the output. A failure is written to stderr and to the activity log
+    (never raising), and the output is shown as it is - except when the keys
+    are known to exist but the key that unlocks their fingerprints could not
+    be read: then the output is withheld."""
+    from . import scrub as scrub_mod
     try:
         if _is_mcp(payload):
             return _post_mcp(payload.get("tool_response"))
@@ -1019,46 +1380,84 @@ def post_check(payload: dict, err=None) -> str:
         resp = payload.get("tool_response")
         if not isinstance(resp, dict):
             return ""
-        from . import scrub as scrub_mod
-        prints = scrub_mod.load_fingerprints()
-        new, total = dict(resp), 0
         # one time allowance for the whole call (Claude Code kills this program
         # after HOOK_TIMEOUT and then shows the output as it is); an output too
         # big or odd to check in time is withheld whole, never shown unchecked
         deadline = time.monotonic() + POST_BUDGET
+        prints = scrub_mod.load_fingerprints()
+        secrets = scrub_mod.stored_secrets()
+        new, total = dict(resp), 0
         for field in POST_FIELDS:
             value = resp.get(field)
             if isinstance(value, str) and value:
-                new[field], n = scrub_mod.mask_secrets(value, prints, deadline)
+                new[field], n = _mask_text(value, prints, secrets, deadline)
                 total += n
         if not total:
             return ""
         return json.dumps({"hookSpecificOutput": {
             "hookEventName": "PostToolUse",
             "updatedToolOutput": new,
-            "additionalContext": POST_NOTE.format(n=total)}}) + "\n"
-    except Exception as e:                      # fail open, but say so
+            "additionalContext": _post_note(total)}}) + "\n"
+    except scrub_mod.FingerprintLocked as e:
+        (err or sys.stderr).write(f"stuntkey hook: {e}; the output is withheld.\n")
+        _audit_post_failure("FingerprintLocked")
+        return _withhold(payload)
+    except Exception as e:                      # fail open, but say so (and keep a record)
         (err or sys.stderr).write(f"stuntkey hook: could not check the output "
                                   f"({type(e).__name__}); it is shown unmasked.\n")
+        _audit_post_failure(type(e).__name__)
         return ""
 
 
-def _mask_all(value, prints, depth: int = 0, deadline: float | None = None):
+def _withhold(payload: dict) -> str:
+    """The answer that hides a tool's whole output (the shape is kept)."""
+    try:
+        if _is_mcp(payload):
+            new = _replace_strings(payload.get("tool_response"))
+            return json.dumps({"hookSpecificOutput": {
+                "hookEventName": "PostToolUse", "updatedToolOutput": new,
+                "updatedMCPToolOutput": new, "additionalContext": LOCKED_NOTICE}}) + "\n"
+        resp = payload.get("tool_response")
+        if isinstance(resp, dict):
+            new = dict(resp)
+            for field in POST_FIELDS:
+                if isinstance(new.get(field), str) and new[field]:
+                    new[field] = LOCKED_NOTICE
+            return json.dumps({"hookSpecificOutput": {
+                "hookEventName": "PostToolUse", "updatedToolOutput": new,
+                "additionalContext": LOCKED_NOTICE}}) + "\n"
+    except Exception:                           # noqa: BLE001
+        pass
+    return ""
+
+
+def _replace_strings(value, depth: int = 0):
+    if isinstance(value, str):
+        return LOCKED_NOTICE if value else value
+    if depth > MAX_DEPTH:
+        return value
+    if isinstance(value, dict):
+        return {k: _replace_strings(v, depth + 1) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_replace_strings(v, depth + 1) for v in value]
+    return value
+
+
+def _mask_all(value, prints, depth: int = 0, deadline: float | None = None, secrets=()):
     """(a copy of value with every string in it masked, how many were
     hidden). The shape stays: dicts, lists, numbers and keys as they were.
     `deadline` (time.monotonic) is shared by every string of the call."""
-    from . import scrub as scrub_mod
     if deadline is None:
         deadline = time.monotonic() + POST_BUDGET
     if isinstance(value, str):
-        return scrub_mod.mask_secrets(value, prints, deadline)
+        return _mask_text(value, prints, secrets, deadline)
     if depth > MAX_DEPTH:
         return value, 0
     if isinstance(value, dict):
-        done = {k: _mask_all(v, prints, depth + 1, deadline) for k, v in value.items()}
+        done = {k: _mask_all(v, prints, depth + 1, deadline, secrets) for k, v in value.items()}
         return {k: v for k, (v, _n) in done.items()}, sum(n for _v, n in done.values())
     if isinstance(value, list):
-        done = [_mask_all(v, prints, depth + 1, deadline) for v in value]
+        done = [_mask_all(v, prints, depth + 1, deadline, secrets) for v in value]
         return [v for v, _n in done], sum(n for _v, n in done)
     return value, 0
 
@@ -1068,14 +1467,15 @@ def _post_mcp(resp) -> str:
     stored keys masked. Sent as updatedToolOutput (the field the docs prefer)
     and as updatedMCPToolOutput (the MCP-only field)."""
     from . import scrub as scrub_mod
-    new, total = _mask_all(resp, scrub_mod.load_fingerprints())
+    new, total = _mask_all(resp, scrub_mod.load_fingerprints(),
+                           secrets=scrub_mod.stored_secrets())
     if not total:
         return ""
     return json.dumps({"hookSpecificOutput": {
         "hookEventName": "PostToolUse",
         "updatedToolOutput": new,
         "updatedMCPToolOutput": new,
-        "additionalContext": POST_NOTE.format(n=total)}}) + "\n"
+        "additionalContext": _post_note(total)}}) + "\n"
 
 
 def cmd_check(stdin=None, out=None, err=None) -> int:
@@ -1534,12 +1934,17 @@ def cmd_hook(args, out=None, err=None, run=subprocess.run) -> int:
                       f": the stuntkey hook in {shown}\n")
             out.write(_backup_note(backup, getattr(args, "project", False)))
             out.write("  From now on Claude Code asks it before every Read, Grep, Bash, "
-                      "PowerShell, Monitor, Edit, Write, MultiEdit, NotebookEdit and MCP "
-                      "tool call, and it refuses .env files, stuntkey's own store and "
-                      "commands that would use a stored key or print the environment.\n"
-                      "  After a Bash command it also hides stored keys, and text in a "
-                      "known key format, in the output before Claude sees it (best effort; "
-                      "if that check fails, the output is shown as it is).\n")
+                      "PowerShell, Monitor, Edit, Write, MultiEdit, NotebookEdit, WebFetch, "
+                      "WebSearch, Task, Agent and MCP tool call, and it refuses .env files, "
+                      "stuntkey's own store, changes to Claude's settings and to stuntkey "
+                      "itself, any call that carries a stored key, and commands that would "
+                      "use a stored key or print the environment.\n"
+                      "  After a Bash, PowerShell or MCP tool call it also hides stored keys "
+                      "(in any disguise) and text in a known key format in the output before "
+                      "Claude sees it (best effort; Read, Grep, WebFetch and Task results "
+                      "cannot be changed afterwards, so those are checked before the call; "
+                      "if the output check fails, the output is shown as it is and "
+                      "`stuntkey doctor` can show the failures).\n")
             out.write(_offer_agent_rules(args, out))
             if handler.get("onFailure") == "block":
                 out.write("  If the hook itself breaks or times out, the call is blocked "
@@ -1588,10 +1993,10 @@ RULES_TEXT = (
     "- Never print, echo or hard-code a key.\n"
     "- A command that needs a key: ask the person to run "
     "`stuntkey run <service> -- <cmd>`.\n")
-_RULES_BLOCK_RE = re.compile(r"\n*<!-- (?:stuntkey|oathkey):begin[^\n]*\n.*?"
+_RULES_BLOCK_RE = re.compile(r"\n{0,3}<!-- (?:stuntkey|oathkey):begin[^\n]*\n.*?"
                              r"<!-- (?:stuntkey|oathkey):end -->\n?", re.S)
 # the block 0.8 (oathkey) added: replaced by ours on install, removed on uninstall
-_LEGACY_RULES_RE = re.compile(r"\n*<!-- oathkey:begin[^\n]*\n.*?<!-- oathkey:end -->\n?", re.S)
+_LEGACY_RULES_RE = re.compile(r"\n{0,3}<!-- oathkey:begin[^\n]*\n.*?<!-- oathkey:end -->\n?", re.S)
 
 
 def _rules_targets(folder: str) -> list[str]:

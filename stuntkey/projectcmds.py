@@ -245,11 +245,26 @@ def cmd_status(args, catalog: dict, out=None, check_keychain=True,
         out.write("\n")
         try:        # say so plainly when the activity log is not signed
             from . import broker, remote
-            note = broker.AuditLog(os.path.join(remote.home_dir(), "audit.log")).describe()
+            alog = broker.AuditLog(os.path.join(remote.home_dir(), "audit.log"))
+            note = alog.describe()
+            from . import logfacts
+            facts_text = logfacts.log_lines(logfacts.log_facts(alog))
         except Exception:
-            note = ""
+            note, facts_text = "", ""
+        if facts_text:
+            out.write(f"{facts_text}\n\n")
         if note:
             out.write(f"  {printable(note)}\n\n")
+        try:        # recent limit / first-use notices from the proxy
+            from . import caps as caps_mod
+            notices = caps_mod.recent_notices(remote.home_dir(), 5)
+        except Exception:
+            notices = []
+        if notices:
+            out.write("  Recent notices:\n")
+            for line in notices:
+                out.write(f"    {printable(line)}\n")
+            out.write("\n")
     bad = [r for r in rows if r["state"] != "stored"]
     old = [r for r in rows if r["state"] == "stored" and r["hint"]]
     return 1 if bad or old else 0

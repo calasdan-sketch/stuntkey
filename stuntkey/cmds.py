@@ -34,6 +34,9 @@ def _emit(obj, as_json: bool, text: str) -> None:
     print(json.dumps(obj, indent=2) if as_json else text)
 
 
+from .logfacts import BIG_LOG_ENTRIES, log_facts, log_lines  # noqa: E402,F401  (leaf module)
+
+
 # ---- status ---------------------------------------------------------------------
 
 def cmd_status(catalog: dict, env_file: str, as_json: bool) -> int:
@@ -42,10 +45,12 @@ def cmd_status(catalog: dict, env_file: str, as_json: bool) -> int:
     alog = broker.AuditLog(os.path.join(_home(), "audit.log"))
     ok, n = alog.verify()
     warn = alog.describe()
+    facts = log_facts(alog)
     info = {"python": sys.version.split()[0], "services": len(rows),
             "with_keys": sum(r["key_stored"] for r in rows),
             "audit_log_ok": ok, "audit_entries": n,
-            "connected": [r["service"] for r in rows if r["key_stored"]]}
+            "connected": [r["service"] for r in rows if r["key_stored"]],
+            "audit_bytes": facts["bytes"], "audit_last_write": facts["last_write"]}
     head = ("stuntkey is ready." if info["with_keys"]
             else "Not ready yet: no key is saved. Run `stuntkey start`.")
     text = (f"{head}\n"
@@ -54,6 +59,9 @@ def cmd_status(catalog: dict, env_file: str, as_json: bool) -> int:
             f"  connected: {', '.join(info['connected']) or 'none yet'}\n"
             f"  activity log: {'intact' if ok else 'check FAILED - run `stuntkey audit show`'} "
             f"({n} entries)")
+    extra = log_lines(facts)
+    if extra:
+        text += "\n" + extra
     if warn:
         text += f"\n  {warn}"
         info["audit_note"] = warn
@@ -177,9 +185,13 @@ def cmd_serve(catalog: dict, port: int, env_file: str) -> int:
         return {"keys": [{"name": r.get("display") or s}
                          for s, r in sorted(catalog.items()) if _have_key(r, env_file)],
                 "practice_cmd": "stuntkey try"}
-    srv = httpd.make_server(catalog, lambda r: remote.collect_values(r, env_file),
-                            token, policy, audit, port=port,
-                            page_status=page_status, version=stuntkey.__version__)
+    try:
+        srv = httpd.make_server(catalog, lambda r: remote.collect_values(r, env_file),
+                                token, policy, audit, port=port,
+                                page_status=page_status, version=stuntkey.__version__)
+    except httpd.PortBusy as e:
+        print(str(e), flush=True)
+        return 1
     p = srv.server_address[1]
     print(f"stuntkey web door is open at http://127.0.0.1:{p}\n"
           f"  Your page (one-time link, works once, for 2 minutes):\n"
@@ -195,7 +207,7 @@ def cmd_serve(catalog: dict, port: int, env_file: str) -> int:
 
 def cmd_start(catalog: dict, env_file: str) -> int:
     from . import gitscan as scan_mod
-    print("\nstuntkey - your AI can use your keys, and never see them.\n")
+    print("\nstuntkey - through the broker the key never enters your AI's environment.\n")
     d = scan_mod.doctor()
     print(scan_mod.format_doctor(d))
     res = scan_mod.scan(["."], include_home=True)

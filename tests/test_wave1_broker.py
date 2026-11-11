@@ -286,6 +286,8 @@ class Proxy(unittest.TestCase):
 
     def test_policy_can_allow_more_writes(self):
         Upstream.release.set()
+        # round 12: a policy-allowed non-AI write now asks the person; a stub says yes
+        self.pol.approve = lambda *a, **k: True
         write(route.user_file(self.home), {"openai": {"methods": ["POST"], "paths": ["/v1/files"]}})
         approve_all(self.home, self.home)
         r = self.open("/openai/v1/files")

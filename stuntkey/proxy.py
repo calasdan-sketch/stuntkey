@@ -10,12 +10,33 @@ speaks HTTPS to the recipe's own host.
 
 Per request: /<service>/<path> picks the recipe (the host comes from the
 recipe); the route policy, kill switch and caps are checked; POST and other
-writes go only to the usual LLM endpoints unless stuntkey.policy allows more
-(nobody is asked: a consent window cannot show a long prompt); the client's
+writes go only to the usual LLM endpoints unless stuntkey.policy allows more;
+the client's
 own credential headers are dropped and only a short list of headers passes
 either way; the answer is streamed back through the Scrubber; one line goes
 to the activity log. If the proxy dies, the program's calls fail (its base
 URL points at a closed port): fail closed.
+
+WHEN THE PERSON IS ASKED (round 12; this closes the hole where the proxy
+returned `GET /github/user` with the real key and no question, bypassing the
+MCP "first use" window and the "3 refusals" stop):
+  * AI-model calls stay prompt-free, as documented: the usual POST endpoints
+    (SAFE_WRITES: chat, responses, messages, embeddings) and reading the model
+    list (MODEL_READS). A consent window cannot show a long prompt, and these
+    are the whole point of the proxy.
+  * Everything else is NOT prompt-free:
+      - the first READ (GET/HEAD) to any other path of a service asks ONCE per
+        service+host, like the MCP path ("First use of ..."). A yes is
+        remembered for this proxy run only (Policy.approved_hosts, in memory,
+        never written to disk), and covers reads only;
+      - a WRITE to any other path (only possible when a policy file allows it)
+        asks for EVERY request and shows the body, like the MCP path.
+  * Asking goes through Policy.ask, so the same stop applies: after 3 refusals
+    no more windows open and every such request is refused for the rest of
+    the run. With no way to ask (no window, STUNTKEY_NO_WINDOW=1) the answer is
+    NO. A refusal does not spend any cap.
+  * The first-time host and every refusal leave a plain line in the notices
+    file (caps.notice) that `stuntkey caps show` prints.
 
 What the program gets in its environment: an ALLOW-LIST (see ALLOW_ENV), not a
 copy of yours. PATH, Windows system folders, home and temp folders, language
@@ -82,14 +103,19 @@ SAFE_WRITES = {"/v1/chat/completions", "/v1/completions", "/v1/responses",
                "/v1/messages", "/v1/messages/count_tokens", "/v1/embeddings",
                "/openai/v1/chat/completions", "/openai/v1/embeddings",
                "/api/v1/chat/completions"}
+# reading the list of AI models is also prompt-free (the SDKs do it on start)
+MODEL_READS = ("/v1/models", "/openai/v1/models", "/api/v1/models")
 REQ_HEADERS = {"content-type", "accept", "anthropic-version", "anthropic-beta",
                "openai-beta", "idempotency-key"}
 RESP_HEADERS = {"content-type", "retry-after", "request-id", "x-request-id"}
 RESP_PREFIXES = ("x-ratelimit-", "anthropic-ratelimit-")
 NO_PROXY_AUTH = {"oauth2_client_credentials", "aws_sigv4"}
 MAX_BODY = 16_000_000          # a long chat history; nobody reviews it
-MAX_CALLS = 100_000            # the caps in caps.json are the real limit
-PER_MINUTE = 600
+MAX_CALLS = 5_000              # per run; per-key caps (caps.py defaults) are tighter
+PER_MINUTE = 300
+TUNNEL_IDLE = 300.0            # a tunnel with no bytes either way this long is closed
+TUNNEL_SEND_TIMEOUT = 30.0     # one stuck write (peer not reading) cannot hold a thread
+TUNNEL_MAX_SECONDS = 3600.0    # no tunnel lives longer than an hour
 UPSTREAM_TIMEOUT = 300.0       # long model answers
 
 
@@ -200,11 +226,19 @@ def parse_map(items, catalog: dict) -> dict:
     return out
 
 
-def tunnel_hosts(catalog: dict, extra=()) -> dict:
-    """{host: service-or-None}: the only hosts a CONNECT tunnel may reach."""
+def tunnel_hosts(catalog: dict, extra=(), only_services=None) -> dict:
+    """{host: service-or-None}: the only hosts a CONNECT tunnel may reach.
+
+    `only_services`: when given (a set of service names), only the hosts of
+    those services are included: cmd_proxy passes the services that have a
+    stored key right now, so a run does not get a hole to all ~38 recipe
+    hosts. None keeps every recipe host (tests, library use). Hosts named
+    with --allow-host (`extra`) are always added."""
     import re
     hosts = {}
     for recipe in catalog.values():
+        if only_services is not None and recipe["service"] not in only_services:
+            continue
         try:
             hosts[broker.allowed_host(recipe)] = recipe["service"]
         except broker.BrokerError:
@@ -264,6 +298,14 @@ def child_env(catalog: dict, base: str, token: str, environ=None, keep=(),
                 env[name] = value
     # the program talks to 127.0.0.1 directly, never through an outside proxy
     old = _pop_names(env, "NO_PROXY")
+    if tunnel:
+        # With the tunnel on, the parent's own proxy settings must not decide
+        # where traffic goes: ALL_PROXY / HTTP_PROXY would send it round the
+        # tunnel, and a parent NO_PROXY ("*", ".com", ...) would let hosts
+        # bypass it. Only loopback is exempt.
+        for name in ("ALL_PROXY", "HTTP_PROXY"):
+            _pop_names(env, name)
+        old = ""
     _set_name(env, "NO_PROXY", old if "127.0.0.1" in old
               else (old + "," if old else "") + LOOPBACK)
     for service, (var, suffix) in ENV.items():
@@ -296,17 +338,24 @@ def _dial(ip: str, port: int):
     return socket.create_connection((ip, port), 30)
 
 
-def _splice(a, b, idle: float = 300.0) -> int:
-    """Copy bytes both ways between two sockets until either side closes or
-    nothing moves for `idle` seconds. Returns how many bytes were copied."""
+def _splice(a, b, idle: float = TUNNEL_IDLE, send_timeout: float = TUNNEL_SEND_TIMEOUT,
+            max_seconds: float = TUNNEL_MAX_SECONDS) -> int:
+    """Copy bytes both ways between two sockets until either side closes,
+    nothing moves for `idle` seconds, one write is stuck for `send_timeout`
+    seconds (the other end is not reading), or `max_seconds` have passed in
+    all. Both sockets are always closed. Returns how many bytes were copied."""
     total = 0
     sel = selectors.DefaultSelector()
+    started = time.monotonic()
     try:
         for s, other in ((a, b), (b, a)):
             s.setblocking(False)
             sel.register(s, selectors.EVENT_READ, other)
         while True:
-            events = sel.select(idle)
+            left = max_seconds - (time.monotonic() - started)
+            if left <= 0:
+                break
+            events = sel.select(min(idle, left))
             if not events:
                 break
             done = False
@@ -322,12 +371,14 @@ def _splice(a, b, idle: float = 300.0) -> int:
                     done = True
                     continue
                 total += len(data)
-                key.data.setblocking(True)
+                # A write must not block for ever when the far end stopped
+                # reading: give it `send_timeout`, then give up on the tunnel.
                 try:
+                    key.data.settimeout(send_timeout)
                     key.data.sendall(data)
-                except OSError:
+                    key.data.setblocking(False)
+                except OSError:             # includes socket.timeout
                     done = True
-                key.data.setblocking(False)
             if done:
                 break
     finally:
@@ -338,6 +389,18 @@ def _splice(a, b, idle: float = 300.0) -> int:
             except OSError:
                 pass
     return total
+
+
+def prompt_free(method: str, path: str) -> bool:
+    """True for the calls the proxy exists for, which never open a window: the
+    usual AI POST endpoints and reading the model list. Anything else asks."""
+    if method in broker.WRITE_METHODS:
+        return path in SAFE_WRITES
+    plain = urllib.parse.unquote(path.split("?")[0])
+    if ".." in plain.split("/") or "//" in plain:
+        return False
+    return method in broker.READ_METHODS and any(
+        plain == p or plain.startswith(p + "/") for p in MODEL_READS)
 
 
 def _given_token(headers) -> str:
@@ -403,6 +466,16 @@ def make_proxy(catalog: dict, get_values, token: str, policy: broker.Policy,
             """Host-allow-list tunnel. The bytes are NOT looked at (they are TLS
             between the program and the host): no key is added, nothing is
             scrubbed. What it gives is control over WHERE the program can go."""
+            host, _, port = self.path.rpartition(":")
+            host = host.strip("[]").lower()
+            # Same guard as every other route (no web page via Origin, and the
+            # request must be meant for the target it names). A CONNECT's Host
+            # is the target, not us, so httpd.local_only is told the target.
+            # The peer must also be this computer.
+            if (not httpd.local_only(self.headers, self.server.server_address[1],
+                                     connect_target=self.path)
+                    or self.client_address[0] not in ("127.0.0.1", "::1")):
+                return self._fail(403, "forbidden")
             if tunnel is None:
                 return self._fail(403, "the tunnel is off; start with --tunnel")
             try:
@@ -416,9 +489,20 @@ def make_proxy(catalog: dict, get_values, token: str, policy: broker.Policy,
                 self.send_header("Content-Length", "0")
                 self.end_headers()
                 return
-            host, _, port = self.path.rpartition(":")
-            host = host.strip("[]").lower()
+            def note(result: str) -> None:
+                # refused or failed attempts are written down too (best effort:
+                # a broken log must not turn a refusal into a crash)
+                if audit is not None:
+                    try:
+                        audit.write({"service": (tunnel.get(host) if isinstance(tunnel, dict)
+                                                 else None) or "(tunnel)",
+                                     "method": "CONNECT", "host": _clean_host(host),
+                                     "path": "", "status": 0, "bytes": 0,
+                                     "result": result, "ms": 0})
+                    except Exception:
+                        pass
             if port != "443" or host not in tunnel:
+                note("refused")
                 return self._fail(403, f"{_clean_host(host)} is not on this run's allowed "
                                        "host list, so the connection was not made. A person "
                                        "can add it with --allow-host.")
@@ -437,8 +521,10 @@ def make_proxy(catalog: dict, get_values, token: str, policy: broker.Policy,
                     audit.ready()
                 upstream = (tunnel_connect or _dial)(ip, 443)
             except broker.BrokerError as e:
+                note("refused" if e.code == 5 else "network-error")
                 return self._fail(403 if e.code == 5 else 502, str(e))
             except OSError:
+                note("network-error")
                 return self._fail(502, "could not connect to the host")
             started = time.time()
             self.send_response(200, "Connection established")
@@ -533,8 +619,52 @@ def make_proxy(catalog: dict, get_values, token: str, policy: broker.Policy,
             if n and method in broker.READ_METHODS:
                 raise broker.BrokerError("GET/HEAD may not have a body", 5)
             body = self.rfile.read(n) if n else None
+            self._ask_person(recipe, method, host, url, path, body)
             policy.gate(service, method, path)
             return host, url, body
+
+        def _ask_person(self, recipe, method, host, url, path, body) -> None:
+            """Ask the person when this request is not a plain AI-model call
+            (see "WHEN THE PERSON IS ASKED" at the top of this file). Raises
+            BrokerError when the answer is no. Runs BEFORE policy.gate so a
+            refusal spends no cap."""
+            service = recipe["service"]
+            if prompt_free(method, path):
+                return
+            # a route policy that forbids it is a plain refusal: no window
+            route.check(route.load(policy.limits_home(),
+                                   policy.project_dir or os.getcwd()),
+                        service, method, path)
+            with policy.lock:
+                if method in broker.WRITE_METHODS:
+                    # a write the policy file allowed: every one is shown, with its body
+                    summary = broker.describe(recipe, method, host, url, body)
+                    if len(summary) > broker.MAX_REVIEW:
+                        raise broker.BrokerError(broker.TOO_LONG, 5)
+                    asked = summary
+                elif (service, host) in policy.approved_hosts:
+                    return                      # said yes earlier in this run
+                else:
+                    asked = (f"A program run through `stuntkey proxy` wants to use your "
+                             f"'{service}' key to read from {host} (first request: "
+                             f"{method} {broker._clean(path, 120)}). If you allow it, more "
+                             "reads like this to this service are allowed until the "
+                             "proxy closes. AI chat and message calls never ask.")
+                    caps.notice(policy.limits_home(),
+                                f"First use of '{service}' ({host}) through the proxy "
+                                "outside the AI endpoints: asking you.")
+                try:
+                    yes = policy.ask(asked)
+                except broker.BrokerError as e:
+                    caps.notice(policy.limits_home(), str(e))
+                    raise
+                if not yes:
+                    caps.notice(policy.limits_home(),
+                                f"You said no (or no window could open) to a proxy "
+                                f"request for '{service}'; it was refused.")
+                    raise broker.BrokerError(broker.NO_APPROVAL, 5)
+                if method in broker.READ_METHODS:
+                    policy.approved_hosts.add((service, host))
 
         def _relay(self, resp, secrets_, service):
             enc = (resp.getheader("content-encoding") or "").lower()
@@ -604,6 +734,8 @@ def add_parsers(sub) -> None:
     pr.add_argument("--allow-host", dest="allow_host", action="append", metavar="HOST",
                     help="With the tunnel: one more host the program may reach "
                          "(for example api.github.com). Repeat for more.")
+    pr.add_argument("--port", type=int, default=0,
+                    help="Use this port for the proxy (default: any free one).")
     pr.add_argument("command", nargs=argparse.REMAINDER)
     cp = sub.add_parser("caps", help="Show or set per-key call and token caps.")
     cps = cp.add_subparsers(dest="caps_cmd", required=True)
@@ -611,6 +743,7 @@ def add_parsers(sub) -> None:
     cs = cps.add_parser("set", help="Set caps for one service (asks you first).")
     cs.add_argument("service")
     cs.add_argument("--calls-session", dest="calls_session", type=int)
+    cs.add_argument("--calls-hour", dest="calls_hour", type=int)
     cs.add_argument("--calls-day", dest="calls_day", type=int)
     cs.add_argument("--tokens-day", dest="tokens_day", type=int)
     cs.add_argument("--clear", action="store_true", help="Remove this service's caps.")
@@ -675,27 +808,53 @@ def cmd_proxy(catalog: dict, args, home: str) -> int:
     keep, extra_hosts = listed("keep_env"), listed("allow_host")
     generic = getattr(args, "generic", False) is True
     use_tunnel = getattr(args, "tunnel", False) is True or bool(extra_hosts)
+    from . import approve as approve_mod
     try:
         maps = parse_map(listed("map"), catalog)
-        hosts = tunnel_hosts(catalog, extra_hosts) if use_tunnel else None
+        hosts = None
+        if use_tunnel:
+            # only services that have a key stored right now (plus --allow-host)
+            stored = set()
+            for s, r in catalog.items():
+                try:
+                    remote.collect_values(r, args.env_file)
+                    stored.add(s)
+                except Exception:
+                    pass
+            hosts = tunnel_hosts(catalog, extra_hosts, only_services=stored)
     except ValueError as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
     token = "ok-" + secrets.token_urlsafe(24)
-    policy = broker.Policy(max_calls=MAX_CALLS, max_per_minute=PER_MINUTE)
+    # approve=ask_person: non-AI reads and writes ask (see _ask_person)
+    policy = broker.Policy(max_calls=MAX_CALLS, max_per_minute=PER_MINUTE,
+                           approve=approve_mod.ask_person)
     audit = broker.AuditLog(os.path.join(home, "audit.log"))
-    srv = make_proxy(catalog, lambda r: remote.collect_values(r, args.env_file),
-                     token, policy, audit, tunnel=hosts)
+    port = getattr(args, "port", 0)
+    port = port if isinstance(port, int) and not isinstance(port, bool) else 0
+    try:
+        srv = make_proxy(catalog, lambda r: remote.collect_values(r, args.env_file),
+                         token, policy, audit, port=port, tunnel=hosts)
+    except httpd.PortBusy as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
     base = f"http://127.0.0.1:{srv.server_address[1]}"
     env = child_env(catalog, base, token, keep=keep, generic=generic, maps=maps,
                     tunnel=use_tunnel)
     if args.print_env or not command:
         # only what stuntkey itself sets: the proxy address and the session password
+        # flush=True: when piped, Python buffers stdout, so the variables would
+        # never appear while the proxy keeps running
         for var, value in env.items():
             if base in value or token in value:
-                print(f"{var}={value}")
+                print(f"{var}={value}", flush=True)
         print("stuntkey proxy is open (other services: /<service>/...). These "
-              "values are not your keys. Ctrl+C to close.", file=sys.stderr)
+              "values are not your keys. Ctrl+C to close.\n"
+              "NOTICE: AI chat/message calls and the model list go through without a "
+              "question. Anything else (for example GET /github/user) opens a "
+              "permission window the first time for each service, and after 3 'no' "
+              "answers nothing more is allowed. If no window can open, it is refused.",
+              file=sys.stderr, flush=True)
         httpd.serve_forever(srv)
         return 0
     httpd.start_background(srv)

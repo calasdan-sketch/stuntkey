@@ -490,11 +490,66 @@ def _backoff(attempt: int) -> float:
 # ---- links and junctions -----------------------------------------------------
 
 REPARSE_POINT = 0x400        # FILE_ATTRIBUTE_REPARSE_POINT
+TAG_SYMLINK = 0xA000000C     # IO_REPARSE_TAG_SYMLINK
+TAG_MOUNT_POINT = 0xA0000003  # IO_REPARSE_TAG_MOUNT_POINT (a junction)
+_REDIRECT_TAGS = (TAG_SYMLINK, TAG_MOUNT_POINT)
 
 
-def is_reparse_point(path: str) -> bool:
-    """True for a symbolic link, a Windows junction or any other Windows
-    reparse point (a folder or file that is really a pointer elsewhere)."""
+def reparse_is_link(attrs: int, tag: int | None) -> bool:
+    """Does a Windows file with these attributes and reparse tag redirect
+    somewhere else? Only a symbolic link or a junction does. OneDrive and
+    other cloud 'placeholder' files are reparse points too (other tags) but
+    are real files, so they are not links. A reparse point whose tag could
+    not be read (None) is treated as a link: safer to refuse than to trust."""
+    if not attrs & REPARSE_POINT:
+        return False
+    if tag is None:
+        return True
+    return tag in _REDIRECT_TAGS
+
+
+def _windows_attrs_and_tag(path: str):
+    """(attributes, reparse tag or None) from Windows, or None when the path
+    cannot be looked up. The tag comes from FindFirstFileW (dwReserved0)."""
+    import ctypes
+    from ctypes import wintypes
+
+    class FindData(ctypes.Structure):
+        _fields_ = [("dwFileAttributes", wintypes.DWORD),
+                    ("ftCreationTime", wintypes.FILETIME),
+                    ("ftLastAccessTime", wintypes.FILETIME),
+                    ("ftLastWriteTime", wintypes.FILETIME),
+                    ("nFileSizeHigh", wintypes.DWORD),
+                    ("nFileSizeLow", wintypes.DWORD),
+                    ("dwReserved0", wintypes.DWORD),
+                    ("dwReserved1", wintypes.DWORD),
+                    ("cFileName", wintypes.WCHAR * 260),
+                    ("cAlternateFileName", wintypes.WCHAR * 14)]
+
+    kernel = ctypes.windll.kernel32
+    get_attrs = kernel.GetFileAttributesW
+    get_attrs.restype = ctypes.c_uint32
+    attrs = get_attrs(str(path))
+    if attrs == 0xFFFFFFFF:
+        return None
+    if not attrs & REPARSE_POINT:
+        return attrs, None
+    find_first = kernel.FindFirstFileW
+    find_first.restype = wintypes.HANDLE
+    find_first.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(FindData)]
+    data = FindData()
+    handle = find_first(str(path), ctypes.byref(data))
+    if handle in (None, wintypes.HANDLE(-1).value, ctypes.c_void_p(-1).value):
+        return attrs, None
+    kernel.FindClose(wintypes.HANDLE(handle))
+    return attrs, int(data.dwReserved0)
+
+
+def is_reparse_point(path: str, read_attrs=None) -> bool:
+    """True for a symbolic link or a Windows junction (a folder or file that
+    is really a pointer elsewhere). A OneDrive / cloud placeholder file is a
+    Windows 'reparse point' of another kind and is NOT treated as a link.
+    `read_attrs(path)` -> (attributes, tag) | None is for tests."""
     try:
         if os.path.islink(path):
             return True
@@ -503,17 +558,39 @@ def is_reparse_point(path: str) -> bool:
             return True
     except OSError:
         return False
-    if os.name == "nt":
+    if os.name == "nt" or read_attrs is not None:
         try:
-            import ctypes
-            fn = ctypes.windll.kernel32.GetFileAttributesW
-            fn.restype = ctypes.c_uint32
-            attrs = fn(str(path))
-            if attrs != 0xFFFFFFFF and attrs & REPARSE_POINT:
+            got = (read_attrs or _windows_attrs_and_tag)(path)
+            if got is not None and reparse_is_link(got[0], got[1]):
                 return True
-        except (OSError, AttributeError, ImportError):
+        except (OSError, AttributeError, ImportError, ValueError):
             pass
     return False
+
+
+def migrate_document(data: dict, current: int, migrations: dict, what: str,
+                     path: str | None = None, update_hint: str = "pipx upgrade stuntkey") -> dict:
+    """Bring a saved file's contents up to format `current`. `data["schema_version"]`
+    (or the older name `version`) says which format it is in; missing means 1.
+    `migrations` maps {old_version: fn(data) -> data in old_version + 1}. A
+    NEWER format, or one with a missing step, raises OSError with plain words
+    (never overwrite what this version cannot read)."""
+    raw = data.get("schema_version", data.get("version", 1))
+    version = raw if isinstance(raw, int) and not isinstance(raw, bool) and raw >= 1 else 1
+    if version > current:
+        raise OSError(22, f"{what} was made by a newer StuntKey. Update StuntKey "
+                          f"({update_hint}) and try again", path)
+    while version < current:
+        step = migrations.get(version)
+        if step is None:
+            raise OSError(22, f"{what} is in an old format this StuntKey cannot "
+                              f"read. Update StuntKey ({update_hint})", path)
+        data = step(data)
+        version += 1
+        data["version"] = version
+        if "schema_version" in data:
+            data["schema_version"] = version
+    return data
 
 
 def private_path_problem(path: str) -> str | None:

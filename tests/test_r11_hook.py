@@ -392,8 +392,7 @@ KNOWN_HELD_MISSES = {
     "python -c \"exec(open('p.py').read())\"",
     'cmd /c "set a=cmd&& set b=key&& call %a%%b% /list"',
     "powershell -c \"-join ('yekdmc'[5..0])\"",
-    "perl -e 'print %ENV'",
-    "cat firebase-adminsdk-abc12.json",
+    "cat firebase-adminsdk-abc12.json",       # (round 12 closed `perl -e 'print %ENV'`)
     "Get-ItemProperty HKCU:\\Software\\Microsoft\\Clipboard",
 }
 KNOWN_HELD_WRONG = {

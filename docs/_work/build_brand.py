@@ -3,6 +3,7 @@
 Writes: docs/site/styles.css, docs/site/*.html, stuntkey/web/index.html.
 The crest is the real Calas logo PNG (docs/site/favicon.png), embedded as a mask.
 Run:  python docs/_work/build_brand.py
+Importing it writes nothing: read OUT ({path: text}), or call write_all().
 """
 import base64
 import os
@@ -22,10 +23,20 @@ def rd(p):
         return f.read()
 
 
+OUT = {}   # "docs/site/index.html" -> text, filled by wr(); nothing is written on import
+
+
 def wr(p, s):
-    os.makedirs(os.path.dirname(p), exist_ok=True)
-    with open(p, "w", encoding="utf8", newline="\n") as f:
-        f.write(s)
+    OUT[os.path.relpath(p, ROOT).replace(os.sep, "/")] = s
+
+
+def write_all():
+    """Write every collected page to disk (what `python build_brand.py` does)."""
+    for rel, s in OUT.items():
+        p = os.path.join(ROOT, *rel.split("/"))
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, "w", encoding="utf8", newline="\n") as f:
+            f.write(s)
 
 
 with open(os.path.join(SITE, "favicon.png"), "rb") as f:
@@ -77,14 +88,14 @@ def page(fname, title, desc, body, hero=False):
 
 INDEX = """<section class="hero"><div class="wrap">
   <p class="eyebrow">Free and open source &middot; Windows, Mac, Linux</p>
-  <h1>Your AI uses your keys. <em>It never sees them.</em></h1>
+  <h1>Your AI uses your keys. <em>The key stays out of its environment.</em></h1>
   <p class="lede">StuntKey keeps your API keys in your computer's own keychain. Your AI works with a stand-in, a stunt double, and StuntKey adds the real key on the way out.</p>
   <div class="ctas"><a class="btn gold" href="add-your-first-key.html">Add your first key</a><a class="btn ghost" href="how-it-works.html">How it works</a></div>
 </div></section>
 <section><div class="wrap">
   <h2>Why it matters</h2>
   <div class="grid">
-    <div class="card"><h3>Keys stay hidden</h3><p>Your AI can use a key without ever holding it. If it never holds it, it cannot leak it.</p></div>
+    <div class="card"><h3>Keys stay hidden</h3><p>Used through the broker, the key never enters your AI's environment. A key it does not hold is much harder to leak.</p></div>
     <div class="card"><h3>Spending limits</h3><p>Set a daily limit on each key, and stop everything with one command.</p></div>
     <div class="card"><h3>Fix a leak fast</h3><p>Leaked one? <code>stuntkey panic openai</code> walks you through it, step by step.</p></div>
   </div>
@@ -98,22 +109,22 @@ INDEX = """<section class="hero"><div class="wrap">
 <section><div class="wrap">
   <h2>Honest about the limits</h2>
   <div class="note"><p>StuntKey lowers the risk. It does not remove it. It is beta and has not had an independent security review yet.</p>
-  <p>It cannot stop an AI misusing a key it is allowed to use, so give each key only the permissions it needs. It does not protect against a virus already running as you. Details: the <a href="https://github.com/calasdan-sketch/stuntkey/blob/main/docs/THREAT_MODEL.md">threat model</a>.</p></div>
+  <p>It cannot stop an AI misusing a key it is allowed to use, so give each key only the permissions it needs. It does not protect against a virus already running as you: anything running as you can read your keychain. The Claude Code hook blocks common leaks, but Cursor, Codex, Gemini and Claude Desktop have no such hook for their file tools, screenshots and the clipboard are not covered, and code that hides what it does can get past pattern checks. Details: the <a href="https://github.com/calasdan-sketch/stuntkey/blob/main/docs/THREAT_MODEL.md">threat model</a>.</p></div>
   <p>We publish an Agent Leak Benchmark, a set of ways an AI agent can expose a key. Run it yourself with <code>python -m leakbench</code> from the repository.</p>
 </div></section>"""
 
 HOW = """<div class="page"><div class="wrap">
   <p class="crumbs"><a href="index.html">StuntKey</a> / How it works</p>
   <h1>How it <em>works</em></h1>
-  <p class="lede">The idea is simple. The key that matters never goes where the AI can read it.</p>
+  <p class="lede">The idea is simple. Through the broker, the key does not go where the AI can read it.</p>
   <h2>The stunt double</h2>
   <p>In a film, the stunt double does the risky part. StuntKey does the same for your keys. Your AI gets a stand-in and uses that. StuntKey swaps in the real key only at the last moment, outside the AI's sight.</p>
   <h2>Step by step</h2>
   <ol class="steps">
     <li><b>You save a key once.</b><p>StuntKey locks it in your computer's keychain: Windows Credential Manager, macOS Keychain, or the Linux keyring.</p></li>
-    <li><b>Your AI asks for a call.</b><p>It says "call this service", or it talks to a local stand-in address. It never gets the key.</p></li>
+    <li><b>Your AI asks for a call.</b><p>It says "call this service", or it talks to a local stand-in address. The key is not in its environment.</p></li>
     <li><b>StuntKey makes the call.</b><p>It adds the real key, sends the request to the right website, and hands back only the answer.</p></li>
-    <li><b>StuntKey keeps watch.</b><p>It blocks the sneaky routes: dumping environment variables, reading your private keys, opening your <code>.env</code> file. If a key appears in output, it is hidden before the AI sees it.</p></li>
+    <li><b>StuntKey keeps watch.</b><p>It blocks the sneaky routes: dumping environment variables, reading your private keys, opening your <code>.env</code> file. With the Claude Code hook, a key that appears in a command's output is hidden before the AI reads it.</p></li>
   </ol>
   <h2>You stay in charge</h2>
   <ul class="tick">
@@ -123,7 +134,7 @@ HOW = """<div class="page"><div class="wrap">
     <li>Find keys already lying around: <code>stuntkey scan</code>.</li>
   </ul>
   <h2>What it does not do</h2>
-  <div class="note"><p>It lowers risk, it does not remove it. It cannot stop an AI misusing a key it is allowed to use, and it does not protect against malware already running as you. It is beta and has not had an independent security review.</p></div>
+  <div class="note"><p>It lowers risk, it does not remove it. It cannot stop an AI misusing a key it is allowed to use, and it does not protect against malware already running as you (anything running as you can read your keychain). Other AI apps (Cursor, Codex, Gemini, Claude Desktop) have no hook for their file tools. It is beta and has not had an independent security review.</p></div>
   <div class="ctas"><a class="btn" href="add-your-first-key.html">Add your first key</a></div>
 </div></div>"""
 
@@ -149,12 +160,14 @@ FIRST = """<div class="page"><div class="wrap">
 </div></div>"""
 
 wr(os.path.join(SITE, "index.html"), page("index.html", "StuntKey by Calas Automations",
-   "StuntKey keeps your API keys in your keychain and lets your AI use them without ever seeing them. Free, open source.", INDEX))
+   "StuntKey keeps your API keys in your keychain and lets your AI use them through a broker, so the key stays out of its environment. Free, open source.", INDEX))
 wr(os.path.join(SITE, "how-it-works.html"), page("how-it-works.html", "How StuntKey works - Calas Automations",
-   "How StuntKey lets your AI use your API keys without seeing them, in plain words.", HOW))
+   "How StuntKey keeps your API keys out of your AI's environment, in plain words.", HOW))
 wr(os.path.join(SITE, "add-your-first-key.html"), page("add-your-first-key.html", "Add your first key - StuntKey by Calas Automations",
    "Add your first API key to StuntKey in about a minute: install, check, add, connect.", FIRST))
 
 tpl = rd(os.path.join(SRC, "web.tpl.html"))
 wr(os.path.join(ROOT, "stuntkey", "web", "index.html"), tpl.replace("/*@@CSS@@*/", css))
-print("built", os.path.join(SITE), "and stuntkey/web/index.html")
+if __name__ == "__main__":
+    write_all()
+    print("built", os.path.join(SITE), "and stuntkey/web/index.html")

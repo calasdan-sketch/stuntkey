@@ -425,6 +425,52 @@ def grants_for(project: str, path: str | None = None, store=None) -> list[dict]:
 _LOCK = threading.RLock()
 
 
+def _pid_alive(pid: int) -> bool:
+    """Is a process with this id running? Unsure counts as yes."""
+    if pid <= 0 or pid == os.getpid():
+        return True
+    try:
+        if os.name == "nt":
+            import ctypes
+            kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+            handle = kernel.OpenProcess(0x1000, False, pid)   # QUERY_LIMITED_INFORMATION
+            if not handle:
+                return ctypes.get_last_error() != 87          # 87: no such process
+            try:
+                code = ctypes.c_ulong()
+                if kernel.GetExitCodeProcess(handle, ctypes.byref(code)):
+                    return code.value == 259                  # STILL_ACTIVE
+                return True
+            finally:
+                kernel.CloseHandle(handle)
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except Exception:
+        return True
+
+
+def _lock_is_stale(path: str, limit: float) -> bool:
+    """A lock is stale when it is older than `limit` seconds, or (after a short
+    grace) when the process that made it is gone - a crash must not block the
+    next run for minutes."""
+    try:
+        age = time.time() - os.stat(path).st_mtime
+    except OSError:
+        return False
+    if age > limit:
+        return True
+    if age < 2:
+        return False
+    try:
+        with open(path, encoding="ascii") as f:
+            pid = int(f.read(32).split()[0])
+    except (OSError, ValueError, IndexError, UnicodeDecodeError):
+        return False
+    return not _pid_alive(pid)
+
+
 class _FolderLock:
     """One writer at a time, across threads and processes: an O_EXCL lock
     file next to the consent file. A lock is stale after STALE_LOCK seconds
@@ -443,14 +489,19 @@ class _FolderLock:
         end = time.monotonic() + self.WAIT
         while True:
             try:
-                os.close(os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))
+                fd = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                try:
+                    os.write(fd, f"{os.getpid()}\n".encode("ascii"))   # who holds it
+                except OSError:
+                    pass
+                os.close(fd)
                 return self
             except FileExistsError:
                 try:
-                    if time.time() - os.stat(self.path).st_mtime > self.STALE_LOCK:
+                    if _lock_is_stale(self.path, self.STALE_LOCK):
                         aside = f"{self.path}.stale-{os.getpid()}-{time.monotonic_ns()}"
                         os.rename(self.path, aside)         # only one waiter wins the rename
-                        if time.time() - os.stat(aside).st_mtime <= self.STALE_LOCK:
+                        if not _lock_is_stale(aside, self.STALE_LOCK):
                             # what was renamed is a FRESH lock (it was replaced between our
                             # look and our rename): put it back if the name is free, else
                             # drop it, and back off either way

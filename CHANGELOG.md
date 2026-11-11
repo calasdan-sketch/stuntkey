@@ -1,5 +1,52 @@
 # Changelog
 
+## 0.9.3 - 2026-11-10
+
+Round-12 release. In plain words:
+
+**Import (`stuntkey import`)**
+- `--delete-source` now erases the file only if every name in it was saved. Before, it could
+  destroy a name stuntkey had not imported. Otherwise it keeps the file and says why.
+- Any unexpected problem now ends in one plain sentence, never a crash, and never deletes the file.
+- A `.env` line of 40,000 spaces no longer takes seconds to read.
+- `KEY="abc" # note` now saves `abc` (quotes come off before the comment). A name given twice
+  uses the last one, as `.env` files do.
+- Files written by PowerShell's `>` (UTF-16) and files with a byte-order mark are read.
+- Very deep JSON, a huge CSV cell and files over 2 MB give a plain error.
+- A strange Bitwarden `"fields"` value is ignored instead of crashing.
+- An entry found only by its title (a login called "OpenAI") is saved only if the value looks
+  like that service's key. Otherwise: `skipped: ... does not look like an OpenAI key`.
+
+**Status and checks**
+- `stuntkey status` and `overview` show the activity log's size, entry count and last write
+  time, and warn plainly above 50,000 entries.
+- `stuntkey doctor` makes sure the log's signing key exists, so "not signed" goes away.
+- `stuntkey doctor --self` compares the installed files with the installer's list and says
+  which changed.
+- `stuntkey about` shows the program file, version and install folder.
+
+**Honest docs**
+- README, SECURITY, THREAT_MODEL, the guide and the web pages now say plainly: the key never
+  enters the agent's environment when used through the broker, and a Claude Code hook blocks
+  common leaks. They no longer say "never sees". They also say: any program running as you can
+  read the keychain; Cursor, Codex, Gemini and Claude Desktop file tools have no hook;
+  screenshots and the clipboard are not covered; patterns cannot fully stop code that leaks by
+  running; and the leakbench key is a registered key, which flatters its score. The old line
+  "PowerShell is not masked" is fixed (Bash, PowerShell and MCP output are masked).
+- `stuntkey proxy`: a read (GET) to anything that is not an AI endpoint now asks once per
+  service. Before, it went through without asking.
+
+**Release hygiene**
+- New tests check that the generated web pages match `docs/_work/build_brand.py` (the script now
+  writes nothing when imported), that every package carries the same version, and that no new
+  import cycle appears.
+- The winget manifest folder is now `0.9.3` (it was stale at 0.9.0); the npm wrapper is 0.9.3.
+
+**Other round-12 work (by the other engineers; see their notes)**
+- Activity log: `stats()` and `ensure_key()`.
+- Hardening in the broker, proxy, approval windows, caps, the local web door, keychain, ledger,
+  runner, store and recipes code.
+
 ## 0.9.2 - 2026-11-10
 
 Round-3 review release. Summary (details below and in the sections under it):

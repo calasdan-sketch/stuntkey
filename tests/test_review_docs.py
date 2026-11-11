@@ -57,7 +57,8 @@ class DocsMatch(unittest.TestCase):
         # capability ("let your AI use your keys"), which is a builder's
         # framing nobody searches for.
         self.assertIn("Keep your API keys out of your coding agent's context.", text)
-        self.assertIn("never sees the key", text)
+        self.assertIn("never enters the\nagent's environment when used through the broker", text)
+        self.assertNotIn("never sees", text)
 
     def test_readme_leads_with_evidence_not_an_apology(self):
         """The front page must show the benchmark, and must not open with the

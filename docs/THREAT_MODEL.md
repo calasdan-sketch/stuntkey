@@ -53,7 +53,11 @@ report it, see [SECURITY.md](../SECURITY.md)).
   window, or on the terminal with a code shown only on screen; if neither can
   be shown the answer is no ([approve.py](../stuntkey/approve.py)). Reads ask
   once per service per AI session ([broker.py](../stuntkey/broker.py),
-  `Policy`). Three refusals stop further requests in that session.
+  `Policy`). Three refusals stop further requests in that session. `stuntkey proxy`
+  asks the same way for a read to anything that is not an AI endpoint (from 0.9.3;
+  before that such a read went through with no question). AI calls themselves
+  (chat, responses, messages, embeddings) are not asked about: a prompt is too long
+  to review in a window.
 - **Padding tricks.** Long query values and bodies are refused instead of shown
   cut off in the approval window.
 - **Credential minting through reads.** For AWS only plain look-ups pass; calls
@@ -76,8 +80,9 @@ network layer.
   back to its vendor. Some APIs change things on a GET. A read can also return
   *other* secrets (a settings or tokens listing) that stuntkey does not
   recognise. Limit each key at the provider: read-only, one project, an expiry.
-- **A same-user process reading the keychain.** The OS keychain protects keys
-  from other users and other machines, not from other programs running as you.
+- **A same-user process reading the keychain.** The OS keychain (on Windows, the
+  Credential Manager) protects keys from other users and other machines, not from
+  other programs running as you; any process running as your user can read it.
   Malware, or an agent that can run arbitrary code as you, can read the
   keychain, the `.env` fallback, the consent secret and the `serve` token, can
   rewrite the activity log so it verifies again, and can click the approval
@@ -105,9 +110,18 @@ network layer.
   their key-test addresses, and, for `find`, a public list on GitHub. But the
   *replies* from those services go to your AI app and so to the AI vendor. The
   key is scrubbed; the data is not.
-- **The clipboard.** `stuntkey get` empties the clipboard after taking the key,
-  but clipboard-history tools and other programs may keep a copy. Use
-  `--no-clipboard` if that matters.
+- **The clipboard and screenshots.** `stuntkey get` empties the clipboard after
+  taking the key, but clipboard-history tools and other programs may keep a copy.
+  Use `--no-clipboard` if that matters. Nothing covers screenshots or screen
+  sharing.
+- **Other AI apps.** The hook is for Claude Code. Cursor, Codex, Gemini and Claude
+  Desktop file tools have no hook, so a key in a file they can read is not
+  protected.
+- **Code that leaks by running.** The hook reads code text before it is saved or
+  run and blocks obvious leaks; patterns cannot fully stop code that hides what it
+  does.
+- **The `leakbench` score.** Its fake key is registered with stuntkey first, which
+  flatters the result; a key stuntkey has never seen is found by shape only.
 - **Memory.** Python cannot reliably wipe a secret from memory.
 - **A compromised vendor**, or one that logs your key itself.
 - **The OAuth token fetch** is checked to be public and ignores proxies, but it

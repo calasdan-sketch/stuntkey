@@ -178,6 +178,11 @@ def run_scrubbed(cmd, env, secrets, out=None, err=None) -> int:
 
 # ---- fail-closed second check ---------------------------------------------------------
 
+# terminal colour / cursor codes (ESC [ ... letter) and operating-system commands
+# (ESC ] ... BEL): a key split by them is one key once they are gone
+_ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]{0,200}(?:\x07|\x1b\\)|\x1b[@-Z\\-_]")
+
+
 def _normalize(text: str) -> str:
     """Undo the common disguises: whitespace splits, escaped slashes,
     unicode escapes, percent-encoding (any case, repeated), HTML entities."""
@@ -212,11 +217,37 @@ def _extra_forms(secret: str) -> list[str]:
     out.append(base64.b32hexencode(raw).decode().rstrip("="))
     out.append(base64.b85encode(raw).decode())
     out.append(base64.a85encode(raw).decode())
+    # base64 of base64 (and of its url-safe twin), a common second wrapping
+    once = base64.b64encode(raw)
+    out.append(base64.b64encode(once).decode().rstrip("="))
+    out.append(base64.urlsafe_b64encode(base64.urlsafe_b64encode(raw)).decode().rstrip("="))
+    out.append(base64.b64encode(raw.hex().encode()).decode().rstrip("="))
     return out
 
 
-PARTIAL_RUN = 32     # letters and digits of a secret in a row that count as a leak
+# Round 12: 32 -> 16. A key's 17..31 character piece used to go unseen. 16 letters and
+# digits in a row (about 80 bits of a random key) is still far longer than the
+# 6..12 character hints vendors show on purpose ("sk-...Zk"). What it costs:
+# ordinary prose or code only trips it when it holds 16 characters of THIS key
+# in a row, so a random key has no measurable false-positive rate (tests measure
+# it on a large body of ordinary text); a key that is itself a plain phrase
+# ("correct-horse-battery-staple") is withheld whenever that phrase appears.
+PARTIAL_RUN = 16     # letters and digits of a secret in a row that count as a leak
 PARTIAL_OFFSETS = 64  # most start offsets tried per secret, whatever its length
+
+
+def _partial_variants(secret: str) -> list[str]:
+    """The squashed shapes of a secret whose PIECES are looked for: as it is,
+    backwards, hex, rot13 and base64 (each squashed the way the text is)."""
+    import codecs
+    raw = secret.encode("utf-8", "surrogateescape")
+    out: list[str] = []
+    for v in (_squash(secret), _squash(secret)[::-1], _squash(raw.hex()),
+              _squash(codecs.encode(secret, "rot13")),
+              _squash(base64.b64encode(raw).decode())):
+        if v and v not in out:
+            out.append(v)
+    return out
 
 
 def loosely_contains(text: str, secrets, deadline: float | None = None) -> bool:
@@ -240,7 +271,7 @@ def _loosely_contains(text: str, secrets, deadline) -> bool:
     has still given most of it away, and Scrubber only removes whole forms. The
     run must be PARTIAL_RUN characters, far longer than the 6 to 12 character
     hint vendors show on purpose ("sk-...Zk"), so a key hint does not trip it."""
-    text = text.replace("\x00", "")
+    text = _ANSI_RE.sub("", text.replace("\x00", ""))
     _tick(deadline)
     norm = _normalize(text)
     _tick(deadline)
@@ -249,8 +280,9 @@ def _loosely_contains(text: str, secrets, deadline) -> bool:
         _tick(deadline)
         if len(s) < MIN_LEN:
             continue
-        whole = _squash(s)
-        if len(whole) > PARTIAL_RUN:
+        for whole in _partial_variants(s):
+            if len(whole) <= PARTIAL_RUN:
+                continue
             # Every start offset for a key of ordinary length (step stays 1
             # below ~2 kB), but never more than PARTIAL_OFFSETS searches over a
             # body the other end chose: a very long secret must not turn one
@@ -299,10 +331,28 @@ def fingerprint_path() -> str:
     return os.path.join(os.path.expanduser("~"), ".stuntkey", FINGERPRINT_FILE)
 
 
+FORM_CAP = 96     # most whole-word forms kept per key
+
+
 def _fingerprint_forms(secret: str) -> set[str]:
+    """Every whole-word shape of a key that a fingerprint is kept for: as it
+    is, URL-encoded, base64, and (round 12) all the other shapes `forms()` and
+    `_extra_forms()` know: upper / lower case, backwards, hex, rot13, base32,
+    base85 and the pieces of it that sit inside a longer base64 text."""
     raw = secret.encode("utf-8", "surrogateescape")
-    return {secret, quote(secret, safe=""), base64.b64encode(raw).decode(),
-            base64.b64encode(raw).decode().rstrip("=")}
+    out = {secret, quote(secret, safe=""), quote_plus(secret),
+           base64.b64encode(raw).decode(), base64.b64encode(raw).decode().rstrip("=")}
+    for f in forms(secret):
+        if b"\x00" in f:
+            continue
+        try:
+            text = f.decode("utf-8")
+        except UnicodeDecodeError:
+            continue
+        out.add(text)
+    out.update(_extra_forms(secret))
+    keep = sorted((f for f in out if len(f) >= MIN_LEN), key=lambda f: (-len(f), f))
+    return set(keep[:FORM_CAP])
 
 
 def _fp(salt: bytes, word: str) -> str:
@@ -365,33 +415,176 @@ MAX_LENGTHS = 8     # ponytail: window scan costs words x lengths x offsets; mor
                     # this with distinct lengths -> only the 8 shortest are searched inside words
 
 
+FP_VERSION = 2
+FP_PURPOSE = "fingerprint"      # keychain.integrity_key purpose: its own signing key
+
+
+class FingerprintLocked(ValueError):
+    """The fingerprint file needs the keychain's fingerprint key and it could
+    not be read. Callers treat this like an unreadable file."""
+
+
+_SALT_CACHE: dict = {}
+
+
+def _fp_key(path: str, create: bool):
+    """The keychain's fingerprint key (bytes) or None. Never raises."""
+    try:
+        from . import keychain
+        return keychain.integrity_key(os.path.dirname(os.path.abspath(path)),
+                                      create=create, purpose=FP_PURPOSE)[0]
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _effective_salt(data: dict, path: str, create: bool = False) -> bytes:
+    """The HMAC salt used for fingerprints. In a version-2 file the stored
+    "salt" is only a random label: the salt itself is HMAC(keychain key, label),
+    so the file on its own cannot be used to guess a short key offline. A file
+    from before (no "v") keeps its stored salt as it was (state "legacy"); a
+    file made when no keychain key could be had keeps it too ("file-only")."""
+    nonce = bytes.fromhex(data["salt"])
+    if data.get("v") != FP_VERSION or data.get("wrap") != "keychain":
+        return nonce
+    cache_key = (os.path.abspath(path), data["salt"])
+    got = _SALT_CACHE.get(cache_key)
+    if got is not None:
+        return got
+    key = _fp_key(path, create)
+    if key is None:
+        raise FingerprintLocked("the key that unlocks the fingerprint file could not be read")
+    salt = hmac.digest(key, b"stuntkey fingerprint salt v2" + nonce, "sha256")
+    _SALT_CACHE[cache_key] = salt
+    return salt
+
+
+def _new_file_data(path: str) -> dict:
+    wrap = "keychain" if _fp_key(path, create=True) is not None else "file"
+    return {"v": FP_VERSION, "salt": secrets_mod.token_hex(32), "wrap": wrap, "keys": {}}
+
+
+def fingerprint_state(path: str | None = None) -> str:
+    """"none" (no file), "protected" (salt derived from the keychain key: the
+    file alone is useless), "file-only" (made when no keychain key could be
+    had: the salt sits in the file) or "legacy" (made before round 12: same
+    weakness; `migrate_fingerprints` or saving the keys again upgrades it).
+    Plain words: a SHORT or guessable key is weak in every state, because a
+    fingerprint can be tested against guesses by anyone who has the salt."""
+    try:
+        data = _read_fingerprints(path or fingerprint_path())
+    except (OSError, ValueError):
+        return "none"
+    if not data:
+        return "none"
+    if data.get("v") != FP_VERSION:
+        return "legacy"
+    return "protected" if data.get("wrap") == "keychain" else "file-only"
+
+
+def _read_stored(name: str) -> str | None:
+    """A stored key by its "service/ENV_VAR" name (OS keychain), or None."""
+    service, _, var = name.partition("/")
+    if not (service and var):
+        return None
+    try:
+        from . import keychain
+        # a test run (STUNTKEY_TEST_HOME) without a test keychain must never reach the
+        # real OS keychain, not even to read: same rule as keychain.integrity_key
+        if os.environ.get("STUNTKEY_TEST_HOME") and not os.environ.get(keychain.TEST_ENV):
+            return None
+        return keychain.read(service, var) or None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def stored_secrets(path: str | None = None, limit: int = 64) -> list[str]:
+    """The stored keys themselves (plain text, in this process only), for the
+    checks that must see every disguise of a key (scrub.loosely_contains). Read
+    from the keychain by the names the fingerprint file lists; a key that is not
+    in the keychain (only in a .env file) is not in the list and is covered by
+    its fingerprints alone. Never raises; never writes."""
+    try:
+        data = _read_fingerprints(path or fingerprint_path())
+    except (OSError, ValueError):
+        return []
+    out: list[str] = []
+    for name in list(data.get("keys", {}))[:limit]:
+        v = _read_stored(name)
+        if v and len(v) >= MIN_LEN and v not in out:
+            out.append(v)
+    return out
+
+
+def _add_entry(data: dict, salt: bytes, name: str, secret: str) -> None:
+    data["keys"][name] = (sorted(_fp(salt, f) for f in _fingerprint_forms(secret))
+                          if len(secret) >= MIN_LEN else [])
+    data.setdefault("lengths", {})[name] = [len(secret)] if len(secret) >= MIN_LEN else []
+    # a 16-bit salted checksum of the key: only a first filter that says
+    # "try the real fingerprint here" (the HMAC still decides), and it
+    # makes the search inside a long word about 8 times quicker
+    crc = data.setdefault("crc", {})
+    if len(secret) >= MIN_LEN:
+        crc[name] = {"n": len(secret), "c": _crc(zlib.crc32(salt),
+                                                 secret.encode("utf-8", "surrogateescape"))}
+    else:
+        crc.pop(name, None)
+    delimited = data.setdefault("delimited", {})
+    if len(secret) >= MIN_LEN and _DELIM_RE.search(secret) and not re.search(r"\s", secret):
+        delimited[name] = {"length": len(secret), "fp": _fp(salt, secret),
+                           "roll": _roll(secret, _roll_base(salt))}
+    else:
+        delimited.pop(name, None)
+
+
+def _migrate_legacy(old: dict, path: str, known: dict) -> dict | None:
+    """A version-2 copy of an old fingerprint file, rebuilt from the keys
+    themselves (`known` plus whatever the keychain gives for the other names).
+    None when some key cannot be read: the old file is then left as it is."""
+    found: dict[str, str] = {}
+    for nm in old.get("keys", {}):
+        v = known.get(nm) or _read_stored(nm)
+        if not v:
+            return None
+        found[nm] = v
+    found.update(known)
+    data = _new_file_data(path)
+    salt = _effective_salt(data, path, create=True)
+    for nm, v in found.items():
+        _add_entry(data, salt, nm, v)
+    return data
+
+
+def migrate_fingerprints(path: str | None = None) -> str:
+    """Upgrade an old (or file-only) fingerprint file to the keychain-derived
+    salt, by reading every stored key back from the keychain. Returns the
+    state afterwards (see fingerprint_state); nothing changes when a key cannot
+    be read. Safe to call any time (`doctor`, after an upgrade)."""
+    path = path or fingerprint_path()
+    from . import store as store_mod
+    with store_mod.file_lock(path):
+        data = _read_fingerprints(path)
+        if data and (data.get("v") != FP_VERSION or data.get("wrap") != "keychain"):
+            new = _migrate_legacy(data, path, {})
+            if new is not None and new.get("wrap") == "keychain":
+                _write_fingerprints(path, new)
+    return fingerprint_state(path)
+
+
 def remember_key(name: str, secret: str, path: str | None = None) -> None:
     """Record the fingerprints of a key just stored or rotated (`name`:
     "service/ENV_VAR"; a second call for the same name replaces the first).
-    Call after every keychain / .env save."""
+    Call after every keychain / .env save. An old file is upgraded to the
+    keychain-derived salt when every key in it can be read back."""
     path = path or fingerprint_path()
     from . import store as store_mod     # lazy: the hook only reads, and starts faster
     with store_mod.file_lock(path):
-        data = _read_fingerprints(path) or {"salt": secrets_mod.token_hex(32), "keys": {}}
-        salt = bytes.fromhex(data["salt"])
-        data["keys"][name] = (sorted(_fp(salt, f) for f in _fingerprint_forms(secret))
-                              if len(secret) >= MIN_LEN else [])
-        data.setdefault("lengths", {})[name] = [len(secret)] if len(secret) >= MIN_LEN else []
-        # a 16-bit salted checksum of the key: only a first filter that says
-        # "try the real fingerprint here" (the HMAC still decides), and it
-        # makes the search inside a long word about 8 times quicker
-        crc = data.setdefault("crc", {})
-        if len(secret) >= MIN_LEN:
-            crc[name] = {"n": len(secret), "c": _crc(zlib.crc32(salt),
-                                                     secret.encode("utf-8", "surrogateescape"))}
-        else:
-            crc.pop(name, None)
-        delimited = data.setdefault("delimited", {})
-        if len(secret) >= MIN_LEN and _DELIM_RE.search(secret) and not re.search(r"\s", secret):
-            delimited[name] = {"length": len(secret), "fp": _fp(salt, secret),
-                               "roll": _roll(secret, _roll_base(salt))}
-        else:
-            delimited.pop(name, None)
+        data = _read_fingerprints(path)
+        if data and (data.get("v") != FP_VERSION or data.get("wrap") != "keychain"):
+            data = _migrate_legacy(data, path, {name: secret}) or data
+        if not data:
+            data = _new_file_data(path)
+        salt = _effective_salt(data, path, create=True)
+        _add_entry(data, salt, name, secret)
         _write_fingerprints(path, data)
 
 
@@ -416,7 +609,8 @@ def forget_key(name: str, path: str | None = None) -> bool:
 
 def load_fingerprints(path: str | None = None) -> tuple[bytes, frozenset]:
     """(salt, every fingerprint), or (b"", empty) when nothing is stored."""
-    data = _read_fingerprints(path or fingerprint_path())
+    path = path or fingerprint_path()
+    data = _read_fingerprints(path)
     if not data:
         return b"", frozenset()
     prints = _Prints(h for hs in data["keys"].values() if isinstance(hs, list) for h in hs)
@@ -443,7 +637,7 @@ def load_fingerprints(path: str | None = None) -> tuple[bytes, frozenset]:
                 and isinstance(d.get("roll"), int)):
             found.setdefault(d["length"], {})[d["roll"]] = d["fp"]
     prints.delimited = tuple((n, found[n]) for n in sorted(found)[:MAX_LENGTHS])
-    return bytes.fromhex(data["salt"]), prints
+    return _effective_salt(data, path or fingerprint_path()), prints
 
 
 CRC_MASK = 0xFFFF

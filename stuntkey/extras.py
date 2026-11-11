@@ -1,4 +1,4 @@
-"""Commands for using a key without ever holding it (the broker), and the
+"""Commands for using a key through the broker (the agent never gets it), and the
 checks around it: call, audit, serve, selftest, start, overview, install,
 uninstall, remote, trust-server, deploy, scan-git, doctor.
 
@@ -50,6 +50,9 @@ def add_parsers(sub) -> None:
     dc = sub.add_parser("doctor", help="Check this computer is ready (keychain, ssh, git, "
                                        "and stuntkey's own self-attack test).")
     dc.add_argument("--json", action="store_true", help="Machine-readable output.")
+    dc.add_argument("--self", dest="self_check", action="store_true",
+                    help="Instead: check the installed stuntkey files have not been "
+                         "changed since you installed them.")
 
     # DEPRECATED, to be removed at 1.0: trust-server / deploy / remote.
     # These make ssh keys and run commands on someone else's machine -- by far
@@ -147,6 +150,109 @@ def add_parsers(sub) -> None:
                      help="list every attack, not just the groups")
 
 
+def install_facts() -> dict:
+    """Where this stuntkey is: the program file, the version, the folder it
+    lives in. Used by `stuntkey about`."""
+    import os
+    from . import __version__
+    exe = sys.argv[0] if sys.argv and sys.argv[0] else ""
+    try:
+        exe = os.path.abspath(exe) if exe else ""
+    except OSError:
+        pass
+    return {"version": __version__, "program": exe or "(unknown)",
+            "python": sys.executable or "(unknown)",
+            "install_folder": os.path.dirname(os.path.abspath(__file__))}
+
+
+def about_extra() -> str:
+    f = install_facts()
+    return (f"  Version:           {recipes_mod.printable(f['version'])}\n"
+            f"  Program file:      {recipes_mod.printable(f['program'])}\n"
+            f"  Installed in:      {recipes_mod.printable(f['install_folder'])}\n"
+            f"  Python used:       {recipes_mod.printable(f['python'])}\n")
+
+
+def self_check(dist=None) -> dict:
+    """Hash the installed stuntkey files against the list the installer wrote
+    (the wheel's RECORD file). {"state": "ok"|"changed"|"unavailable",
+    "checked": n, "changed": [paths], "missing": [paths], "why": text}."""
+    import base64
+    import hashlib
+    import os
+    res = {"state": "unavailable", "checked": 0, "changed": [], "missing": [], "why": ""}
+    try:
+        from importlib import metadata
+        dist = dist or metadata.distribution("stuntkey")
+        files = list(dist.files or [])
+    except Exception:           # noqa: BLE001
+        res["why"] = ("stuntkey was not installed with pip or pipx, so there is no "
+                      "install list to compare against")
+        return res
+    hashed = [p for p in files if getattr(p, "hash", None)
+              and p.suffix != ".pyc" and p.name != "RECORD"]
+    if not hashed:
+        res["why"] = ("this looks like a developer install (no file fingerprints were "
+                      "recorded), so there is nothing to compare against")
+        return res
+    for p in hashed:
+        try:
+            target = str(p.locate())
+            algo = p.hash.mode
+            with open(target, "rb") as fh:
+                digest = hashlib.new(algo, fh.read()).digest()
+        except FileNotFoundError:
+            res["missing"].append(str(p))
+            continue
+        except (OSError, ValueError):
+            res["changed"].append(str(p))
+            continue
+        want = p.hash.value
+        got = base64.urlsafe_b64encode(digest).rstrip(b"=").decode()
+        res["checked"] += 1
+        if got != want:
+            res["changed"].append(str(p))
+    res["state"] = "changed" if (res["changed"] or res["missing"]) else "ok"
+    return res
+
+
+def format_self_check(res: dict) -> str:
+    p = recipes_mod.printable
+    if res["state"] == "unavailable":
+        return f"  Could not check the installed files: {res['why']}.\n"
+    lines = []
+    if res["state"] == "ok":
+        lines.append(f"  OK: all {res['checked']} installed stuntkey files match what "
+                     "the installer wrote. Nothing has been changed since install.")
+    else:
+        lines.append("  WARNING: the installed stuntkey does not match what the installer "
+                     "wrote. A file was changed, replaced or removed after install.")
+        for name in res["changed"][:20]:
+            lines.append(f"    changed: {p(name)}")
+        for name in res["missing"][:20]:
+            lines.append(f"    missing: {p(name)}")
+        lines.append("  If you did not do this yourself, reinstall: `pipx reinstall stuntkey` "
+                     "(or `pip install --force-reinstall stuntkey`).")
+    lines.append("  (This catches accidental or clumsy changes. Someone who can edit these "
+                 "files can also edit the install list, so it is not proof against a "
+                 "determined attacker. Compare with the home page's published checks.)")
+    return "\n".join(lines) + "\n"
+
+
+def _ensure_log_key() -> None:
+    """Make the activity log's signing key exist, so a fresh install does not
+    say 'not signed'. Careful and quiet: it never fails the command."""
+    import os
+    try:
+        from . import broker, remote
+        log = broker.AuditLog(os.path.join(remote.home_dir(), "audit.log"))
+        ensure = getattr(log, "ensure_key", None)
+        if callable(ensure):
+            ensure()
+    except Exception:           # noqa: BLE001
+        pass
+
+
 def unknown_service(catalog: dict, name: str) -> int:
     close = difflib.get_close_matches(str(name).lower(), list(catalog), n=3, cutoff=0.5)
     msg = f"I don't know a service called '{recipes_mod.printable(name)}'."
@@ -230,6 +336,14 @@ def dispatch(args, catalog: dict):
     if cmd == "doctor":
         import json as _json
         from . import gitscan
+        if getattr(args, "self_check", False):
+            found = self_check()
+            if args.json:
+                print(_json.dumps(found, indent=2))
+            else:
+                sys.stdout.write(format_self_check(found))
+            return 0 if found["state"] == "ok" else 1
+        _ensure_log_key()
         res = gitscan.doctor()
         print(_json.dumps(res, indent=2) if args.json else gitscan.format_doctor(res))
         return 0 if res["ok"] else 1

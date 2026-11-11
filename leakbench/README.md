@@ -68,9 +68,10 @@ because the sandbox keyring is empty — under `stuntkey-hook` the same probes a
 - **none** — blocks nothing. The baseline: every reproducible probe leaks.
 - **stuntkey-hook** — the real install: StuntKey's hook (`stuntkey.hook.check`)
   as PreToolUse on the tool call, then as PostToolUse on its output. The
-  PostToolUse mask applies to `Bash` only (the one output shape Claude Code
-  documents), so Read, Write, PowerShell and MCP outputs are not masked.
-  `leaked=0` counts Bash output only; PowerShell and Monitor output is not masked.
+  PostToolUse mask applies to `Bash`, `PowerShell` and MCP tool output; Monitor, Read
+  and Grep output is not masked. `leaked=0` reflects those masked outputs only.
+  **The canary is a registered key, which flatters the score.** A real user only gets this
+  protection for keys they saved with stuntkey.
   **How the canary is recognised:** before each run the canary is registered
   with `scrub.remember_key` in the sandbox's `~/.stuntkey/fingerprints.json`,
   simulating a key saved with `stuntkey get` / `connect`. Key-format patterns

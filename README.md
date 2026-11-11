@@ -2,8 +2,9 @@
 
 # stuntkey
 
-**Keep your API keys out of your coding agent's context.** Your agent calls the
-API; it never sees the key, so the key is not in the transcript.
+**Keep your API keys out of your coding agent's context.** The key never enters the
+agent's environment when used through the broker, and a Claude Code hook blocks
+common leaks.
 
 Secretless credential brokering for AI coding agents, plus a scanner for keys
 that have already leaked into the files your agent reads.
@@ -24,12 +25,20 @@ following an injected instruction. Run it yourself: `python -m leakbench --profi
 `runaway-loop-no-cap` and `unbounded-retry` - a loop that keeps making paid
 calls. The spending caps stop those; the hook cannot.
 
-`leaked=0` counts Bash output only; PowerShell and Monitor output is not masked.
+`leaked=0` reflects what the hook masks: Bash, PowerShell and MCP tool output. Monitor, Read and Grep output is not masked.
+
+The benchmark's secret is a *registered* key (stuntkey is told about it first, like a key you saved), which flatters the score; a key stuntkey has never seen is found by its shape only, and the leaked count is higher (see `leakbench/README.md`).
 
 Zero on this benchmark is not zero everywhere. The hook now reads code before
 it is saved and blocks obvious leaks (`print(os.environ)`,
 `console.log(process.env)`, opening `.env`). A script that hides what it does
-can still get past that check.
+can still get past that check: code-based leaking cannot be fully stopped by patterns.
+
+**Honest limits, in plain words:**
+- Windows Credential Manager (and the macOS and Linux keychains) can be read by any program running as you. The keychain keeps keys from other users and machines, not from your own programs.
+- The hook is for Claude Code. Cursor, Codex, Gemini and Claude Desktop file tools have no hook, so their file reads are not checked.
+- Screenshots and the clipboard are not covered.
+- A brokered call hides the key from the agent; it cannot stop an agent misusing a key it is allowed to use.
 
 Threat model: [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md). Known gaps and
 limits: [SECURITY.md](SECURITY.md) - including that stuntkey has not had a paid
@@ -85,7 +94,7 @@ Asking stuntkey to make a call works when the AI talks to stuntkey (through MCP 
 stuntkey proxy -- python app.py
 ```
 
-The program gets `OPENAI_BASE_URL`, `ANTHROPIC_BASE_URL`, `GROQ_BASE_URL` and `TOGETHER_BASE_URL` pointing at a local stuntkey address on this computer, and its `*_API_KEY` is a throwaway password for that address, not your key. stuntkey adds the real key on the way out and scrubs it from the answers. If stuntkey stops, the program's calls fail instead of going out on their own. `--print-env` prints the variables for a tool you start yourself. There is no certificate trickery: this works only for SDKs that let you change their base address (OpenAI, Anthropic, Groq, Together); other vendors stay on brokered calls. Proxy mode does **not** ask for a click per call, unlike a brokered call: a chat prompt is far too long for anyone to read in a confirmation window. Instead it sends `POST` only to the usual AI endpoints (chat, responses, messages, embeddings) and refuses every other write unless an `stuntkey.policy` file you approved allows it. Streamed answers get the key-scrubber but not the whole-body disguise check a brokered call adds.
+The program gets `OPENAI_BASE_URL`, `ANTHROPIC_BASE_URL`, `GROQ_BASE_URL` and `TOGETHER_BASE_URL` pointing at a local stuntkey address on this computer, and its `*_API_KEY` is a throwaway password for that address, not your key. stuntkey adds the real key on the way out and scrubs it from the answers. If stuntkey stops, the program's calls fail instead of going out on their own. `--print-env` prints the variables for a tool you start yourself. There is no certificate trickery: this works only for SDKs that let you change their base address (OpenAI, Anthropic, Groq, Together); other vendors stay on brokered calls. Proxy mode does **not** ask for a click per AI call, unlike a brokered call: a chat prompt is far too long for anyone to read in a confirmation window. Instead it sends `POST` only to the usual AI endpoints (chat, responses, messages, embeddings) and refuses every other write unless an `stuntkey.policy` file you approved allows it. From 0.9.3, a read (GET) to anything that is not an AI endpoint asks you once per service, like a brokered call, and a refused request counts toward the three-refusals stop (it used to go through without asking). A write you allowed by policy asks every time. Streamed answers get the key-scrubber but not the whole-body disguise check a brokered call adds.
 
 For other programs, `stuntkey run openai -- python app.py` puts the key in that one program's environment only and scrubs it from the program's output. That program does see the key, so use `run` yourself; do not hand it to an AI that can run shell commands.
 
@@ -121,7 +130,7 @@ It reduces risk; it does not remove it, and no independent security review has b
 - **It does not hide the data.** Replies from the API go to your AI, and so to the AI company. The key is scrubbed; the rest is not.
 - **It does not protect `run`.** A program started with `run` holds the key and can print it.
 - **It does not catch every disguise.** Scrubbing is best effort.
-- **The Claude Code hook masks Bash output only.** Claude Code documents no output shape for Read or Grep, so the hook cannot mask them: it refuses Read of private keys, credentials files and files holding a key you stored instead. A key stuntkey never stored, in a format it does not know, in an ordinary file, still reaches the AI through Read. A script the AI writes is checked when it is saved, for obvious leaks only (printing the environment, opening `.env`); a script that hides what it does is checked only when it runs through Bash. Scores per leak are in [leakbench/README.md](https://github.com/calasdan-sketch/stuntkey/blob/main/leakbench/README.md).
+- **The Claude Code hook masks Bash, PowerShell and MCP tool output.** Claude Code documents no output shape for Read, Grep or Monitor, so the hook cannot mask them: it refuses Read of private keys, credentials files and files holding a key you stored instead. A key stuntkey never stored, in a format it does not know, in an ordinary file, still reaches the AI through Read. A script the AI writes is checked when it is saved, for obvious leaks only (printing the environment, opening `.env`); a script that hides what it does is checked only when it runs through Bash. Scores per leak are in [leakbench/README.md](https://github.com/calasdan-sketch/stuntkey/blob/main/leakbench/README.md).
 - **Windows keeps at most 1280 characters per key.** A longer key is not saved to the Credential Manager (stuntkey says so and keeps it in the `.env` file instead).
 - **The clipboard.** `get` empties it right away, but other programs or clipboard-history tools may see the key while it is there.
 - **A log that can't be rewritten.** The log shows accidents and casual edits. Someone running as you could rewrite it.
@@ -149,7 +158,7 @@ stuntkey uses only Python's own standard library, and a test in the repository (
 - `try` - a practice run (add, use, forget) with a pretend key, in a throwaway store; nothing real is touched. `--auto` skips the pauses.
 - `import <file>` - move keys you already have (a `.env` file, a Doppler or Bitwarden JSON export, a 1Password or Bitwarden CSV export) into the keychain. It shows only the names, asks first, and then tells you to delete the file (`--delete-source` does that for you). `--paste` takes pasted `NAME=value` lines instead of a file.
 - `install` / `uninstall` - plug stuntkey into (or remove it from) Claude Desktop, Cursor, Claude Code and VS Code.
-- `doctor` - the health check above.
+- `doctor` - the health check above. `doctor --self` instead checks that the installed stuntkey files are unchanged since you installed them.
 - `start` - a short guided tour: what is connected and what to do next.
 - `start --simple` - for apps made with Lovable, Bolt, Replit or Vercel: one plain question at a time. It gets your key, shows where to paste it in your host's secret settings (never in a `VITE_` or `NEXT_PUBLIC_` setting), then checks your live site does not hand the key to visitors.
 - `list` - the services it knows.
@@ -161,7 +170,7 @@ stuntkey uses only Python's own standard library, and a test in the repository (
 - `audit show` - the last calls, with a warning if the log does not check out.
 - `rotate <service>` - replace a stored key.
 - `panic <service> [--dry-run]` - "I leaked a key": asks first, revokes it (GitHub and Vercel through their official API; others open the revoke page and wait for you), gets a new one with the `get` flow, then shows where the old key is still written (project, .env, MCP configs, git history). Terminal only - never offered to an agent.
-- `caps set openai --calls-day 500 --tokens-day 200000 --calls-session 100` - a spending limit per key, counted across every program using it (`--clear` removes it; `caps show` lists them). The limit can be passed by one call already in flight.
+- `caps set openai --calls-day 500 --tokens-day 200000 --calls-session 100` (also `--calls-hour`) - a spending limit per key, counted across every program using it (`--clear` removes it; `caps show` lists them). The limit can be passed by one call already in flight.
 - `stop` / `resume` - a kill switch: `stop` refuses every brokered and proxied call at once; `resume` (asks you first) lets them through again.
 - `policy show` / `policy approve` - an `stuntkey.policy` file lists the methods and paths each service may use. A project's file can only narrow your own. A new or changed file is obeyed only after you approve it.
 - `forget <service>` - remove a stored key (asks first; `--yes` skips the question, and is needed outside a terminal).

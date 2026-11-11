@@ -106,10 +106,13 @@ class Fingerprints(unittest.TestCase):
 
     def test_rotation_replaces_the_old_fingerprint(self):
         scrub.remember_key("svc/KEY", STORED, self.path)
-        scrub.remember_key("svc/KEY", STORED[::-1], self.path)
+        # (round 12: the new key must not be the old one backwards - a reversed
+        # key is now itself a form of the old key that is masked)
+        rotated = "Hd6Fq1" + "Jw8Sz4Nc7Gx2Pa9"
+        scrub.remember_key("svc/KEY", rotated, self.path)
         prints = scrub.load_fingerprints(self.path)
         self.assertEqual(scrub.mask_secrets(STORED, prints)[1], 0)
-        self.assertEqual(scrub.mask_secrets(STORED[::-1], prints)[1], 1)
+        self.assertEqual(scrub.mask_secrets(rotated, prints)[1], 1)
 
     def test_known_formats_are_masked_without_a_fingerprint(self):
         empty = (b"", frozenset())

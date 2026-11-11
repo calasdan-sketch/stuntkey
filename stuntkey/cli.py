@@ -976,7 +976,9 @@ def _main(argv: list[str] | None = None) -> int:
         return allowcmd.cmd_allow_agent(args, catalog)
     if args.cmd == "about":
         from . import aboutcmd
-        return aboutcmd.cmd_about()
+        code = aboutcmd.cmd_about()
+        sys.stdout.write("\n  This copy:\n" + extras.about_extra())
+        return code
     if args.cmd == "migrate":
         return migrate_mod.cmd_migrate(args, catalog)
     handled = extras.dispatch(args, catalog)

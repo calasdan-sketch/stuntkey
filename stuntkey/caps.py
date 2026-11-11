@@ -19,7 +19,16 @@ import os
 
 from .broker import BrokerError, _file_lock
 
-LIMITS = ("calls_session", "calls_day", "tokens_day")
+LIMITS = ("calls_session", "calls_hour", "calls_day", "tokens_day")
+# Caps every service has when the person has set nothing (round 12). They stop
+# a runaway agent loop from burning a key in minutes; they are far above normal
+# use by hand. Anything in caps.json for a service overrides the matching
+# default (`stuntkey caps set SERVICE --calls-hour 2000`; a very big number
+# relaxes it). Tokens have no default: a count is only known after the answer.
+DEFAULTS = {"calls_hour": 300, "calls_day": 5000}
+NOTICES_FILE = "notices.log"
+MAX_NOTICES = 50
+NOTICE_REPEAT_SECONDS = 600     # the same notice is not written again for ten minutes
 STOPPED = ("stuntkey is stopped (someone ran `stuntkey stop`), so no API call "
            "was made. A person can run `stuntkey resume` to allow calls again.")
 
@@ -67,6 +76,60 @@ def load_caps(home: str) -> dict:
                                   f"'{_short(s)}' {_short(k)}, so no call was made. "
                                   "Fix it with `stuntkey caps set`.", 5)
         out[s] = dict(c)
+    return out
+
+
+def effective_caps(home: str, service: str) -> dict:
+    """The caps in force for `service`: DEFAULTS, then caps.json on top."""
+    return {**DEFAULTS, **load_caps(home).get(service, {})}
+
+
+# ---- notices: a plain line the person can read later ------------------------------
+#
+# When a cap stops a call, a first-time host asks for permission, or a request is
+# refused, a plain line goes to ~/.stuntkey/notices.log (last MAX_NOTICES kept)
+# and `stuntkey caps show` prints the newest ones. No pop-up and no toast: a
+# real notification from a background process needs a window, and a window an
+# agent can trigger is the approval-fatigue problem this file must not add.
+
+def notice(home: str, text: str, now: float | None = None) -> None:
+    """Write one plain line, best effort (never raises, never blocks a call)."""
+    import time
+    try:
+        clean = "".join(c if c.isprintable() else "?" for c in str(text))[:300]
+        path = os.path.join(home, NOTICES_FILE)
+        os.makedirs(home, exist_ok=True)
+        now = time.time() if now is None else now
+        try:
+            with open(path, encoding="utf-8") as f:
+                lines = f.read().splitlines()[-(MAX_NOTICES - 1):]
+        except OSError:
+            lines = []
+        if lines:
+            stamp, _, last = lines[-1].partition("\t")
+            try:
+                if last == clean and now - float(stamp) < NOTICE_REPEAT_SECONDS:
+                    return
+            except ValueError:
+                pass
+        lines.append(f"{now:.0f}\t{clean}")
+        from .store import write_private
+        write_private(path, "\n".join(lines) + "\n")
+    except Exception:
+        pass
+
+
+def recent_notices(home: str, n: int = 10) -> list:
+    """The newest notices as 'YYYY-MM-DD HH:MM  text' lines, newest last."""
+    out = []
+    try:
+        with open(os.path.join(home, NOTICES_FILE), encoding="utf-8") as f:
+            for line in f.read().splitlines()[-n:]:
+                stamp, _, text = line.partition("\t")
+                when = datetime.datetime.fromtimestamp(float(stamp)).strftime("%Y-%m-%d %H:%M")
+                out.append(f"{when}  {text}")
+    except (OSError, ValueError, OverflowError):
+        pass
     return out
 
 
@@ -120,29 +183,59 @@ def begin(home: str, service: str, session_calls: int) -> None:
                           "can be written to.", 5) from None
 
 
+def _hour_now() -> str:
+    return datetime.datetime.now().strftime("%Y-%m-%dT%H")
+
+
+def _hour_path(path: str) -> str:
+    return path[:-5] + ".hourly"        # beside <service>.json, never listed as a service
+
+
+def _read_hour(path: str) -> dict:
+    try:
+        with open(_hour_path(path), encoding="utf-8") as f:
+            h = json.load(f)
+        if isinstance(h, dict) and h.get("hour") == _hour_now():
+            return {"hour": h["hour"], "calls": max(0, int(h.get("calls", 0)))}
+    except (OSError, ValueError, TypeError, OverflowError):
+        pass                            # no record or a damaged one: this hour starts at 0
+    return {"hour": _hour_now(), "calls": 0}
+
+
 def _begin(home: str, service: str, session_calls: int) -> None:
-    cap = load_caps(home).get(service, {})
+    cap = effective_caps(home, service)
     path = usage_path(home, service)
     with _file_lock(path) as got:
         if not got:
-            if cap:
-                raise BrokerError("The usage record is busy, so no call was made. "
-                                  "Try again.", 5)
-            return
+            raise BrokerError("The usage record is busy, so no call was made. "
+                              "Try again.", 5)
         u = _read_usage(path)
+        hr = _read_hour(path)
         over = None
         if "calls_session" in cap and session_calls >= cap["calls_session"]:
             over = f"{cap['calls_session']} calls this session"
+        elif "calls_hour" in cap and hr["calls"] >= cap["calls_hour"]:
+            over = f"{cap['calls_hour']} calls this hour"
         elif "calls_day" in cap and u["calls"] >= cap["calls_day"]:
             over = f"{cap['calls_day']} calls today"
         elif "tokens_day" in cap and u["tokens"] >= cap["tokens_day"]:
             over = f"{cap['tokens_day']} tokens today"
         if over:
-            raise BrokerError(f"The '{service}' key has reached its cap of {over}, "
-                              "so no call was made. A person can raise it with "
-                              "`stuntkey caps set`.", 5)
+            msg = (f"The '{service}' key has reached its cap of {over}, "
+                   "so no call was made. A person can raise it with "
+                   "`stuntkey caps set`.")
+            notice(home, msg)
+            raise BrokerError(msg, 5)
         u["calls"] += 1
+        hr["calls"] += 1
         _write_usage(path, u)
+        try:
+            tmp = _hour_path(path) + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(hr, f)
+            os.replace(tmp, _hour_path(path))
+        except OSError:
+            pass            # the daily record above is the one that must be right
 
 
 def add_tokens(home: str, service: str, n: int) -> None:
@@ -239,15 +332,22 @@ def cmd_caps(args, home: str, ask) -> int:
                   "--calls-day 500` sets one.")
         for s in names:
             u = usage(home, s)
-            limits = ", ".join(f"{k}={v}" for k, v in caps.get(s, {}).items()) or "no caps"
-            print(f"  {s:14} today: {u['calls']} calls, {u['tokens']} tokens   ({limits})")
+            set_ = caps.get(s, {})
+            limits = ", ".join(f"{k}={v}" for k, v in {**DEFAULTS, **set_}.items())
+            note = "" if set_ else "  (standard caps; change with `stuntkey caps set`)"
+            print(f"  {s:14} today: {u['calls']} calls, {u['tokens']} tokens   ({limits}){note}")
+        recent = recent_notices(home)
+        if recent:
+            print("\n  Recent notices:")
+            for line in recent:
+                print("   " + line)
         if os.path.lexists(stop_path(home)):
             print("\n  stuntkey is STOPPED: no calls are made until `stuntkey resume`.")
         return 0
     caps = load_caps(home)
     new = dict(caps.get(args.service, {}))
     for k in LIMITS:
-        v = getattr(args, k)
+        v = getattr(args, k, None)
         if v is not None:
             if v < 0:
                 print("error: a cap cannot be negative.")

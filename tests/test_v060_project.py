@@ -232,10 +232,14 @@ class TestLedger(unittest.TestCase):
 
     def test_cli_connect_records_the_key_without_it(self):
         env = os.path.join(self.p, ".env")
-        with cd(self.p), mock.patch.object(cli_mod.connect_mod, "connect", return_value=0):
+        # own home folder: an index another test signed with a different (memory)
+        # key would otherwise be, correctly, refused as unverifiable
+        fresh_home = _isolation.mktemp()
+        with mock.patch.dict(os.environ, {"HOME": fresh_home, "USERPROFILE": fresh_home}), \
+                cd(self.p), mock.patch.object(cli_mod.connect_mod, "connect", return_value=0):
             code = cli_mod.connect_service(CAT["openai"], env_file=env, no_browser=True)
-        self.assertEqual(code, 0)
-        self.assertTrue(ledger.get(self.p, "openai"))
+            self.assertEqual(code, 0)
+            self.assertTrue(ledger.get(self.p, "openai"))
 
     def test_a_failed_connect_records_nothing(self):
         with cd(self.p), mock.patch.object(cli_mod.connect_mod, "connect", return_value=1):

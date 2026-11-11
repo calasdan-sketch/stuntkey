@@ -50,10 +50,19 @@ def render_page(version: str, status: dict, template: str | None = None) -> byte
             .replace("{{version}}", html.escape(str(version), quote=True))).encode("utf-8")
 
 
-def _cookie_value(token: str) -> str:
-    """What the page cookie holds: a value made FROM the token, never the
-    token. It opens the page only; every API route still needs the Bearer token."""
-    return hmac.new(token.encode(), b"stuntkey page cookie", hashlib.sha256).hexdigest()
+PAGE_COOKIE_SECONDS = 3600      # the page cookie lives one hour (Max-Age) and then it is gone
+
+
+def _cookie_value(secret: bytes, port: int, nonce: str) -> str:
+    """What the page cookie holds: an HMAC made with a random secret that only
+    this running server knows (new at every start), bound to this port and to
+    a fresh random nonce chosen at each one-time-link exchange. It is NOT
+    derived from the long-lived token, so it cannot be recomputed from it, is
+    not shared between two servers on different ports, and the previous cookie
+    stops working when a new link is used. It opens the page only; every API
+    route still needs the Bearer token."""
+    return hmac.new(secret, f"stuntkey page cookie|{port}|{nonce}".encode(),
+                    hashlib.sha256).hexdigest()
 
 from . import broker
 
@@ -62,8 +71,8 @@ MAX_REQUEST = 300_000
 TOOLS = [
     {"type": "function", "function": {
         "name": "call_api",
-        "description": ("Call a connected service's API without seeing its "
-                        "key. Host and credential are added for you."),
+        "description": ("Call a connected service's API; the key is added for you and never placed in your "
+                        "environment. Host and credential are added for you."),
         "parameters": {"type": "object", "properties": {
             "service": {"type": "string"},
             "method": {"type": "string", "enum": ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"]},
@@ -100,11 +109,26 @@ def load_or_make_token(path: str) -> str:
     return tok
 
 
-def local_only(headers, port: int) -> bool:
-    """Host must be exactly us (no DNS rebinding) and no web page (Origin)."""
+def local_only(headers, port: int, connect_target: str | None = None) -> bool:
+    """Host must be exactly us (no DNS rebinding) and no web page (Origin).
+
+    `connect_target`: for a proxy CONNECT request. A CONNECT's Host header
+    names the site the program wants to reach, not us (every client sends it
+    that way), so there the rule is: no Origin, and Host (when present) must
+    be the very target named in the request line."""
+    if headers.get("Origin") is not None:
+        return False
     host = (headers.get("Host") or "").lower()
-    return (host in (f"127.0.0.1:{port}", f"localhost:{port}")
-            and headers.get("Origin") is None)
+    if connect_target is not None:
+        return host in ("", str(connect_target).lower())
+    return host in (f"127.0.0.1:{port}", f"localhost:{port}")
+
+
+class PortBusy(OSError):
+    """The port is taken by something else. The text is plain words for a person."""
+
+
+_BUSY_ERRNOS = {98, 48, 10048, 10013}    # Linux, macOS, Windows in use, Windows no access
 
 
 class DoorServer(ThreadingHTTPServer):
@@ -116,7 +140,18 @@ class DoorServer(ThreadingHTTPServer):
         exclusive = getattr(socket, "SO_EXCLUSIVEADDRUSE", None)
         if os.name == "nt" and exclusive is not None:
             self.socket.setsockopt(socket.SOL_SOCKET, exclusive, 1)
-        super().server_bind()
+        try:
+            super().server_bind()
+        except OSError as e:
+            port = self.server_address[1]
+            if port and (e.errno in _BUSY_ERRNOS or getattr(e, "winerror", 0) in _BUSY_ERRNOS):
+                try:
+                    self.server_close()
+                except OSError:
+                    pass
+                raise PortBusy(f"Something else is using port {port}. Pick another with "
+                               f"--port {port + 1}, or close the other program.") from None
+            raise
 
 
 def make_server(catalog: dict, get_values, token: str, policy, audit=None,
@@ -134,6 +169,24 @@ def make_server(catalog: dict, get_values, token: str, policy, audit=None,
                 del launch[old]
             launch[code] = now + LAUNCH_SECONDS
         return code
+
+    session = {"secret": secrets.token_bytes(32), "nonce": None, "until": 0.0}
+    session_lock = threading.Lock()
+
+    def rotate_cookie(port: int) -> str:
+        """A new cookie for the page; the one before it stops working."""
+        with session_lock:
+            session["nonce"] = secrets.token_urlsafe(16)
+            session["until"] = time.time() + PAGE_COOKIE_SECONDS
+            return _cookie_value(session["secret"], port, session["nonce"])
+
+    def cookie_ok(given: str, port: int) -> bool:
+        with session_lock:
+            nonce, until = session["nonce"], session["until"]
+            if nonce is None or time.time() > until:
+                return False
+            want = _cookie_value(session["secret"], port, nonce)
+        return hmac.compare_digest(given.encode(), want.encode())
 
     def use_launch_code(code: str) -> bool:
         with launch_lock:
@@ -178,6 +231,10 @@ def make_server(catalog: dict, get_values, token: str, policy, audit=None,
             parts = urlsplit(self.path)
             if parts.path not in ("/", "/index.html") or page_status is None:
                 return False
+            port = self.server.server_address[1]
+            # cookies are shared between ports of the same host, so the NAME
+            # carries the port: two stuntkey servers do not trample each other
+            cookie_name = f"{PAGE_COOKIE}_{port}"
             if not local_only(self.headers, self.server.server_address[1]):
                 self._send(403, {"error": "forbidden"})
                 return True
@@ -189,8 +246,9 @@ def make_server(catalog: dict, get_values, token: str, policy, audit=None,
                 if use_launch_code(code):
                     self.send_response(303)
                     self.send_header("Location", "/")
-                    self.send_header("Set-Cookie", f"{PAGE_COOKIE}={_cookie_value(token)}; "
-                                     "HttpOnly; SameSite=Strict; Path=/")
+                    self.send_header("Set-Cookie", f"{cookie_name}={rotate_cookie(port)}; "
+                                     f"HttpOnly; SameSite=Strict; Path=/; "
+                                     f"Max-Age={PAGE_COOKIE_SECONDS}")
                     for k, v in safe:
                         self.send_header(k, v)
                     self.send_header("Content-Length", "0")
@@ -203,8 +261,7 @@ def make_server(catalog: dict, get_values, token: str, policy, audit=None,
             for item in (self.headers.get("Cookie") or "").split(";"):
                 name, _, value = item.strip().partition("=")
                 cookies[name] = value
-            if not hmac.compare_digest(cookies.get(PAGE_COOKIE, "").encode(),
-                                       _cookie_value(token).encode()):
+            if not cookie_ok(cookies.get(cookie_name, ""), port):
                 self._text(401, "Open the link that `stuntkey serve` printed.")
                 return True
             try:
