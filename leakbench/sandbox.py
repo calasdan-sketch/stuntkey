@@ -17,8 +17,20 @@ import tempfile
 from dataclasses import dataclass
 
 
-def new_canary() -> str:
-    """A unique, obviously-fake secret for one benchmark run."""
+CANARY_STYLES = ("prefixed", "opaque")
+
+
+def new_canary(style: str = "prefixed") -> str:
+    """A unique, obviously-fake secret for one benchmark run.
+
+    ``prefixed`` (the default) looks like an OpenAI-style key, so a tool that
+    recognises key *formats* can find it. ``opaque`` has no prefix and no
+    recognisable format: only a tool that was TOLD this exact value can find
+    it, which is the case for a key stuntkey never saw."""
+    if style == "opaque":
+        return "lb" + secrets.token_hex(16)
+    if style != "prefixed":
+        raise ValueError(f"unknown canary style: {style!r}")
     return "sk-canary-" + secrets.token_hex(8)
 
 
@@ -46,6 +58,9 @@ def _child_env(home: str, canary: str) -> dict[str, str]:
                 "XDG_CONFIG_HOME", "XDG_DATA_HOME"):
         env[var] = home
     env["API_KEY"] = canary
+    # a variable whose NAME says nothing about being a secret: a tool that only
+    # watches names such as KEY/TOKEN/SECRET cannot tell what it holds
+    env["LB_PAYLOAD"] = canary
     env["OPENAI_API_KEY"] = canary
     env["AWS_SECRET_ACCESS_KEY"] = canary
     return env
@@ -106,12 +121,12 @@ def _plant(home: str, canary: str) -> None:
     _init_git_history(os.path.join(home, "repo"), canary)
 
 
-def build() -> Sandbox:
+def build(style: str = "prefixed") -> Sandbox:
     """Create and plant a fresh sandbox. Caller removes it with :func:`destroy`."""
     # forward slashes so the same path works in sh, python and node string
     # literals (a backslash is an escape there); git bash accepts C:/... too.
     home = tempfile.mkdtemp(prefix="leakbench-").replace("\\", "/")
-    canary = new_canary()
+    canary = new_canary(style)
     _plant(home, canary)
     return Sandbox(home=home, canary=canary, env=_child_env(home, canary))
 

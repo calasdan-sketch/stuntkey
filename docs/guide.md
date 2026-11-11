@@ -4,6 +4,7 @@
 
 ## The plain-words path (for people who do not write code)
 
+0. **The short version:** `stuntkey get github`, then `stuntkey fix` (switches everything on after listing what it will change and asking once), restart your AI app, then ask it "Who am I on GitHub?". If anything is not working, `stuntkey status` shows green, yellow or red for each part with one next step, and `stuntkey fix` repairs what it can. `stuntkey help` groups the commands by task, `stuntkey limits` says what stuntkey does not protect, and `stuntkey uninstall` undoes the setup (saved keys stay).
 1. **Practice first:** `stuntkey try`. It walks you through adding a pretend key, using it and forgetting it. It runs in a throwaway store and a temporary folder (your keychain, your keys, your project and your activity log are not opened) and deletes everything when it ends. `--auto` goes through it without pausing.
 2. **Add a real key:** `stuntkey get github`, or `stuntkey get example.com` for a site stuntkey has no recipe for (the key is then saved untested). Every command says in one line what it is about to do before it does it. The key goes in your computer's keychain unless you ask for `--store env`.
 3. **Already have keys in a file or a password manager?** `stuntkey import FILE` reads a `.env` file, a Doppler or Bitwarden JSON export, or a 1Password or Bitwarden CSV export (or `--paste`: lines you paste, hidden). It shows the *names* it found, never the values, asks, and saves them in the keychain. A name stuntkey has no service for is left alone and listed. When it is done it tells you to delete the file you read them from; use the command it prints (a file deleted in Explorer waits in the Recycle Bin), or pass `--delete-source`, which overwrites and deletes it (on an SSD or a synced folder an old copy can remain, so also remove it from there).
@@ -422,6 +423,14 @@ file (`echo .env >> .gitignore`). Keep keys out of the files too:
 ## Commands
 
 ```bash
+stuntkey fix [--yes] [--json]          # repair the usual problems (safety check missing, program moved after an upgrade, AI app not plugged in) or switch everything on the first time; lists the changes, asks once, backs up first
+stuntkey status                       # one screen: green, yellow or red per part, each with one next step (in a project folder it also lists the project's keys)
+stuntkey help [COMMAND]               # every command grouped by what you want to do; with a name, more about that command
+stuntkey limits                       # what stuntkey does NOT protect you from, in plain words (also on the website)
+stuntkey update-check [--online]      # your version; looks up the newest one only if you add --online (asks pypi.org, sends nothing about you)
+stuntkey completion powershell|bash   # a script that completes commands when you press Tab
+stuntkey doctor --fix [--yes]         # the health check, then the same repair as `fix`
+stuntkey uninstall [--keep-hook]      # undo the setup; also removes the Claude Code safety check from ~/.claude/settings.json unless --keep-hook (backups kept, saved keys untouched)
 stuntkey install | uninstall         # plug stuntkey into (or out of) Claude Desktop, Cursor, Claude Code, VS Code; ends with "Claude Code: connected" etc.
 stuntkey start                       # first run: check this computer, look for loose keys, say what is next
 stuntkey start --simple              # plain-English setup, one question at a time, for apps made with Lovable, Bolt, Replit or Vercel
@@ -1235,7 +1244,7 @@ is UTF-8 bytes regardless of console code page, console output is
 reconfigured to replace unencodable characters instead of crashing, and
 every text file is opened as UTF-8.
 
-## Scope / limits (v0.9.3)
+## Scope / limits (v0.9.4)
 
 - **Honest summary.** The key never enters the agent's environment when used through the broker, and a Claude Code hook blocks common leaks. Not covered: any program running as you can read the OS keychain (on Windows, the Credential Manager); Cursor, Codex, Gemini and Claude Desktop file tools have no hook; screenshots and the clipboard; and code that leaks by running, which no list of patterns can fully stop. The `leakbench` fake key is registered with stuntkey first, which flatters its score.
 - `proxy`: from 0.9.3 a read (GET) to anything that is not an AI endpoint asks once per service (it used to go through without asking), and a write that a policy allows asks every time. AI calls (chat, responses, messages, embeddings) still do not ask.

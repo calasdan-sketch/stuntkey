@@ -103,7 +103,8 @@ def reset(index_path: str | None = None) -> str | None:
 
 
 def path() -> str:
-    return os.path.join(os.path.expanduser("~"), ".stuntkey", "index.json")
+    from . import remote
+    return os.path.join(remote.home_dir(), "index.json")
 
 
 def _now() -> datetime.datetime:
@@ -204,11 +205,35 @@ def _quiet_load(index_path: str | None, resign: bool = True) -> dict:
         return {}
 
 
+def _keep_unreadable(index_path: str) -> None:
+    """A file that is there but cannot be read (cut off by a power loss, too
+    big, not JSON) reads as 'no dates', and the next save would write over it.
+    Move it aside first (index.json.unreadable-<time>) so nothing is lost and
+    the cause can be looked at; an empty file has nothing to keep."""
+    try:
+        if not os.path.isfile(index_path) or os.path.getsize(index_path) == 0:
+            return
+        if _read_file(index_path) is not None:
+            return
+        base = f"{index_path}.unreadable-{int(_now().timestamp())}"
+        kept, i = base, 1
+        while os.path.exists(kept):
+            i += 1
+            kept = f"{base}-{i}"
+        os.replace(index_path, kept)
+        _tell(f"the key dates file could not be read (maybe the computer "
+              f"stopped while it was being saved). It was kept as {kept} and "
+              "a new one was started; old keys show as 'added before records'.")
+    except OSError:
+        pass
+
+
 def _save(projects: dict, index_path: str | None = None) -> None:
     index_path = index_path or path()
     problem = store_mod.private_path_problem(index_path)
     if problem:
         raise store_mod.EnvFileRefused(index_path, problem)
+    _keep_unreadable(index_path)
     doc = {"version": CURRENT_VERSION, "projects": projects}
     key = _signing_key(index_path, create=True)
     if key is not None:

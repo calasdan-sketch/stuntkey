@@ -857,17 +857,10 @@ EVASIVE = [
 ]
 
 KNOWN_EVASIVE_MISSES = {
-    "$d='.claude'; $f='settings.json'; Set-Content \"$d/$f\" '{}'",
-    "$p = Join-Path $HOME '.claude'; Set-Content (Join-Path $p 'settings.json') '{}'",
-    "python -c \"import os; os.system('del %USERPROFILE%\\\\.claude\\\\settings.json')\"",
-    "python -c \"import os;h=os.path.expanduser('~');d='.cla'+'ude';open(h+'/'+d+'/settings.json','w').write('{}')\"",
-    "node -e \"const p=require('path');require('fs').writeFileSync(p.join(require('os').homedir(),'.claude','settings.json'),'{}')\"",
+    # round 13 closed 10 of the 11 (variables, Join-Path, aliases, ${!X*}, eval of a built name,
+    # python / node paths built in pieces, finding the stuntkey program by __file__). Left: a patch
+    # file that does not exist yet cannot be read; if it exists, git apply of it is now read first.
     "git apply evil.patch",
-    "echo done; rm -f \"$(python -c 'import stuntkey,sys;print(stuntkey.__file__)')\"",
-    "s=stuntkey; $s proxy --print-env",
-    "alias sk=stuntkey; sk proxy --print-env",
-    "echo ${!OPENAI*}",
-    "eval \"echo \\$OPENAI_API_$(echo KEY)\"",
 }
 
 TRICKY_BENIGN = [
@@ -925,7 +918,7 @@ class EvasiveKeyForms(unittest.TestCase):
         _env_memory_keychain(self)
         keychain.store("svc", "API_KEY", K40)
 
-    def test_known_gaps_stay_visible(self):
+    def test_round13_closed_forms_are_hidden(self):
         import gzip
         raw = K40.encode()
         homoglyph = K40.replace("a", "\u0430").replace("e", "\u0435").replace("o", "\u043e")
@@ -943,7 +936,7 @@ class EvasiveKeyForms(unittest.TestCase):
             with self.subTest(gap=name):
                 got = post("Bash", {"stdout": "x " + form, "stderr": ""})
                 shown = got["updatedToolOutput"]["stdout"] if got else "x " + form
-                self.assertIn(form, shown, f"{name} is now caught: move it out of the known gaps")
+                self.assertNotIn(form, shown, f"{name} reached the output unmasked")
 
 
 if __name__ == "__main__":

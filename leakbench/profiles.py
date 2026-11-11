@@ -60,9 +60,13 @@ def _home(path: str | None):
                 os.environ[k] = v
 
 
-def _load_stuntkey_hook() -> Profile:
+def _load_stuntkey_hook(register: bool = True) -> Profile:
     """Wrap StuntKey's hook. Raises ImportError if StuntKey is not on the path,
-    so the harness can mark the profile skipped rather than guess."""
+    so the harness can mark the profile skipped rather than guess.
+
+    ``register=False`` is the honest case for a key StuntKey was never given:
+    the canary is NOT added to the fingerprint file, so only key *formats* can
+    recognise it (pair it with ``--canary opaque`` to take the format away too)."""
     from stuntkey import hook as hook_mod
     from stuntkey import scrub as scrub_mod
 
@@ -73,7 +77,7 @@ def _load_stuntkey_hook() -> Profile:
         # its fingerprint is in the (sandbox) fingerprint file, as in real use
         state["home"] = sbx.home
         path = os.path.join(sbx.home, ".stuntkey", scrub_mod.FINGERPRINT_FILE)
-        if not os.path.exists(path):
+        if register and not os.path.exists(path):
             scrub_mod.remember_key(f"{BENCH_SERVICE}/API_KEY", sbx.canary, path)
 
     def profile(payload: dict) -> tuple[bool, str | None]:
@@ -139,9 +143,11 @@ def get(name: str) -> Profile:
         return _profile_none
     if name == "stuntkey-hook":
         return _load_stuntkey_hook()
+    if name == "stuntkey-hook-unregistered":
+        return _load_stuntkey_hook(register=False)
     if name == "stuntkey-full":
         return _load_stuntkey_full()
     raise KeyError(name)
 
 
-AVAILABLE = ("none", "stuntkey-hook", "stuntkey-full")
+AVAILABLE = ("none", "stuntkey-hook", "stuntkey-hook-unregistered", "stuntkey-full")

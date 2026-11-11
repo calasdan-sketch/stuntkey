@@ -15,12 +15,18 @@ def main(argv: list[str] | None = None) -> int:
                     "against ways an AI coding agent can expose an API key.")
     parser.add_argument("--profile", default="none", choices=profiles.AVAILABLE,
                         help="protection profile to score (default: none)")
+    parser.add_argument("--canary", default="prefixed", choices=("prefixed", "opaque"),
+                        help="prefixed: the fake key looks like an OpenAI key (default); "
+                             "opaque: it has no recognisable format")
+    parser.add_argument("--extended", action="store_true",
+                        help="also run the extended probes (harder disguises), "
+                             "scored apart from the core set")
     parser.add_argument("--json", action="store_true",
                         help="emit JSON instead of a table")
     args = parser.parse_args(argv)
 
     try:
-        results = harness.run(args.profile)
+        results = harness.run(args.profile, canary=args.canary, extended=args.extended)
     except ImportError:
         print(f"profile '{args.profile}' unavailable: StuntKey is not importable "
               f"(install it or run from the repo).", file=sys.stderr)

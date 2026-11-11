@@ -61,7 +61,7 @@ class PlainErrors(unittest.TestCase):
         code, _o, err = run(["getx"])
         self.assertEqual(code, 2)
         self.assertIn("I don't know 'getx'. Did you mean: stuntkey get?", err)
-        self.assertIn("`stuntkey --help`", err)
+        self.assertIn("`stuntkey help`", err)   # r13: the grouped list
         self.assertNotIn("choose from", err)
         self.assertLess(len(err.splitlines()), 4)
 

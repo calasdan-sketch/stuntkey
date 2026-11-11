@@ -121,7 +121,10 @@ network layer.
   run and blocks obvious leaks; patterns cannot fully stop code that hides what it
   does.
 - **The `leakbench` score.** Its fake key is registered with stuntkey first, which
-  flatters the result; a key stuntkey has never seen is found by shape only.
+  flatters the result; a key stuntkey has never seen is found by shape only. With a
+  key of no known format, 7 of the 64 core probes leak instead of 2, and the extended
+  set also leaks a key printed spaced out or cut into short lines (see
+  `leakbench/README.md`).
 - **Memory.** Python cannot reliably wipe a secret from memory.
 - **A compromised vendor**, or one that logs your key itself.
 - **The OAuth token fetch** is checked to be public and ignores proxies, but it

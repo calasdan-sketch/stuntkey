@@ -199,12 +199,59 @@ def _normalize(text: str) -> str:
     return re.sub(r"\s+", "", t)
 
 
+# Letters from other alphabets that are drawn like a Latin one (round 13). NFKD does not
+# join them to the Latin letter, so "sk-proj" written with a Cyrillic "о" and "р" slipped
+# past a text compare. Greek and Cyrillic capitals and small letters, plus the few Latin
+# look-alikes (dotless i, script g, small caps) people use. One character in, one out.
+_CONFUSABLES = {}
+for _pair in (
+        # Cyrillic
+        "а=a А=A в=b В=B с=c С=C е=e Е=E н=h Н=H і=i І=I ј=j Ј=J к=k К=K м=m М=M о=o О=O р=p Р=P "
+        "т=t Т=T х=x Х=X у=y У=Y ѕ=s Ѕ=S ԁ=d ԛ=q ԝ=w һ=h Һ=H ӏ=l Ӏ=I ѵ=v ᴅ=d "
+        # Greek
+        "α=a Α=A β=b Β=B ε=e Ε=E ζ=z Ζ=Z η=n Η=H ι=i Ι=I κ=k Κ=K μ=m Μ=M ν=v Ν=N ο=o Ο=O ρ=p Ρ=P "
+        "τ=t Τ=T υ=u Υ=Y χ=x Χ=X ω=w Ω=O "
+        # Latin look-alikes: dotless i, script g, alpha, small capitals
+        "ı=i ɡ=g ɑ=a ɪ=i ʏ=y ᴀ=a ʙ=b ᴄ=c ᴇ=e ɢ=g ʜ=h ᴊ=j ᴋ=k ʟ=l ᴍ=m ɴ=n ᴏ=o ᴘ=p ʀ=r ꜱ=s ᴛ=t ᴜ=u ᴠ=v ᴡ=w ᴢ=z "
+        # a few Armenian and Latin-extended shapes
+        "Օ=O Տ=S ց=g ɔ=c ɛ=e").split():
+    _CONFUSABLES[ord(_pair[0])] = _pair[2]
+del _pair
+
+def _fold_confusables(text: str) -> str:
+    """`text` with look-alike letters turned into the Latin letter and every
+    other decimal digit (Arabic-Indic, full-width ...) into 0-9. The SAME LENGTH
+    out as in (a position in one is the same position in the other)."""
+    if text.isascii():
+        return text
+    import unicodedata
+    out = []
+    for ch in text:
+        if ord(ch) < 128:
+            out.append(ch)
+            continue
+        got = _CONFUSABLES.get(ord(ch))
+        if got is None:
+            if unicodedata.category(ch) == "Nd":
+                try:
+                    got = str(unicodedata.digit(ch))
+                except ValueError:
+                    got = ch
+            else:
+                nk = unicodedata.normalize("NFKC", ch)
+                got = nk if len(nk) == 1 else ch
+        out.append(got)
+    return "".join(out)
+
+
 def _squash(text: str) -> str:
     """Only letters and digits, lower case. Defeats dashes, dots, zero-width
-    characters, NUL bytes (UTF-16 text), accents and upper/lower-case games."""
+    characters, NUL bytes (UTF-16 text), accents, look-alike letters from other
+    alphabets and upper/lower-case games."""
     import re
     import unicodedata
-    t = unicodedata.normalize("NFKD", text.replace("\x00", ""))
+    t = _fold_confusables(text.replace("\x00", ""))
+    t = unicodedata.normalize("NFKD", t)
     return re.sub(r"[^0-9a-z]", "", t.lower())
 
 
@@ -222,7 +269,25 @@ def _extra_forms(secret: str) -> list[str]:
     out.append(base64.b64encode(once).decode().rstrip("="))
     out.append(base64.urlsafe_b64encode(base64.urlsafe_b64encode(raw)).decode().rstrip("="))
     out.append(base64.b64encode(raw.hex().encode()).decode().rstrip("="))
+    # round 13: the other wrappings a person (or an agent) might think of
+    back = raw[::-1]
+    out.append(back.hex())                                         # hex of the reversed key
+    out.append(base64.b64encode(back).decode().rstrip("="))        # base64 of the reversed key
+    out.append(base64.urlsafe_b64encode(back).decode().rstrip("="))
+    out.append(_rot47(secret))
+    out.append(_rot47(secret[::-1]))
+    out.append(codecs.encode(secret[::-1], "rot13"))
+    out.append(base64.b64encode(codecs.encode(secret, "rot13").encode()).decode().rstrip("="))
+    out.append(raw.hex().upper()[::-1])
+    # every other character: the two halves (even places, odd places) written one after the other
+    out.append(secret[::2])
+    out.append(secret[1::2])
     return out
+
+
+def _rot47(text: str) -> str:
+    """ROT47: every printable ASCII character from "!" to "~" moved 47 places."""
+    return "".join(chr(33 + (ord(c) - 33 + 47) % 94) if 33 <= ord(c) <= 126 else c for c in text)
 
 
 # Round 12: 32 -> 16. A key's 17..31 character piece used to go unseen. 16 letters and
@@ -244,7 +309,10 @@ def _partial_variants(secret: str) -> list[str]:
     out: list[str] = []
     for v in (_squash(secret), _squash(secret)[::-1], _squash(raw.hex()),
               _squash(codecs.encode(secret, "rot13")),
-              _squash(base64.b64encode(raw).decode())):
+              _squash(base64.b64encode(raw).decode()),
+              # round 13: hex and base64 of the reversed key, rot47, rot13 of the reversed key
+              _squash(raw[::-1].hex()), _squash(base64.b64encode(raw[::-1]).decode()),
+              _squash(_rot47(secret)), _squash(codecs.encode(secret[::-1], "rot13"))):
         if v and v not in out:
             out.append(v)
     return out
@@ -273,13 +341,123 @@ def _loosely_contains(text: str, secrets, deadline) -> bool:
     hint vendors show on purpose ("sk-...Zk"), so a key hint does not trip it."""
     text = _ANSI_RE.sub("", text.replace("\x00", ""))
     _tick(deadline)
-    norm = _normalize(text)
-    _tick(deadline)
-    squashed = _squash(norm)
+    # the text itself, and (round 13) the other texts it can be turned into: character
+    # codes, bytes written as hex or in binary, and base64 / hex of compressed text (a key
+    # spread between filler characters is looked for separately: see _interleaved)
+    pairs = []
+    for variant in [text] + _disguise_texts(text, deadline):
+        _tick(deadline)
+        norm = _normalize(variant)
+        _tick(deadline)
+        pairs.append((norm, _squash(norm)))
+    # the text read as it is, too: _normalize undoes %xx, &...; and \uXXXX, which rot47 and
+    # other symbol-heavy wrappings are full of, so it can break a disguise it was not meant for
+    pairs.append((re.sub(r"\s+", "", text), _squash(text)))
     for s in secrets:
         _tick(deadline)
         if len(s) < MIN_LEN:
             continue
+        for norm, squashed in pairs:
+            if _secret_in(s, norm, squashed, deadline):
+                return True
+        if _interleaved(s, pairs[0][0], deadline):
+            return True
+    return False
+
+
+MAX_VARIANT_TEXT = 256 * 1024     # only this much of a text is turned into extra texts
+MAX_VARIANTS = 40
+_DEC_RUN_RE = re.compile(r"(?<![\d.])(?:3[2-9]|[4-9]\d|1[01]\d|12[0-6])(?:[ \t,;:.\-|/]{1,3}(?:3[2-9]|[4-9]\d|1[01]\d|12[0-6])(?![\d])){7,}")
+_HEX_PREFIXED_RE = re.compile(r"(?:0x|\\x|\\u00)([0-9a-fA-F]{2})")
+_BIN_RUN_RE = re.compile(r"(?<![01])(?:[01]{8}[ ,]{0,2}){8,}")
+_OCT_RE = re.compile(r"\\([0-3][0-7]{2})")
+_B64_RUN_RE = re.compile(r"[A-Za-z0-9+/_-]{24,}={0,2}")
+_HEX_RUN_RE = re.compile(r"(?<![0-9A-Fa-f])(?:[0-9A-Fa-f]{2}){12,}(?![0-9A-Fa-f])")
+
+
+def _bytes_text(raw: bytes) -> str:
+    return raw.replace(b"\x00", b"").decode("latin-1")
+
+
+def _inflated(raw: bytes) -> bytes | None:
+    """`raw` decompressed when it is gzip / zlib / raw deflate (output capped at 256 kB)."""
+    if len(raw) < 8:
+        return None
+    for w in ((31,) if raw[:2] == b"\x1f\x8b" else (15,) if raw[0] == 0x78 else (-15,)):
+        try:
+            out = zlib.decompressobj(w).decompress(raw, MAX_VARIANT_TEXT)
+        except zlib.error:
+            continue
+        if out:
+            return out
+    return None
+
+
+def _disguise_texts(text: str, deadline) -> list[str]:
+    """Other texts a disguised key can be read in (see _loosely_contains). Bounded:
+    at most MAX_VARIANTS texts, made from the first MAX_VARIANT_TEXT characters."""
+    sample = text[:MAX_VARIANT_TEXT]
+    out: list[str] = []
+
+    def add(s):
+        if s and len(out) < MAX_VARIANTS:
+            out.append(s)
+    for m in list(_DEC_RUN_RE.finditer(sample))[:6]:
+        _tick(deadline)
+        add("".join(chr(int(n)) for n in re.findall(r"\d+", m.group())))
+    hexes = _HEX_PREFIXED_RE.findall(sample)
+    if len(hexes) >= 8:
+        add(_bytes_text(bytes(int(h, 16) for h in hexes)))
+    for m in list(_BIN_RUN_RE.finditer(sample))[:4]:
+        bits = re.sub(r"[^01]", "", m.group())
+        add(_bytes_text(bytes(int(bits[i:i + 8], 2) for i in range(0, len(bits) - 7, 8))))
+    octs = _OCT_RE.findall(sample)
+    if len(octs) >= 8:
+        add(_bytes_text(bytes(int(o, 8) for o in octs)))
+    for m in list(_B64_RUN_RE.finditer(sample))[:20]:
+        _tick(deadline)
+        tok = m.group().replace("-", "+").replace("_", "/")
+        try:
+            raw = base64.b64decode(tok + "=" * (-len(tok) % 4))
+        except (ValueError, TypeError):
+            continue
+        inflated = _inflated(raw)
+        add(_bytes_text(inflated if inflated is not None else raw))
+    for m in list(_HEX_RUN_RE.finditer(sample))[:20]:
+        _tick(deadline)
+        raw = bytes.fromhex(m.group())
+        inflated = _inflated(raw)
+        add(_bytes_text(inflated if inflated is not None else raw))
+    return out
+
+
+INTERLEAVE_MAX = 2 * 1024 * 1024     # texts longer than this are not searched for a spread-out key
+INTERLEAVE_RUN = 16                  # characters of the key that must show up with filler between
+
+
+def _interleaved(secret: str, norm: str, deadline) -> bool:
+    """Is the key (or 16 characters of it) in `norm` with ONE or TWO filler
+    characters between every two of its characters (`sXkX-XaXb`)? Looked for with
+    a pattern per start offset and gap, so the work stays a few scans of the text
+    however long the text is (texts over INTERLEAVE_MAX are not searched)."""
+    run = min(len(secret), INTERLEAVE_RUN)
+    if run < 8 or len(norm) > INTERLEAVE_MAX or len(norm) < 2 * run:
+        return False
+    spare = len(secret) - run
+    starts = sorted({0, spare // 3, 2 * spare // 3, spare})
+    for start in starts:
+        piece = secret[start:start + run]
+        for gap in (1, 2):
+            _tick(deadline)
+            rx = re.compile((".{%d}" % gap).join(re.escape(c) for c in piece), re.I | re.S)
+            if rx.search(norm):
+                return True
+    return False
+
+
+def _secret_in(s: str, norm: str, squashed: str, deadline) -> bool:
+    """One secret against one text (already normalised and squashed)."""
+    if True:
         for whole in _partial_variants(s):
             if len(whole) <= PARTIAL_RUN:
                 continue
@@ -377,6 +555,11 @@ REPLACE_TRIES = 6
 def _write_fingerprints(path: str, data: dict) -> None:
     folder = os.path.dirname(path)
     os.makedirs(folder, mode=0o700, exist_ok=True)
+    try:
+        from . import consent as consent_mod
+        consent_mod.harden_acl(folder)          # Windows: owner and system only (once per run)
+    except Exception:                           # noqa: BLE001  best effort, never in the way
+        pass
     fd, tmp = tempfile.mkstemp(prefix=".fp-", suffix=".tmp", dir=folder)  # 0600
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
@@ -715,7 +898,17 @@ def _stored_spans(text: str, salt: bytes, prints: frozenset, deadline=None):
     """(start, end) of every word, or the part after = or : in it, whose
     fingerprint is a stored key's. The work per word is fixed (at most
     MAX_SPLITS splits and MAX_LENGTHS key lengths), so the time grows in a
-    straight line with the text."""
+    straight line with the text. Round 13: a text with letters from other
+    alphabets is read a second time with the look-alikes turned into Latin
+    letters (a key written with a Cyrillic "о" is still masked)."""
+    yield from _stored_spans_one(text, salt, prints, deadline, False)
+    if not text.isascii():
+        folded = _fold_confusables(text)
+        if folded != text:
+            yield from _stored_spans_one(folded, salt, prints, deadline, True)
+
+
+def _stored_spans_one(text: str, salt: bytes, prints: frozenset, deadline, folded: bool):
     seed = zlib.crc32(salt)
     crcs = getattr(prints, "crcs", ())
     legacy = getattr(prints, "lengths", ())

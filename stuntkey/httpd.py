@@ -95,7 +95,7 @@ def load_or_make_token(path: str) -> str:
             return tok
     except OSError:
         pass
-    tok = secrets.token_urlsafe(32)
+    from . import store as store_mod
     folder = os.path.dirname(path) or "."
     os.makedirs(folder, mode=0o700, exist_ok=True)
     if os.name == "posix":
@@ -103,9 +103,19 @@ def load_or_make_token(path: str) -> str:
             os.chmod(folder, 0o700)
         except OSError:
             pass
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w", encoding="ascii") as f:
-        f.write(tok + "\n")
+    # Under the file lock, so two servers started together agree on ONE token,
+    # and replaced whole (a crash leaves the old file or the new, never half),
+    # owner-only from the start (the old plain file open ignored the mode on Windows).
+    with store_mod.file_lock(path):
+        try:
+            with open(path, encoding="ascii") as f:
+                tok = f.read().strip()
+            if len(tok) >= 40:
+                return tok
+        except (OSError, ValueError):
+            pass
+        tok = secrets.token_urlsafe(32)
+        store_mod.write_private(path, tok + "\n")
     return tok
 
 
@@ -135,6 +145,33 @@ class DoorServer(ThreadingHTTPServer):
     """On Windows, SO_REUSEADDR lets another program bind the very same port
     and take the door's connections; ask for the port exclusively instead."""
     allow_reuse_address = os.name != "nt"
+    MAX_CONNECTIONS = 128      # a runaway client cannot start threads without end
+
+    def __init__(self, *args, **kwargs):
+        self._slots = threading.BoundedSemaphore(self.MAX_CONNECTIONS)
+        super().__init__(*args, **kwargs)
+
+    def process_request(self, request, client_address):
+        if not self._slots.acquire(blocking=False):
+            try:
+                request.settimeout(1)
+                request.sendall(b"HTTP/1.0 503 Service Unavailable\r\nContent-Length: 0\r\n"
+                                b"Connection: close\r\n\r\n")
+            except OSError:
+                pass
+            self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            self._slots.release()
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._slots.release()
 
     def server_bind(self):
         exclusive = getattr(socket, "SO_EXCLUSIVEADDRUSE", None)
@@ -348,12 +385,43 @@ def make_server(catalog: dict, get_values, token: str, policy, audit=None,
     return srv
 
 
+def _stop_on_signals():
+    """Make a plain stop request (SIGTERM, or Ctrl+Break / closing the console
+    on Windows) end the server like Ctrl+C does, so it closes its port and
+    returns normally. Only possible from the main thread; returns a function
+    that puts the old handlers back."""
+    import signal
+    if threading.current_thread() is not threading.main_thread():
+        return lambda: None
+    def stop(signum, frame):
+        raise KeyboardInterrupt
+    old = {}
+    for name in ("SIGTERM", "SIGBREAK"):
+        sig = getattr(signal, name, None)
+        if sig is None:
+            continue
+        try:
+            old[sig] = signal.signal(sig, stop)
+        except (ValueError, OSError):
+            pass
+
+    def restore():
+        for sig, handler in old.items():
+            try:
+                signal.signal(sig, handler)
+            except (ValueError, OSError, TypeError):
+                pass
+    return restore
+
+
 def serve_forever(srv) -> None:
+    restore = _stop_on_signals()
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
+        restore()
         srv.server_close()
 
 

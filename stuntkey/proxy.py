@@ -403,6 +403,30 @@ def prompt_free(method: str, path: str) -> bool:
         plain == p or plain.startswith(p + "/") for p in MODEL_READS)
 
 
+BODY_SECONDS = 120.0           # the whole request body must arrive within this
+
+
+def read_body(rfile, n: int, seconds: float = BODY_SECONDS) -> bytes:
+    """Read exactly `n` bytes, but give up after `seconds` in all: the
+    handler's own timeout only limits one wait, so a client dribbling a byte
+    at a time could hold a thread (and 16 MB of memory) for ever."""
+    deadline = time.monotonic() + seconds
+    read = getattr(rfile, "read1", None) or rfile.read
+    parts, left = [], n
+    try:
+        while left > 0:
+            if time.monotonic() > deadline:
+                raise broker.BrokerError("the request body arrived too slowly; refused", 5)
+            chunk = read(min(left, 65536))
+            if not chunk:
+                raise broker.BrokerError("the request body ended early; refused", 5)
+            parts.append(chunk)
+            left -= len(chunk)
+    except OSError:                      # includes a socket timeout
+        raise broker.BrokerError("the request body did not arrive in time; refused", 5) from None
+    return b"".join(parts)
+
+
 def _given_token(headers) -> str:
     auth = headers.get("Authorization") or ""
     if auth[:7].lower() == "bearer ":
@@ -610,15 +634,25 @@ def make_proxy(catalog: dict, get_values, token: str, policy: broker.Policy,
                         f"responses, messages, embeddings), so {path[:80]} was not sent. A "
                         "person can allow it in stuntkey.policy and run `stuntkey policy "
                         "approve`.", 5)
+            if self.headers.get("Transfer-Encoding") is not None:
+                # A chunked body has no Content-Length: reading "none" would
+                # send the API an empty body and leave the real one in the
+                # pipe. Say so instead (most SDKs send a length).
+                raise broker.BrokerError("the proxy needs the request body's length "
+                                         "(Content-Length); chunked uploads are not "
+                                         "supported", 5)
+            lengths = self.headers.get_all("Content-Length") or []
+            if len({x.strip() for x in lengths}) > 1:
+                raise broker.BrokerError("the request has two different lengths; refused", 5)
             try:
-                n = int(self.headers.get("Content-Length") or "0")
+                n = int(lengths[0].strip()) if lengths and lengths[0].strip() else 0
             except ValueError:
                 n = -1
             if n < 0 or n > MAX_BODY:
                 raise broker.BrokerError("request body missing a length or too large", 5)
             if n and method in broker.READ_METHODS:
                 raise broker.BrokerError("GET/HEAD may not have a body", 5)
-            body = self.rfile.read(n) if n else None
+            body = read_body(self.rfile, n) if n else None
             self._ask_person(recipe, method, host, url, path, body)
             policy.gate(service, method, path)
             return host, url, body

@@ -79,7 +79,10 @@ class MutationTests(unittest.TestCase):
 
     def test_disguise_check_weakened(self):
         from stuntkey import scrub
-        with mock.patch.object(scrub, "_squash", lambda t: ""):
+        # round 13: the interleave check also folds dashes and invisible characters,
+        # so a real weakening removes both
+        with mock.patch.object(scrub, "_squash", lambda t: ""), \
+                mock.patch.object(scrub, "_interleaved", lambda *a, **k: False):
             failed = self._failed()
         self.assertTrue(any("dashes" in a or "invisible" in a for a in failed))
 

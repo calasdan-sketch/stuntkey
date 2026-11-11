@@ -1,7 +1,7 @@
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.10.0.schema.json
 
 PackageIdentifier: Calas.StuntKey
-PackageVersion: 0.9.3
+PackageVersion: 0.9.4
 InstallerType: zip
 NestedInstallerType: portable
 NestedInstallerFiles:
@@ -14,7 +14,7 @@ Dependencies:
   - PackageIdentifier: Python.Python.3.12
 Installers:
 - Architecture: neutral
-  InstallerUrl: https://github.com/calasdan-sketch/stuntkey/releases/download/v0.9.3/stuntkey-0.9.3-windows.zip
+  InstallerUrl: https://github.com/calasdan-sketch/stuntkey/releases/download/v0.9.4/stuntkey-0.9.4-windows.zip
   InstallerSha256: REPLACE_WITH_THE_SHA256_OF_THE_ZIP_FROM_SHA256SUMS
 ManifestType: installer
 ManifestVersion: 1.10.0

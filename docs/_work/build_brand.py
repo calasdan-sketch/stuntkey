@@ -6,7 +6,10 @@ Run:  python docs/_work/build_brand.py
 Importing it writes nothing: read OUT ({path: text}), or call write_all().
 """
 import base64
+import html as _html
 import os
+import re
+import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 SRC = os.path.join(ROOT, "docs", "_work", "brand_src")
@@ -44,7 +47,8 @@ with open(os.path.join(SITE, "favicon.png"), "rb") as f:
 css = rd(os.path.join(SRC, "styles.src.css")).replace("@@CREST@@", CREST)
 wr(os.path.join(SITE, "styles.css"), css)
 
-NAV = [("index.html", "Home"), ("how-it-works.html", "How it works"), ("add-your-first-key.html", "Add your first key")]
+NAV = [("index.html", "Home"), ("how-it-works.html", "How it works"), ("add-your-first-key.html", "Add your first key"),
+       ("what-it-does-not-protect.html", "What it does not protect")]
 
 
 def page(fname, title, desc, body, hero=False):
@@ -149,13 +153,14 @@ FIRST = """<div class="page"><div class="wrap">
       <div class="cmd"><code>stuntkey start</code></div></li>
     <li><b>Add the key.</b><p>Swap <code>openai</code> for your service. StuntKey opens that service's key page. Click the site's own Copy button. StuntKey takes the key from your copy, tests it, and locks it in your keychain.</p>
       <div class="cmd"><code>stuntkey get openai</code></div></li>
-    <li><b>Plug it into your AI tools.</b><p>Shows the change first and asks before it does anything. Run it in your project folder.</p>
-      <div class="cmd"><code>stuntkey install</code></div></li>
-    <li><b>Check it worked.</b><p>Shows where each key lives and how old it is. Names only, never the key.</p>
+    <li><b>Switch it on.</b><p>One command plugs StuntKey into your AI apps and turns on the Claude Code safety check. It lists what it will change and asks first. Then restart your AI app.</p>
+      <div class="cmd"><code>stuntkey fix</code></div></li>
+    <li><b>Check it worked.</b><p>Shows green, yellow or red for each part, and the keys you have saved (names only, never the key). If something is not green, <code>stuntkey fix</code> repairs what it can.</p>
       <div class="cmd"><code>stuntkey status</code></div></li>
   </ol>
   <div class="note"><p><b>Want to see it work first?</b> <code>stuntkey try</code> saves a pretend key, uses it, then forgets it, in a throwaway place. No real key is used.</p>
   <p><b>Leaked a key?</b> <code>stuntkey panic openai</code> walks you through cancelling it and making a new one.</p></div>
+  <p class="say">Want to know the limits first? <a href="what-it-does-not-protect.html">What StuntKey does not protect</a>.</p>
   <p class="say">Stuck? Email <a href="mailto:office@calasautomations.com">office@calasautomations.com</a>.</p>
 </div></div>"""
 
@@ -163,6 +168,26 @@ wr(os.path.join(SITE, "index.html"), page("index.html", "StuntKey by Calas Autom
    "StuntKey keeps your API keys in your keychain and lets your AI use them through a broker, so the key stays out of its environment. Free, open source.", INDEX))
 wr(os.path.join(SITE, "how-it-works.html"), page("how-it-works.html", "How StuntKey works - Calas Automations",
    "How StuntKey keeps your API keys out of your AI's environment, in plain words.", HOW))
+sys.path.insert(0, ROOT)
+from stuntkey.fixcmd import LIMITS  # noqa: E402  (plain data; the same text `stuntkey limits` prints)
+
+
+def _plain(text):
+    return re.sub(r"`([^`]+)`", r"<code>\1</code>", _html.escape(text, quote=False))
+
+
+LIMITS_BODY = """<div class="page"><div class="wrap">
+  <p class="crumbs"><a href="index.html">StuntKey</a> / What it does not protect</p>
+  <h1>What StuntKey does <em>not</em> protect</h1>
+  <p class="lede">StuntKey lowers the risk of a leaked key. It does not remove it. Here, in plain words, is what it cannot do. You can read the same list in a terminal with <code>stuntkey limits</code>.</p>
+  <ol class="steps">
+""" + "\n".join("    <li><b>%s</b><p>%s</p></li>" % (_plain(h), _plain(b)) for h, b in LIMITS) + """
+  </ol>
+  <div class="note"><p>The full technical version is the <a href="https://github.com/calasdan-sketch/stuntkey/blob/main/docs/THREAT_MODEL.md">threat model</a>. Found a hole we missed? Please tell us: <a href="mailto:security@calasautomations.com">security@calasautomations.com</a>.</p></div>
+</div></div>"""
+
+wr(os.path.join(SITE, "what-it-does-not-protect.html"), page("what-it-does-not-protect.html", "What StuntKey does not protect - Calas Automations",
+   "The honest list of what StuntKey cannot protect you from, in plain words.", LIMITS_BODY))
 wr(os.path.join(SITE, "add-your-first-key.html"), page("add-your-first-key.html", "Add your first key - StuntKey by Calas Automations",
    "Add your first API key to StuntKey in about a minute: install, check, add, connect.", FIRST))
 

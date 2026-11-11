@@ -16,7 +16,26 @@ python -m leakbench --profile none
 python -m leakbench --profile stuntkey-hook
 python -m leakbench --profile stuntkey-full
 python -m leakbench --profile stuntkey-hook --json
+python -m leakbench --profile stuntkey-hook-unregistered --canary opaque   # a key stuntkey never saw
+python -m leakbench --profile stuntkey-hook --extended                    # + 22 harder probes
 ```
+
+## Canary styles and the extended set
+
+- `--canary prefixed` (default): `sk-canary-<hex>`, which looks like an OpenAI key.
+- `--canary opaque`: `lb<32 hex>`, no prefix and no recognisable format. Probes that
+  search for `sk-` have nothing to find with it and read `n/a`.
+- The canary is also planted in an environment variable called `LB_PAYLOAD`, a name that
+  says nothing about being a secret (a tool that only watches variable names such as
+  `KEY`, `TOKEN` or `SECRET` cannot tell what it holds).
+- `--extended` adds 22 probes (`leakbench/probes/extended/`) on top of the 64 core ones:
+  the key printed as base64, hex, backwards, spaced out or cut into lines; read through
+  a wildcard, a split file name, a name built inside a script, `cp`, `tar`, `git diff
+  --no-index`, `curl file://`. They are scored apart so the 64-probe number stays
+  comparable with earlier releases.
+- A **disguised** canary in the output counts as `leaked`: base64 (any alignment), hex,
+  backwards, or the plain text with spaces, dashes or line breaks added. Before round 13
+  such an output read `n/a`, which hid a real leak.
 
 ## Outcomes
 
@@ -75,11 +94,12 @@ because the sandbox keyring is empty — under `stuntkey-hook` the same probes a
   **How the canary is recognised:** before each run the canary is registered
   with `scrub.remember_key` in the sandbox's `~/.stuntkey/fingerprints.json`,
   simulating a key saved with `stuntkey get` / `connect`. Key-format patterns
-  apply too. With the registration removed (a key StuntKey has never seen,
-  found by format only) the score drops from 48 blocked / 2 leaked to
-  45 blocked / 6 leaked: `read-built-bundle`, `read-source-map`,
-  `malicious-mcp-asks-for-key` and `url-path-key-echoed` leak again. Skipped (exit 2) if StuntKey is not
-  importable.
+  apply too. Skipped (exit 2) if StuntKey is not importable.
+- **stuntkey-hook-unregistered** - the same hook, but the canary is NOT registered: it is
+  a key stuntkey was never given. Run it with `--canary prefixed` (the fake key looks
+  like an OpenAI key, so key-format patterns can still find it) or `--canary opaque`
+  (no prefix, no known format: only a registered value could be found, so this is the
+  hardest case). Scores are in the table below.
 - **stuntkey-full** — `stuntkey-hook` plus spending caps. The spend probes
   test the counter (`caps.begin()` refuses the call past the cap); they do not
   run an agent loop. The model: the key
@@ -128,16 +148,42 @@ Drop a dict into any `leakbench/probes/*.json` list:
 to `canary_in_output`; use `write_tamper` for settings/key writes and
 `no_guard` for spend probes.
 
-## Results (this repo, this host)
+## Results (this repo, this host, round 13)
 
-64 probes. Run on a Windows host with bash, python, node, git, rg, docker,
-powershell present. Reproduce with the commands above.
+64 core probes. Run on a Windows host with Git for Windows' bash, python, node, git and
+powershell present. A probe whose tool is missing reads `n/a`. Reproduce with the
+commands above. Compare profiles on the same host.
 
-| profile      | blocked | masked | leaked | n/a |
-|--------------|--------:|-------:|-------:|----:|
-| none         |       0 |      0 |     57 |   7 |
-| stuntkey-hook |      48 |     14 |      2 |   0 |
-| stuntkey-full |      50 |     14 |      0 |   0 |
+| profile (64 core probes)                       | blocked | masked | leaked | n/a |
+|------------------------------------------------|--------:|-------:|-------:|----:|
+| none                                           |       0 |      0 |     57 |   7 |
+| stuntkey-hook (key registered)                 |      55 |      7 |      2 |   0 |
+| stuntkey-hook-unregistered (looks like a key)  |      49 |     13 |      2 |   0 |
+| stuntkey-hook-unregistered, `--canary opaque`  |      48 |      7 |      7 |   2 |
+| stuntkey-full (key registered)                 |      57 |      7 |      0 |   0 |
+
+With 22 extended probes added (86 in all):
+
+| profile (86 probes)                            | blocked | masked | leaked | n/a |
+|------------------------------------------------|--------:|-------:|-------:|----:|
+| none                                           |       0 |      0 |     78 |   8 |
+| stuntkey-hook (key registered)                 |      69 |     12 |      4 |   1 |
+| stuntkey-hook-unregistered (looks like a key)  |      63 |     16 |      6 |   1 |
+| stuntkey-hook-unregistered, `--canary opaque`  |      62 |      8 |     13 |   3 |
+| stuntkey-full (key registered)                 |      71 |     12 |      2 |   1 |
+
+**How to read this:** the first row of each table is the unprotected baseline. The
+"key registered" rows are what a person gets for a key they saved with stuntkey. The
+`opaque` row is the honest worst case: a key stuntkey never saw, in no known format.
+In that case the leaks are `echo-key-in-error`, `git-log-patch`,
+`malicious-mcp-asks-for-key`, `read-source-map` and `traceback-prints-key` (core), plus
+key variables printed through a script or disguised (extended), and the two spend probes.
+`n/a` is not a pass: for the `opaque` run, `grep-public-key-in-dist` and `ripgrep-secrets`
+search for `sk-` and have nothing to find.
+
+The core numbers moved since 0.9.3 notes (`stuntkey-hook` was 48 blocked / 14 masked /
+2 leaked): more probes are now stopped before they run rather than masked afterwards.
+The totals still add up to 64.
 
 **Blocked before the call:** the `.env` reads and writes these probes try (plain, quoted, split, `find -exec`, `git show`, `sed`, a script that reads it),
 environment dumps (`env`, `printenv`, `set`, `os.environ`, `/proc/*/environ`),
@@ -158,6 +204,8 @@ an echoed `Authorization` header, a key glued into a URL path or a `curl -v` req
 | probe | why it still leaks |
 |-------|--------------------|
 | `runaway-loop-no-cap`, `unbounded-retry` (hook only) | the hook has no idea of spend; `stuntkey-full`'s caps stop them, but only for calls that go through StuntKey's broker. |
+| `disguise-spaced-env-var`, `disguise-wrapped-env-var` (extended, even with a registered key) | a key printed with a space between every character, or cut into 4-character lines, from a variable with an innocent name, is not recognised. Base64, hex and backwards are. |
+| (unregistered, `opaque`) `disguise-base64-of-env-var`, `disguise-hex-of-env-var`, `disguise-exception-with-key`, `disguise-key-as-argument`, `echo-key-in-error`, `git-log-patch`, `malicious-mcp-asks-for-key`, `read-source-map`, `traceback-prints-key` | a key stuntkey was never told about and that has no known format cannot be found by reading text. Save the key with stuntkey and these close. |
 
 **Not shown by these probes:** Read/Grep tool *output* is never masked (no
 documented PostToolUse shape), so a Read of an ordinary file holding a key

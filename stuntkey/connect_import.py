@@ -67,6 +67,16 @@ def parse_env(text: str) -> list[tuple[str, str]]:
     return list(found.items())
 
 
+def _scalar(v) -> str:
+    """A secret's text, or "" when the cell is not text (a true/false flag, a
+    list, an object, nothing): those are never keys."""
+    if isinstance(v, str):
+        return v
+    if isinstance(v, int) and not isinstance(v, bool):
+        return str(v)
+    return ""
+
+
 def _envify(name: str) -> str:
     name = re.sub(r"[^A-Za-z0-9]+", "_", str(name)).strip("_").upper()
     return ("K_" + name) if name[:1].isdigit() else name
@@ -88,17 +98,19 @@ def parse_json(text: str) -> list[tuple[str, str]]:
                 continue
             name = item.get("name")
             login = item.get("login") if isinstance(item.get("login"), dict) else {}
-            if name and login.get("password"):
-                out.append((_envify(name), str(login["password"])))
+            if name and _scalar(login.get("password")):
+                out.append((_envify(name), _scalar(login["password"])))
             fields = item.get("fields")
             for f in (fields if isinstance(fields, list) else []):
-                if isinstance(f, dict) and f.get("name") and f.get("value"):
-                    out.append((_envify(f["name"]), str(f["value"])))
+                if isinstance(f, dict) and f.get("name") and _scalar(f.get("value")):
+                    out.append((_envify(f["name"]), _scalar(f["value"])))
         return out
     if isinstance(data, dict):              # Doppler: {"NAME": "value"}
         for k, v in data.items():
-            if isinstance(v, (str, int)) and str(v):
-                out.append((str(k), str(v)))
+            if isinstance(v, dict):         # `doppler secrets --json`: {"NAME": {"computed": ..., "raw": ...}}
+                v = v.get("computed") or v.get("raw")
+            if _scalar(v):
+                out.append((str(k), _scalar(v)))
         return out
     if isinstance(data, list):              # [{"name":..., "value":...}]
         for row in data:
@@ -127,9 +139,9 @@ def _too_deep(data, limit: int = MAX_JSON_DEPTH) -> bool:
 
 
 def _from_row(row: dict) -> list[tuple[str, str]]:
-    name = next((row[c] for c in _NAME_COLS if row.get(c)), None)
-    value = next((row[c] for c in _VALUE_COLS if row.get(c)), None)
-    return [(_envify(name), str(value))] if name and value else []
+    name = next((_scalar(row[c]) for c in _NAME_COLS if _scalar(row.get(c))), None)
+    value = next((_scalar(row[c]) for c in _VALUE_COLS if _scalar(row.get(c))), None)
+    return [(_envify(name), value)] if name and value else []
 
 
 def parse_csv(text: str) -> list[tuple[str, str]]:
@@ -159,7 +171,8 @@ def last_wins(pairs) -> list[tuple[str, str]]:
 def parse_text(text: str, kind: str) -> list[tuple[str, str]]:
     if len(text) > MAX_BYTES:
         raise ImportProblem("that is too much text to be a key file (over 2 MB)")
-    return last_wins({"json": parse_json, "csv": parse_csv}.get(kind, parse_env)(text))
+    pairs = {"json": parse_json, "csv": parse_csv}.get(kind, parse_env)(text)
+    return last_wins(p for p in pairs if p[0])    # an entry whose name is all punctuation has no name
 
 
 def sniff(path: str, text: str) -> str:

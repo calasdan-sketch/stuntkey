@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "stuntkey"
-version = "0.9.3"
+version = "0.9.4"
 description = "Keep API keys out of your AI agent's environment: through the stuntkey broker the key never enters it, and a Claude Code hook blocks common leaks. Guided one-command setup, brokered API calls, a self-attack test and an activity log. Reduces risk; not independently reviewed."
 readme = "README.md"
 license = "MIT"

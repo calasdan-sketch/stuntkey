@@ -67,7 +67,7 @@ def cmd_status(catalog: dict, env_file: str, as_json: bool) -> int:
         info["audit_note"] = warn
     text += "\n" + ("  Next: `stuntkey get <service>` to connect a key, or `stuntkey try` to practise."
                     if not info["with_keys"] else
-                    "  Next: `stuntkey install` to plug it into your AI app, or `stuntkey doctor` to check.")
+                    "  Next: `stuntkey fix` to switch it on in your AI app, or `stuntkey status` to check.")
     _emit(info, as_json, text)
     return OK if ok else PROBLEM
 
@@ -86,7 +86,7 @@ def cmd_call(recipe: dict, args) -> int:
     for item in args.query or []:
         k, sep, v = item.partition("=")
         if not sep:
-            print("error: --query needs name=value", file=sys.stderr)
+            print("error: --query needs name=value, for example --query page=2", file=sys.stderr)
             return USAGE
         query[k] = v
     body = None
@@ -94,7 +94,7 @@ def cmd_call(recipe: dict, args) -> int:
         try:
             body = json.loads(args.data)
         except ValueError:
-            print("error: --data must be valid JSON", file=sys.stderr)
+            print("error: --data is not valid JSON (a typing mistake in the braces or quotes). Example: --data '{\"name\": \"x\"}'", file=sys.stderr)
             return USAGE
     policy = broker.Policy(allow_write=False, approve=approve_mod.ask_person)
     audit = broker.AuditLog(os.path.join(_home(), "audit.log"))
@@ -221,12 +221,13 @@ def cmd_start(catalog: dict, env_file: str) -> int:
     have = [s for s, r in catalog.items() if _have_key(r, env_file)]
     if have:
         print(f"\nConnected already: {', '.join(sorted(have))}.")
-        print("Next: run `stuntkey install` to plug it into Claude, Cursor or "
-              "VS Code (or `stuntkey serve` for other AI tools). Then fully "
-              "quit and reopen that app.")
+        print("Next: run `stuntkey fix` to switch everything on (Claude Code's "
+              "safety check, Claude Desktop, Cursor). Then fully quit and "
+              "reopen that app. For other AI tools, `stuntkey serve`.")
     else:
         print("\nNext: connect your first service, for example:\n"
-              "  stuntkey get github")
+              "  stuntkey get github\n"
+              "Then run `stuntkey fix` to switch everything on.")
     return OK if d["ok"] else PROBLEM
 
 

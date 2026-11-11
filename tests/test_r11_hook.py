@@ -390,8 +390,7 @@ BENIGN_HELD = [
 KNOWN_HELD_MISSES = {
     'powershell -c "$s=Get-Content c:\\t\\a.txt; iex $s"',
     "python -c \"exec(open('p.py').read())\"",
-    'cmd /c "set a=cmd&& set b=key&& call %a%%b% /list"',
-    "powershell -c \"-join ('yekdmc'[5..0])\"",
+    # (round 13 closed `set a=cmd&& set b=key&& call %a%%b%` and `'yekdmc'[5..0]`)
     "cat firebase-adminsdk-abc12.json",       # (round 12 closed `perl -e 'print %ENV'`)
     "Get-ItemProperty HKCU:\\Software\\Microsoft\\Clipboard",
 }

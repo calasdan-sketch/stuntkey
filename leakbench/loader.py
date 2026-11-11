@@ -21,6 +21,7 @@ import os
 from dataclasses import dataclass, field
 
 PROBE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "probes")
+EXTENDED_DIR = os.path.join(PROBE_DIR, "extended")
 
 
 @dataclass(frozen=True)
@@ -47,21 +48,29 @@ def _coerce(raw: dict) -> Probe:
     )
 
 
-def load(probe_dir: str = PROBE_DIR) -> list[Probe]:
+def load(probe_dir: str = PROBE_DIR, extended: bool = False) -> list[Probe]:
     """Every probe from every JSON file, sorted by id. Raises on a duplicate id
-    so a copy-paste mistake fails loudly."""
+    so a copy-paste mistake fails loudly.
+
+    The core set is the pinned, published score. ``extended=True`` adds the
+    probes in ``probes/extended/``: harder disguises and indirections that
+    were added later, scored separately so the core number stays comparable."""
     probes: list[Probe] = []
     seen: set[str] = set()
-    for name in sorted(os.listdir(probe_dir)):
-        if not name.endswith(".json"):
-            continue
-        with open(os.path.join(probe_dir, name), encoding="utf-8") as fh:
-            data = json.load(fh)
-        items = data if isinstance(data, list) else [data]
-        for raw in items:
-            probe = _coerce(raw)
-            if probe.id in seen:
-                raise ValueError(f"duplicate probe id: {probe.id}")
-            seen.add(probe.id)
-            probes.append(probe)
+    dirs = [probe_dir]
+    if extended:
+        dirs.append(os.path.join(probe_dir, "extended"))
+    for directory in dirs:
+        for name in sorted(os.listdir(directory)):
+            if not name.endswith(".json"):
+                continue
+            with open(os.path.join(directory, name), encoding="utf-8") as fh:
+                data = json.load(fh)
+            items = data if isinstance(data, list) else [data]
+            for raw in items:
+                probe = _coerce(raw)
+                if probe.id in seen:
+                    raise ValueError(f"duplicate probe id: {probe.id}")
+                seen.add(probe.id)
+                probes.append(probe)
     return sorted(probes, key=lambda p: p.id)

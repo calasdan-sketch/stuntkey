@@ -728,7 +728,38 @@ def _replace(tmp: str, path: str, tries: int = 40) -> None:
             if not _windows():
                 raise
             time.sleep(0.05)
-    os.replace(tmp, path)
+    try:
+        os.replace(tmp, path)
+    except PermissionError:
+        if _windows():
+            raise EnvFileBusy(path) from None   # still held after ~2 s: say so in words
+        raise
+
+
+STALE_TEMP_SECONDS = 3600
+
+
+def _sweep_stale_temp(directory: str, base: str) -> None:
+    """Remove temp files an earlier write left behind when the program was
+    killed or the power went (`.<name>.XXXX.tmp`, older than an hour: a live
+    write finishes in milliseconds). They can hold the whole text of the file
+    that was being saved - for an env file, a key - so they are not left to
+    pile up. Best effort."""
+    prefix = f".{base}."
+    try:
+        names = os.listdir(directory)
+    except OSError:
+        return
+    now = time.time()
+    for name in names:
+        if not (name.startswith(prefix) and name.endswith(".tmp")):
+            continue
+        p = os.path.join(directory, name)
+        try:
+            if not os.path.islink(p) and now - os.path.getmtime(p) > STALE_TEMP_SECONDS:
+                os.unlink(p)
+        except OSError:
+            pass
 
 
 def write_private(path: str, text: str) -> bool:
@@ -751,6 +782,7 @@ def write_private(path: str, text: str) -> bool:
     directory = os.path.dirname(os.path.abspath(path)) or "."
     os.makedirs(directory, exist_ok=True)
     base = os.path.basename(path)
+    _sweep_stale_temp(directory, base)
     fd, tmp = tempfile.mkstemp(prefix=f".{base}.", suffix=".tmp", dir=directory)
     try:
         # Owner-only BEFORE the key goes in: on Windows mkstemp's mode does

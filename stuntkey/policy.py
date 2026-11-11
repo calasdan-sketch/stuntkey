@@ -59,12 +59,34 @@ def _read(path: str):
     return raw
 
 
+def _no_duplicates(pairs):
+    """json object hook: the same name twice in one object is refused. The last one
+    would win silently, so what the person read in a review could differ from what
+    is enforced (a strict rule first, a wide one after it)."""
+    seen = {}
+    for k, v in pairs:
+        key = k.lower() if isinstance(k, str) else k
+        if key in seen:
+            raise ValueError("duplicate name")
+        seen[key] = v
+    return dict(pairs)
+
+
+def _plain_prefix(p: str) -> bool:
+    """A path rule that is a plain absolute path: no `..` or `.` part, no encoded
+    characters, no backslash, `;` or control character (see _clean_path)."""
+    return p.startswith("/") and _clean_path(p) is not None
+
+
 def parse(raw: bytes, where: str = FILE) -> dict:
-    """{service: (frozenset(methods), tuple(path prefixes))}."""
+    """{service: (frozenset(methods), tuple(path prefixes))}. Service names are kept in
+    lower case (a rule written for "OpenAI" applies to "openai")."""
     bad = BrokerError(f"{where} is not a valid policy file (see `stuntkey policy "
-                      "show` for the format), so no call was made.", 5)
+                      "show` for the format; a service named twice, a path with `..` "
+                      "or `%`, or a path that does not start with / is refused), "
+                      "so no call was made.", 5)
     try:
-        data = json.loads(raw.decode("utf-8"))
+        data = json.loads(raw.decode("utf-8"), object_pairs_hook=_no_duplicates)
     except (ValueError, UnicodeDecodeError, RecursionError):
         raise bad from None
     if not isinstance(data, dict):
@@ -76,10 +98,34 @@ def parse(raw: bytes, where: str = FILE) -> dict:
         methods, paths = rule.get("methods", []), rule.get("paths", [])
         if not (isinstance(methods, list) and isinstance(paths, list)
                 and all(isinstance(m, str) for m in methods)
-                and all(isinstance(p, str) and p.startswith("/") for p in paths)):
+                and all(isinstance(p, str) and _plain_prefix(p) for p in paths)):
             raise bad
-        rules[str(service)] = (frozenset(m.upper() for m in methods), tuple(paths))
+        rules[str(service).lower()] = (frozenset(m.upper() for m in methods), tuple(paths))
     return rules
+
+
+def _clean_path(path: str) -> str | None:
+    """The request path as the server will read it, or None when it uses a trick that
+    could make a prefix rule say yes to a path the server reads differently: a `..` or
+    `.` part (`/v1/models/../admin`), a second layer of %-encoding (`%252e%252e`), a
+    backslash, a `;` parameter (`/v1/models;/../admin`), a control character or NUL.
+    The query string and fragment are not part of the path."""
+    if "#" in path.split("?")[0]:
+        return None
+    raw = path.split("?")[0]
+    if any(ord(c) < 32 or ord(c) == 127 for c in raw) or "\\" in raw or ";" in raw:
+        return None
+    plain = urllib.parse.unquote(raw)
+    if "%" in plain or "\\" in plain or ";" in plain or any(ord(c) < 32 or ord(c) == 127 for c in plain):
+        return None
+    if any(part in (".", "..") for part in plain.split("/")):
+        return None
+    return plain
+
+
+def _shown(text: str, limit: int = 80) -> str:
+    """A path as an error message shows it: control characters as ?, cut at `limit`."""
+    return "".join(c if c.isprintable() else "?" for c in str(text))[:limit]
 
 
 def _under(path: str, prefix: str) -> bool:
@@ -137,16 +183,34 @@ def load(home: str, project_dir: str) -> dict:
 
 
 def check(rules: dict, service: str, method: str, path: str) -> None:
+    service = str(service).lower()
     if service not in rules:
         return
     methods, prefixes = rules[service]
-    plain = urllib.parse.unquote(path.split("?")[0])
+    plain = _clean_path(path)
+    if plain is None:
+        raise BrokerError(f"Your stuntkey policy refused {method.upper()} {_shown(path)} for "
+                          f"'{service}': the path uses a trick (a `..` part, `%`-encoding "
+                          "inside encoding, a backslash, a `;` or a control character) that "
+                          "could reach a place the policy does not list, so it was not sent.", 5)
     if method.upper() in methods and any(_under(plain, p) for p in prefixes):
         return
     raise BrokerError(f"Your stuntkey policy does not allow {method.upper()} "
-                      f"{path.split('?')[0][:80]} for '{service}', so it was not "
+                      f"{_shown(path.split('?')[0])} for '{service}', so it was not "
                       "sent. A person can change stuntkey.policy and run "
                       "`stuntkey policy approve`.", 5)
+
+
+def describe(rules: dict) -> str:
+    """The rules exactly as they will be enforced, one line per service, for the
+    review window: not the file's own text (which can hold escapes, repeated names
+    or odd spacing), but what the program read from it."""
+    lines = []
+    for service in sorted(rules):
+        methods, paths = rules[service]
+        lines.append(f"{service}: {', '.join(sorted(methods)) or 'no methods (nothing allowed)'} "
+                     f"on {', '.join(paths) or 'no paths (nothing allowed)'}")
+    return "\n".join(lines) or "(no rules)"
 
 
 def approve(home: str, project_dir: str, ask) -> int:
@@ -159,8 +223,8 @@ def approve(home: str, project_dir: str, ask) -> int:
         raw = _read(path)
         if raw is None:
             continue
-        parse(raw, path)                       # never approve a broken file
-        text = f"Use this route policy ({path}):\n" + raw.decode("utf-8")
+        rules = parse(raw, path)               # never approve a broken file
+        text = f"Use this route policy ({path}):\n" + describe(rules)
         if len(text) > MAX_REVIEW:              # never ask about a cut-off file
             raise BrokerError(f"{path} is too long to review safely in one "
                               "window; make it shorter.", 5)

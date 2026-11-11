@@ -42,16 +42,15 @@ def _harden_streams() -> None:
 
 NEXT_STEPS = """stuntkey: let your AI use your API keys without holding them.
 
-Four steps:
+Three steps:
   1. stuntkey get github     opens the key page; you click Copy; stuntkey tests and saves the key
-  2. stuntkey install        plug stuntkey into Claude, Cursor or VS Code
-  3. stuntkey doctor         health check
-  4. Ask your AI: "Who am I on GitHub?"
-Restart the AI app after install.
+  2. stuntkey fix            switches everything on: Claude Code's safety check, Claude Desktop, Cursor
+  3. Restart the AI app, then ask it: "Who am I on GitHub?"
 
 New here? `stuntkey try` is a practice run with a pretend key.
 Have keys in a .env file already? `stuntkey import .env` moves them.
-`stuntkey --help` for all commands."""
+Is something not working? `stuntkey status` shows green, yellow or red; `stuntkey fix` repairs it.
+`stuntkey help` lists the commands by what you want to do."""
 
 
 def _show_banner(cmd: str) -> None:
@@ -80,7 +79,7 @@ class _Parser(argparse.ArgumentParser):
             text = f"I don't know '{word}'."
             if near:
                 text += f" Did you mean: stuntkey {near[0]}?"
-            self.exit(2, text + " Type `stuntkey --help` for the list.\n")
+            self.exit(2, text + " Type `stuntkey help` for the list.\n")
         super().error(message)
 
     def _subparsers_choices(self):
@@ -94,8 +93,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p = _Parser(
         prog="stuntkey",
         description="Let your AI use your API keys without holding them: guided "
-                    "setup, validated, kept in the OS keychain. The key is "
-                    "never displayed or logged.",
+                    "setup, tested, kept in your computer's safe store (on Windows, "
+                    "Credential Manager). The key is never shown or written to a log.",
         epilog="Start here: `stuntkey scan` finds keys that leaked into "
                "files an AI agent can read. `stuntkey connect <service>` "
                "sets a key up safely.")
@@ -151,7 +150,7 @@ def _build_parser() -> argparse.ArgumentParser:
                          "secret keys sent to every visitor's browser.")
 
     wr = sub.add_parser(
-        "wrap", help="Move keys out of an MCP server's config into the OS keychain.",
+        "wrap", help="Move keys out of an AI plug-in's settings file into your safe store.",
         description="Move the keys in an MCP server's env (Claude Desktop, "
                     "Claude Code, Cursor, VS Code, Windsurf, Codex, Gemini, Zed) "
                     "into the OS keychain, and start that server through "
@@ -174,9 +173,11 @@ def _build_parser() -> argparse.ArgumentParser:
                     "PowerShell and Monitor calls that touch .env files, and "
                     "Edit, Write, MultiEdit and NotebookEdit calls that change "
                     "one (set STUNTKEY_HOOK_ALLOW_WRITE=1 to allow those). It "
-                    "is a guardrail, not a wall: it does not stop split-up "
-                    "file names, folder sweeps like `grep -r KEY .`, links, "
-                    "MCP file tools or subagents (see the README).")
+                    "is a guardrail, not a wall: it can be fooled by file names "
+                    "built up piece by piece, searches that sweep a whole folder, "
+                    "shortcuts to a file, helper agents, or file tools inside "
+                    "other plug-ins (see the README, \"What stuntkey does NOT "
+                    "protect\").")
     hsub = hk.add_subparsers(dest="hook_cmd", required=True)
     for hname, htext in (("install", "Add the hook (your other hooks are kept)."),
                          ("uninstall", "Remove the hook (your other hooks are kept)."),
@@ -245,7 +246,7 @@ def _build_parser() -> argparse.ArgumentParser:
                                 "Refused at a terminal. A key in a pipe or script "
                                 "can end up in a shell history or a log.")
 
-    ls = sub.add_parser("list", help="List services with saved recipes.")
+    ls = sub.add_parser("list", help="List the services stuntkey knows how to connect.")
     ls.add_argument("--json", action="store_true", help="Machine-readable output.")
 
     dr = sub.add_parser(
@@ -365,7 +366,7 @@ def _build_parser() -> argparse.ArgumentParser:
     ex.add_argument("--overwrite", action="store_true", help="Vercel: replace an existing variable.")
     ex.add_argument("--yes", action="store_true", help="Agree without being asked.")
 
-    sk = sub.add_parser("skill", help="Install the agent skill (rules for AI agents) for Claude Code.")
+    sk = sub.add_parser("skill", help="Give Claude Code a short instruction sheet: use stuntkey for keys.")
     sksub = sk.add_subparsers(dest="skill_cmd", required=True)
     ski = sksub.add_parser("install", help="Copy SKILL.md to ~/.claude/skills/stuntkey/ "
                                            "(or ./.claude/skills/ with --project).")
@@ -377,13 +378,13 @@ def _build_parser() -> argparse.ArgumentParser:
                           "(Codex) or GEMINI.md (always in this project's folder).")
     ski.add_argument("--yes", action="store_true", help="Replace a different existing file without asking.")
 
-    mc = sub.add_parser("mcp", help="Run the MCP server on stdio (for Claude Code).")
+    mc = sub.add_parser("mcp", help="Run in the background for your AI app (it starts this itself; you do not type it).")
     mc.add_argument("--default-store", choices=["env", "keychain"], default=None,
                     help="Where agent-captured keys go unless stuntkey.json says "
                          "otherwise (default: the OS keychain when there is one, "
                          "else a .env file). The call_api tool only reads the keychain.")
-    sa = sub.add_parser("setup-agent", help="Show or write the MCP entry for an AI client "
-                                            "(absolute Python path).")
+    sa = sub.add_parser("setup-agent", help="Show, or write, the setting that plugs stuntkey into one AI app "
+                                            "(Claude Code, Claude Desktop, Cursor, Codex, Gemini).")
     sa.add_argument("client", choices=["claude-code", "claude-desktop", "cursor", "codex", "gemini"])
     sa.add_argument("--write", action="store_true",
                     help="Add the entry to the client's config file (other entries are kept).")
@@ -735,8 +736,8 @@ def _cmd_run(recipes_to_run: list, command: list[str], env_file: str = ".env",
     if cmd and cmd[0] == "--":
         cmd = cmd[1:]
     if not cmd:
-        print("error: no command: stuntkey run <service> -- <command>",
-              file=sys.stderr)
+        print("error: nothing to run. Put the program after two dashes, for "
+              "example: stuntkey run openai -- python app.py", file=sys.stderr)
         return 2
     if not redact and not (_is_tty(sys.stdin) and _is_tty(sys.stdout)):
         print("error: --no-redact only works when you are at a terminal (input and "
@@ -746,8 +747,8 @@ def _cmd_run(recipes_to_run: list, command: list[str], env_file: str = ".env",
         return 2
     backend = keychain_mod.detect_backend()
     if backend is None and not os.path.isfile(env_file):
-        print("error: no OS keychain on this system and no .env file to read.",
-              file=sys.stderr)
+        print("error: there is no safe place on this computer to read the key from. "
+              "Run `stuntkey status` to see why.", file=sys.stderr)
         return 1
     try:
         # before the keychain is asked for the key: a typo costs no unlock
@@ -766,7 +767,8 @@ def _cmd_run(recipes_to_run: list, command: list[str], env_file: str = ".env",
         return e.code
     except keychain_mod.KeychainUnavailable as e:
         print(f"error: the {keychain_mod.label(backend)} did not give the key "
-              f"for '{names}': {e}.", file=sys.stderr)
+              f"for '{names}': {e}. Unlock your computer (sign out and in if "
+              "needed), then try again.", file=sys.stderr)
         return 1
     except keychain_mod.KeychainError:
         print(f"No key saved for {names}. Run "
@@ -915,6 +917,17 @@ def _main(argv: list[str] | None = None) -> int:
     if args.cmd is None:
         print(NEXT_STEPS)
         return 0
+    if args.cmd in ("help", "completion"):      # need the parser itself
+        from . import fixcmd
+        if args.cmd == "completion":
+            return fixcmd.cmd_completion(args, parser)
+        if args.topic:
+            try:
+                parser.parse_args([args.topic, "--help"])
+            except SystemExit as e:
+                return int(e.code or 0)
+        sys.stdout.write(fixcmd.render_help(parser))
+        return 0
     if args.cmd == "remote":
         args.command = tail
     if args.project_dir:
@@ -945,6 +958,9 @@ def _main(argv: list[str] | None = None) -> int:
             print("This folder has no stuntkey setup. Run `stuntkey init` to "
                   "create one.\n(To see keys saved anywhere on this computer, "
                   "run `stuntkey overview`.)")
+            if args.cmd == "status":          # still show the computer's health
+                from . import fixcmd
+                sys.stdout.write(fixcmd.render(fixcmd.collect()))
             return 0 if args.cmd == "status" else 1
     if args.cmd == "hook":
         # before the recipes load: the hook's stdout must hold only its answer
@@ -1008,7 +1024,11 @@ def _main(argv: list[str] | None = None) -> int:
         return projectcmds.cmd_init(args, catalog)
     if args.cmd == "status":
         from . import projectcmds
-        return projectcmds.cmd_status(args, catalog)
+        code = projectcmds.cmd_status(args, catalog)
+        if not args.json:
+            from . import fixcmd
+            sys.stdout.write(fixcmd.render(fixcmd.collect(catalog)))
+        return code
     if args.cmd == "setup":
         from . import projectcmds
 
@@ -1057,7 +1077,7 @@ def _main(argv: list[str] | None = None) -> int:
         from . import manifest as manifest_mod
         path = manifest_mod.find()
         if not path:
-            print("error: --all needs a stuntkey.json (run `stuntkey init`).",
+            print("error: --all needs a stuntkey.json in this project. Run `stuntkey init` first.",
                   file=sys.stderr)
             return 1
         try:
@@ -1073,7 +1093,8 @@ def _main(argv: list[str] | None = None) -> int:
             return 1
         prefer = "env" if all(i.get("store", "env") == "env" for i in manifest["services"]) else "keychain"
         if not chosen:
-            print("error: no known service in stuntkey.json.", file=sys.stderr)
+            print("error: stuntkey.json names no service stuntkey knows. Run "
+              "`stuntkey list` to see them, then edit stuntkey.json.", file=sys.stderr)
             return 1
         return _cmd_run(chosen, [args.service] + list(args.command), env_file, args.redact, prefer)
     if args.cmd in ("connect", "rotate", "run", "forget"):

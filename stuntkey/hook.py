@@ -385,6 +385,20 @@ DUMP_RULES = (
     (re.compile(r"\b(?:nslookup|dig|host|drill|resolvectl|Resolve-DnsName|ping|tracert|traceroute|nc|ncat|netcat|telnet)\b"
                 r"[^\n;&|]{0,300}(?:\$\{?|\$env:|%)\w*" + _SECRET_WORD, re.I),
      "send a key from an environment variable out through a network lookup"),
+    # ---- round 13 ----
+    # `${!OPENAI*}` lists every variable whose name starts so; `${!name}` reads the variable
+    # another variable names. Neither writes a key's name, so no other rule can see it.
+    (re.compile(r"\$\{![A-Za-z_]\w*(?:[*@]|\})"), "read variables by a name pattern or through another variable (keys live there)"),
+    (re.compile(r"\bcompgen[ \t]+-A[ \t]+(?:variable|export)\b|\bdeclare[ \t]+-[a-z]*[px][a-z]*[ \t]*(?:\||$|\n)|"
+                r"\bGet-Variable\b[^\n;|]{0,40}\*|\[\s*(?:System\.)?Environment\s*\]\s*::\s*GetEnvironmentVariables|"
+                r"\b(?:Get-ChildItem|gci|dir|ls)[ \t]+(?:-\w+[ \t]+)*(?:variable:|HKCU:\\Environment)", re.I),
+     "list the variables of the shell (that is where keys live)"),
+    # Windows keeps `setx` variables in the registry, and the system keeps every user's
+    (re.compile(r"\breg(?:\.exe)?[ \t]+(?:query|export|save)[ \t]+[^\n;&|]{0,200}\\Environment\b|"
+                r"\b(?:Get-ItemProperty(?:Value)?|gp|Get-Item|gi|Get-ChildItem|gci|dir|ls)[ \t]+[^\n;&|]{0,200}"
+                r"(?:HK(?:CU|LM)|Registry::HKEY_\w+):?\\+(?:[\w\\ ]{0,100}\\)?Environment\b|"
+                r"\bWin32_Environment\b|\bwmic(?:\.exe)?[ \t]+environment\b", re.I),
+     "read the environment variables saved in the Windows registry (keys live there)"),
 )
 
 
@@ -470,7 +484,7 @@ _B64_TOKEN_RE = re.compile(r"(?<![A-Za-z0-9+/_=-])[A-Za-z0-9+/_-]{12,}={0,2}(?![
 _HEX_TOKEN_RE = re.compile(r"(?<![0-9A-Fa-f])(?:[0-9A-Fa-f]{2}){6,}(?![0-9A-Fa-f])")
 _VAR_PERCENT_RE = re.compile(r"%[^%\s]{0,40}%")
 MAX_DECODED = 20      # decoded base64/hex pieces looked at per piece of text
-MAX_DISGUISED = 30    # extra variants of one piece of text
+MAX_DISGUISED = 40    # extra variants of one piece of text
 
 
 def _printable_text(raw: bytes) -> str | None:
@@ -493,6 +507,33 @@ def _printable_text(raw: bytes) -> str | None:
     return None
 
 
+MAX_INFLATED = 256 * 1024      # most bytes a decompressed piece may grow to (a bomb is dropped)
+
+
+def _inflate(raw: bytes) -> bytes | None:
+    """`raw` decompressed when it is gzip, zlib or raw deflate, else None. The
+    output is capped (MAX_INFLATED), so a compression bomb costs nothing."""
+    import zlib
+    if len(raw) < 8:
+        return None
+    wbits = []
+    if raw[:2] == b"\x1f\x8b":
+        wbits = [31]
+    elif raw[0] == 0x78 and raw[1] in (0x01, 0x5E, 0x9C, 0xDA):
+        wbits = [15]
+    else:
+        wbits = [-15]          # raw deflate (PowerShell's DeflateStream writes this)
+    for w in wbits:
+        try:
+            d = zlib.decompressobj(w)
+            out = d.decompress(raw, MAX_INFLATED)
+        except zlib.error:
+            continue
+        if out:
+            return out
+    return None
+
+
 def _decoded_pieces(text: str) -> list[str]:
     out: list[str] = []
     for m in _B64_TOKEN_RE.finditer(text):
@@ -506,12 +547,258 @@ def _decoded_pieces(text: str) -> list[str]:
         decoded = _printable_text(raw)
         if decoded:
             out.append(decoded)
+        else:
+            # round 13: base64 of gzip / zlib / deflate (what PowerShell's
+            # GzipStream one-liners and `gzip | base64` make)
+            inflated = _inflate(raw)
+            text2 = _printable_text(inflated) if inflated else None
+            if text2:
+                out.append(text2)
     for m in _HEX_TOKEN_RE.finditer(text):
         if len(out) >= MAX_DECODED:
             break
-        decoded = _printable_text(bytes.fromhex(m.group()))
+        raw = bytes.fromhex(m.group())
+        decoded = _printable_text(raw)
         if decoded:
             out.append(decoded)
+        else:
+            inflated = _inflate(raw)
+            text2 = _printable_text(inflated) if inflated else None
+            if text2:
+                out.append(text2)
+    return out
+
+
+# ---- round 13: a command read with its own variables, aliases and tricks filled in
+#
+# `d='.claude'; f=settings.json; echo {} > ~/$d/$f`, `$p = Join-Path $HOME '.claude'`,
+# `alias sk=stuntkey; sk proxy`, `f(){ stuntkey "$@"; }; f proxy`, `$(echo KEY)`,
+# `'yekdmc'[5..0]`, `echo ... | rev`, `String.fromCharCode(...)`, rot13 / `tr`: each
+# is undone here into one more reading of the same command, and the same rules read
+# it. This is text work on ONE command: it knows nothing a command gets from the
+# environment, a file, the network or a second command. See HONEST LIMITS in
+# SECURITY.md and the docstring of `_disguised`.
+_NAME = r"[A-Za-z_][A-Za-z0-9_]{0,40}"
+_QUOTED = r"""(?:'[^'\n]{0,300}'|"[^"\n]{0,300}")"""
+_ITEM = _QUOTED + r"""|(?:\$\{[^}\s'"]{1,60}\}|[^\s'";&|(){}=+,]){1,200}"""
+_ITEM_RE = re.compile(_ITEM)
+_ASSIGN_RE = re.compile(
+    r"(?:^|(?<=[;&|\n({\"']))[ \t]*(?:(?:export|local|declare(?:[ \t]+-[a-zA-Z]+)?|readonly|typeset|set|setx|"
+    r"const|let|var|\$script:|\$global:)[ \t]+)?[\"']?\$?(?:env:)?(" + _NAME + r")[ \t]*=[ \t]*"
+    r"((?:" + _ITEM + r")(?:[ \t]*\+[ \t]*(?:" + _ITEM + r")){0,8})", re.M | re.I)
+_VAR_RE = re.compile(r"\$\{(?:env:)?(" + _NAME + r")\}|\$(?:env:)?(" + _NAME + r")|%(" + _NAME + r")%")
+_HOME_CALL_RE = re.compile(
+    r"""\bos\.path\.expanduser\(\s*['"]~['"]\s*\)|\bexpanduser\(\s*['"]~['"]\s*\)|(?:\b\w+\.)?Path\.home\(\s*\)|"""
+    r"""(?:\brequire\(\s*['"](?:node:)?os['"]\s*\)\s*\.|\bos\.)?\bhomedir\(\s*\)|\bos\.environ\[\s*['"](?:HOME|USERPROFILE)['"]\s*\]|"""
+    r"""\bos\.(?:getenv|environ\.get)\(\s*['"](?:HOME|USERPROFILE)['"]\s*\)|\bprocess\.env\.(?:HOME|USERPROFILE)\b|"""
+    r"""\[\s*Environment\s*\]\s*::\s*GetFolderPath\(\s*['"]?UserProfile['"]?\s*\)""", re.I)
+_JOIN_ARG = r"(?:" + _QUOTED + r"|\$\{?[\w:]{1,40}\}?)"
+_JOIN_RE = re.compile(
+    r"(?:(?<=[\w)\]])\.(?:join|resolve|Join)|\[\s*(?:System\.)?IO\.Path\s*\]\s*::\s*Combine)"
+    r"\(\s*(" + _JOIN_ARG + r"(?:\s*,\s*" + _JOIN_ARG + r"){1,8})\s*\)")
+_JOINPATH_ARG = r"(?:" + _QUOTED + r"|\$\{?[\w:]{1,40}\}?|[^\s()'\";|]{1,100})"
+_JOINPATH_RE = re.compile(
+    r"(?:\(\s*)?\bJoin-Path[ \t]+(?:-Path[ \t]+)?(" + _JOINPATH_ARG + r")[ \t]+(?:-ChildPath[ \t]+)?("
+    + _JOINPATH_ARG + r")(?:[ \t]*\))?", re.I)
+_SLASH_JOIN_RE = re.compile(r"""'([\w.\-~:/ ]{0,120})'\s*/\s*'([\w.\-~:/ ]{0,120})'""")   # pathlib: 'a'/'b'
+_SLICE_RE = re.compile(r"""(['"])([^'"\n]{1,200})\1\s*\[\s*(-?\d*)\s*(\.\.|:)\s*(-?\d*)\s*(?::\s*(-?\d+)\s*)?\]""")
+_ECHO_SUBST_RE = re.compile(
+    r"""(?:\$\(|`)[ \t]*(?:echo|printf)(?:[ \t]+-\w+)*[ \t]+(?:['"]%s['"][ \t]+)?(['"]?)([^()`'"|;&\n]{0,200}?)\1[ \t]*(?:\)|`)""")
+_REV_RE = re.compile(
+    r"""(?:echo|printf)[ \t]+(?:-\w+[ \t]+)*(['"]?)([^'"|;&\n]{1,200}?)\1[ \t]*\|[ \t]*rev\b""")
+_REV_HERE_RE = re.compile(r"""\brev[ \t]*<<<[ \t]*(['"]?)([^'"|;&\n]{1,200})\1""")
+_CODES_RE = re.compile(
+    r"(?:fromCharCode|bytes|bytearray|\[\s*char\s*\[\s*\]\s*\])\s*\(?\s*[\[(@]*\s*(\d{2,3}(?:\s*,\s*\d{2,3}){2,80})")
+_OCTAL_RE = re.compile(r"\\([0-3][0-7]{2})")
+_ROT_HINT_RE = re.compile(r"rot_?13|\btr\b[^\n|;&]{0,40}(?:a-z|n-z|A-Z|N-Z)|[Nn]-[Zz]a-m|ROT\d", re.I)
+_ALIAS_RE = re.compile(
+    r"(?:^|(?<=[;&|\n({]))[ \t]*(?:alias[ \t]+([\w-]{1,40})=(" + _ITEM + r")|"
+    r"(?:Set|New)-Alias[ \t]+(?:-Name[ \t]+)?([\w-]{1,40})[ \t]+(?:-Value[ \t]+)?(" + _ITEM + r"))", re.M | re.I)
+_FUNC_RES = (
+    re.compile(r"(?:^|(?<=[;&|\n]))[ \t]*(?:function[ \t]+)?([A-Za-z_][\w-]{0,40})[ \t]*\(\)[ \t]*\{([^{}\n]{1,400})\}", re.M),
+    re.compile(r"(?:^|(?<=[;&|\n]))[ \t]*function[ \t]+([A-Za-z_][\w-]{0,40})[ \t]*(?:\([^)]*\))?[ \t]*\{([^{}\n]{1,400})\}",
+               re.M | re.I))
+_ARGS_PLACE_RE = re.compile(r"\"\$@\"|\"\$\*\"|\$@|\$\*|\$\{?[1-9]\}?|@args|\$args", re.I)
+
+
+_FOLD_RES = (re.compile(r"'([^'\n]{0,300})'[ \t]*\+[ \t]*'([^'\n]{0,300})'"),
+             re.compile(r'"([^"\n]{0,300})"[ \t]*\+[ \t]*"([^"\n]{0,300})"'))
+
+
+def _fold_literals(text: str) -> str:
+    """`'.cla'+'ude'` as `'.claude'`: neighbouring quoted pieces joined by `+`
+    (one at a time, so `'a'+x+'b'` is left for the variable step)."""
+    for _ in range(12):
+        nxt = text
+        for rx, q in zip(_FOLD_RES, ("'", '"')):
+            nxt = rx.sub(lambda m, q=q: q + m.group(1) + m.group(2) + q, nxt)
+        if nxt == text:
+            break
+        text = nxt
+    return text
+
+
+def _unquote_item(item: str) -> str:
+    if len(item) >= 2 and item[0] == item[-1] and item[0] in "'\"":
+        return item[1:-1]
+    return item
+
+
+def _slice_literal(m: re.Match) -> str:
+    """`'yekdmc'[5..0]` (PowerShell) / `'yekdmc'[::-1]` (Python) as the literal it makes."""
+    s, a, op, b, step = m.group(2), m.group(3), m.group(4), m.group(5), m.group(6)
+    try:
+        if op == "..":
+            if a == "" or b == "":
+                return m.group(0)
+            i, j = int(a), int(b)
+            i = i + len(s) if i < 0 else i
+            j = j + len(s) if j < 0 else j
+            idx = range(i, j + 1) if i <= j else range(i, j - 1, -1)
+            return "'" + "".join(s[k] for k in idx if 0 <= k < len(s)) + "'"
+        sl = slice(int(a) if a else None, int(b) if b else None, int(step) if step else None)
+        return "'" + s[sl] + "'"
+    except (ValueError, IndexError):
+        return m.group(0)
+
+
+def _fill_in_variables(text: str) -> str | None:
+    """`text` with the values of simple assignments put in where they are used
+    (`$x`, `${x}`, `$env:x`, `%x%`, and a bare name beside a `+` or in a call), or
+    None when there is nothing to put in."""
+    if "=" not in text and "Join-Path" not in text:
+        return None
+    env: dict = {}
+    literal_names: set = set()
+
+    def one(m):
+        n = (m.group(1) or m.group(2) or m.group(3) or "").lower()
+        return env.get(n, m.group(0))
+    for m in _ASSIGN_RE.finditer(text):
+        name, raw = m.group(1).lower(), m.group(2)
+        items = _ITEM_RE.findall(raw)
+        val = "".join(_unquote_item(i) for i in items)
+        val = _VAR_RE.sub(one, val)                   # d=$d/x: the earlier value goes in now
+        if any(i[:1] in "'\"" for i in items):
+            literal_names.add(name)
+        env[name] = val[:400]
+    if not env:
+        return None
+    out = text
+    for _ in range(3):                                # d=$x/.cla; e=${d}ude ... chains
+        nxt = _VAR_RE.sub(one, out)
+        if nxt == out:
+            break
+        out = nxt
+    for n in literal_names:                           # python / js: h+'/'+d+'/x'
+        out = re.sub(r"(?<=[(+,\[\s])" + re.escape(n) + r"(?=[+),\]\s])", lambda _m: "'" + env[n] + "'", out,
+                     flags=re.I)
+    return out if out != text else None
+
+
+def _apply_aliases(text: str) -> str | None:
+    """`alias sk=stuntkey; sk proxy` as `alias sk=stuntkey; stuntkey proxy`."""
+    out, changed = text, False
+    for m in list(_ALIAS_RE.finditer(text))[:8]:
+        name = m.group(1) or m.group(3)
+        value = _unquote_item(m.group(2) or m.group(4) or "")
+        if not name or not value:
+            continue
+        head, tail = out[:m.end()], out[m.end():]
+        new = re.sub(r"(?<![\w.\-$])" + re.escape(name) + r"(?![\w.\-])", lambda _m: value, tail)
+        if new != tail:
+            out, changed = head + new, True
+    return out if changed else None
+
+
+def _apply_functions(text: str) -> str | None:
+    """`f(){ stuntkey "$@"; }; f proxy` as `...; stuntkey proxy; `."""
+    out, changed = text, False
+    for rx in _FUNC_RES:
+        for m in list(rx.finditer(text))[:6]:
+            name, body = m.group(1), m.group(2)
+            call = re.compile(r"(?:^|(?<=[;&|\n(]))[ \t]*" + re.escape(name) + r"(?:[ \t]+([^;&|\n}]*))?(?=[;&|\n]|$)", re.M)
+            tail = out[m.end():] if m.end() <= len(out) else ""
+            new = call.sub(lambda c: _ARGS_PLACE_RE.sub(lambda _m: (c.group(1) or "").strip(), body), tail)
+            if new != tail:
+                out, changed = out[:len(out) - len(tail)] + new, True
+    return out if changed else None
+
+
+def _rewrites(text: str) -> str:
+    """The small rewrites that turn a built-up string into the string it makes."""
+    t = text
+    if "$(" in t or "`" in t:
+        t = _ECHO_SUBST_RE.sub(lambda m: m.group(2), t)
+    t = _HOME_CALL_RE.sub("'~'", t)
+    if "join" in t.lower() or "Combine" in t:
+        for _ in range(3):
+            nxt = _JOIN_RE.sub(lambda m: "'" + "/".join(_unquote_item(i) for i in re.findall(_JOIN_ARG, m.group(1))) + "'", t)
+            nxt = _JOINPATH_RE.sub(lambda m: _unquote_item(m.group(1)) + "/" + _unquote_item(m.group(2)), nxt)
+            if nxt == t:
+                break
+            t = nxt
+    if "/'" in t:
+        for _ in range(4):
+            nxt = _SLASH_JOIN_RE.sub(lambda m: "'" + m.group(1) + "/" + m.group(2) + "'", t)
+            if nxt == t:
+                break
+            t = nxt
+    if "[" in t:
+        t = _SLICE_RE.sub(_slice_literal, t)
+    if "rev" in t:
+        t = _REV_RE.sub(lambda m: m.group(2)[::-1], t)
+        t = _REV_HERE_RE.sub(lambda m: m.group(2)[::-1], t)
+    if _CODES_RE.search(t):
+        def _codes(m):
+            try:
+                return "'" + "".join(chr(int(n)) for n in re.findall(r"\d+", m.group(1)) if 0 < int(n) < 256) + "'"
+            except ValueError:
+                return m.group(0)
+        t = _CODES_RE.sub(_codes, t)
+    if "\\" in t and _OCTAL_RE.search(t):
+        t = _OCTAL_RE.sub(lambda m: chr(int(m.group(1), 8)), t)
+    return t
+
+
+def _expansions(text: str) -> list[str]:
+    """Extra readings of one command with its own variables, aliases, small
+    functions, `$(echo ...)`, joins, slices, reversals, character-code lists and
+    rot13 worked out (empty when there is nothing to work out)."""
+    if len(text) > 8000 and text.count("=") > 400:
+        return []                      # a huge pile of assignments: the time budget is not for this
+    out: list[str] = []
+    seen = {text}
+
+    def add(v):
+        if v and v not in seen:
+            seen.add(v)
+            out.append(v)
+            for fixed in (_fold_literals(v), _GLUE_RE.sub("", v)):
+                if fixed not in seen:
+                    seen.add(fixed)
+                    out.append(fixed)
+    stage = _fold_literals(_rewrites(text))
+    add(stage)
+    _tick()
+    # variables again once the literals are joined (d='.cla'+'ude' -> d='.claude')
+    filled = _fill_in_variables(stage)
+    if filled:
+        filled = _fold_literals(filled)
+        again = _fill_in_variables(filled)
+        if again:
+            filled = _fold_literals(again)
+    add(filled)
+    cur = filled or stage
+    _tick()
+    for fn in (_apply_aliases, _apply_functions):
+        nxt = fn(cur)
+        if nxt:
+            add(nxt)
+            cur = nxt
+    if len(text) < 4000 and _ROT_HINT_RE.search(text):
+        import codecs
+        add(codecs.encode(text, "rot13"))
     return out
 
 
@@ -537,9 +824,12 @@ def _disguised(text: str, depth: int = 0) -> list[str]:
         out.append("".join(literals))
         out.append(" ".join(s[::-1] for s in literals))
     if depth < 2:
+        # (the variable / alias / join / reversal readings come before the decoded pieces
+        # so the MAX_DISGUISED cap never cuts them off)
+        out = out[:8] + _expansions(text)[:16]
         for piece in _decoded_pieces(text):
             out.append(piece)
-            out.extend(_disguised(piece, depth + 1)[:4])
+            out.extend(_disguised(piece, depth + 1)[:6])
     return out[:MAX_DISGUISED]
 
 
@@ -968,7 +1258,9 @@ MAX_TAMPER_LINES = 4000
 def _tamper_in(text: str) -> str | None:
     """What this text (a shell command or code) would do to a protected file,
     else None."""
-    flat = text.replace("\\", "/")
+    # (round 13: `//` counts as `/`: a doubled backslash inside a python / node string
+    # is `\\.claude\\settings.json`, and `~//.claude` is the same folder)
+    flat = re.sub(r"/{2,}", "/", text.replace("\\", "/"))
     unquoted = re.sub(r"[\'\"`^]", "", flat)
     for v in (flat, unquoted):
         if not _TAMPER_TARGET_RE.search(v):
@@ -989,6 +1281,97 @@ def _tamper_in(text: str) -> str | None:
                     (">" in line or _MUTATE_RE.search(line) or _CODE_WRITE_RE.search(line))):
                 return "change a file inside a folder that only the person may change"
     return None
+
+
+# ---- round 13: what a command runs from a file the command only NAMES --------------
+#
+# `git apply evil.patch`, `patch -p1 < x.diff`, `exec(<a file read>.read())`,
+# `$s = Get-Content a.ps1; iex $s`: the text of the call does not say what changes,
+# the named file does. When that file exists and is small it is read here and its
+# lines are checked like the command itself. A file that cannot be read is not
+# guessed at (the call is refused when it is run from a file this way). Honest
+# limit: the file is read NOW and run LATER; a program that rewrites it in between,
+# or a command that builds the file name at run time, gets past this.
+MAX_NAMED_FILE = 200_000
+_PATCH_CMD_RE = re.compile(r"(?<![\w-])(?:git(?:\.exe)?[ \t]+(?:[^\n;&|]{0,80}?[ \t])?(?:apply|am)|patch)(?![\w-])", re.I)
+_PATCH_HEADER_RE = re.compile(r"^(?:\+\+\+|---|diff --git|rename (?:to|from)|copy (?:to|from)|new file|deleted file|Index:)[^\n]*",
+                              re.M)
+_NAME_TOKEN_RE = re.compile(r"""(?:(?<=[\s<=])|^)(?:"([^"\n]{1,260})"|'([^'\n]{1,260})'|([^\s"'<>|;&=]{1,260}))""")
+_EXEC_FILE_RES = (
+    re.compile(r"""\b(?:exec|eval|execfile|runpy\.run_path)\s*\(\s*(?:compile\s*\(\s*)?(?:open\s*\(|)\s*[rRuUbB]{0,2}['"]([^'"\n]{1,260})['"]"""),
+    re.compile(r"""\b(?:iex|Invoke-Expression)\b[^\n;|]{0,40}?\(?\s*\(?\s*(?:Get-Content|gc|cat|type)[ \t]+(?:-\w+[ \t]+)*['"]?([^\s'";|)]{1,260})""", re.I),
+    re.compile(r"""\b(?:Get-Content|gc|cat|type)[ \t]+(?:-\w+[ \t]+)*['"]?([^\s'";|)]{1,260})['"]?[ \t]*\)?[ \t]*\|[ \t]*(?:iex|Invoke-Expression)\b""", re.I),
+    re.compile(r"""\$(\w+)[ \t]*=[ \t]*(?:Get-Content|gc|cat|type)[ \t]+(?:-\w+[ \t]+)*['"]?([^\s'";|)]{1,260})['"]?[^\n]{0,80}?\b(?:iex|Invoke-Expression)\b[ \t]*\(?[ \t]*\$\1\b""", re.I),
+)
+_FIND_STUNTKEY_RE = re.compile(
+    r"(?:\b(?:which|where(?:\.exe)?|whereis|Get-Command|gcm)[ \t]+(?:-\w+[ \t]+)*[\"']?(?:stuntkey|oathkey)\b|"
+    r"\bcommand[ \t]+-v[ \t]+(?:stuntkey|oathkey)\b|\bimport[ \t]+(?:stuntkey|oathkey)\b[^\n]{0,120}__(?:file|path)__|"
+    r"\b(?:stuntkey|oathkey)\.__(?:file|path)__|\bfind_spec\(\s*['\"](?:stuntkey|oathkey))", re.I)
+
+
+# only verbs that delete, move over or overwrite (not "install" or "pull": `which stuntkey && pip install x` is fine)
+_REMOVE_OR_OVERWRITE_RE = re.compile(
+    r"(?<![\w.$-])(?:rm|del|erase|rd|rmdir|unlink|mv|move|ren|rename|cp|copy|ri|mi|cpi|tee|shred|truncate|"
+    r"(?:Remove|Move|Copy|Rename|Set|Out|Clear)-(?:Item|ItemProperty|Content|File))(?![\w-])|"
+    r"\bos\.(?:remove|unlink|rename|replace)\b|\bshutil\.(?:rmtree|move|copy\w*)\b|\.(?:unlink|rmdir)\s*\(", re.I)
+
+_WRITES_A_FILE_RE = re.compile(
+    r"(?<![>\d])>>?(?![>&])|\btee\b|\b(?:Set|Add|Out)-(?:Content|File)\b|\.write(?:_text|_bytes)?\s*\(|"
+    r"\bWriteAll(?:Text|Bytes|Lines)\b|\bwriteFile(?:Sync)?\b", re.I)
+
+
+def _read_named(path: str) -> str | None:
+    """A small file named in a command, as text (None: missing, too big or unreadable)."""
+    path = os.path.expanduser(path.strip().strip("\"'"))
+    try:
+        if not os.path.isfile(path):
+            return None
+        with open(path, "rb") as f:
+            raw = f.read(MAX_NAMED_FILE + 1)
+    except (OSError, ValueError):
+        return None
+    if len(raw) > MAX_NAMED_FILE:
+        return None
+    return raw.decode("utf-8", "replace")
+
+
+def _indirect_in(text: str) -> str | None:
+    """What a command would do through a file it names (see above), or None."""
+    if _FIND_STUNTKEY_RE.search(text) and _REMOVE_OR_OVERWRITE_RE.search(text):
+        return "remove or replace the installed stuntkey program (only the person may)"
+    if _PATCH_CMD_RE.search(text):
+        flat = re.sub(r"/{2,}", "/", text.replace("\\", "/"))
+        if _TAMPER_TARGET_RE.search(flat):
+            return "change a file that only the person may change (through a patch)"
+        for m in _NAME_TOKEN_RE.finditer(text):
+            body = _read_named(m.group(1) or m.group(2) or m.group(3) or "")
+            if body is None:
+                continue
+            for h in _PATCH_HEADER_RE.finditer(body):
+                if _TAMPER_TARGET_RE.search(re.sub(r"/{2,}", "/", h.group().replace("\\", "/"))):
+                    return "change a file that only the person may change (a patch file names it)"
+    for k, rx in enumerate(_EXEC_FILE_RES):
+        for m in rx.finditer(text):
+            _tick()
+            name = m.group(m.lastindex or 1)
+            body = _read_named(name)
+            if body is None:
+                if _read_named_exists(name):
+                    return "run a file too big to check first"
+                if _WRITES_A_FILE_RE.search(text):
+                    return "run a file that the same command writes (it cannot be read first)"
+                continue
+            what = steals_key(body[:SCAN_BUDGET], shell=True) or _tamper_in(body[:SCAN_BUDGET])
+            if what:
+                return "run a file whose text would " + what
+    return None
+
+
+def _read_named_exists(path: str) -> bool:
+    try:
+        return os.path.isfile(os.path.expanduser(path.strip().strip("\"'")))
+    except (OSError, ValueError):
+        return False
 
 
 def _globs_to_claude_folder(text: str) -> bool:
@@ -1026,10 +1409,14 @@ def decide_tamper(payload) -> str | None:
                     return what
                 if _globs_to_claude_folder(piece):
                     return "change a folder that only the person may change (a wildcard that matches it)"
-                for extra in _disguised(piece)[:6]:
+                for extra in _disguised(piece):
+                    _tick()
                     what = _tamper_in(extra)
                     if what:
                         return what
+                what = _indirect_in(piece)
+                if what:
+                    return what
         return None
     if tool in WRITE_TOOLS and not writes_allowed():
         for text in touched_text(payload):

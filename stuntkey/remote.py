@@ -61,8 +61,23 @@ class RemoteError(Exception):
         self.code = code
 
 
+def user_home() -> str:
+    """The person's home folder. Where Windows gives none (a service account
+    or a scheduled task with no USERPROFILE), expanduser hands back a bare
+    "~" and a folder of that name would be made in whatever folder the program
+    happens to be in; use the profile's AppData folder instead."""
+    home = os.path.expanduser("~")
+    if os.path.isabs(home):
+        return home
+    for var in ("LOCALAPPDATA", "APPDATA"):
+        found = os.environ.get(var, "")
+        if found and os.path.isabs(found):
+            return found
+    return home
+
+
 def home_dir() -> str:
-    return os.path.join(os.path.expanduser("~"), ".stuntkey")
+    return os.path.join(user_home(), ".stuntkey")
 
 
 def private_dir(path: str) -> None:
@@ -104,15 +119,17 @@ def known_hosts() -> dict:
 
 
 def remember_host(host: str, service: str) -> None:
-    data = known_hosts()
-    data.setdefault(host, [])
-    if service not in data[host]:
-        data[host].append(service)
+    from . import store as store_mod
     private_dir(home_dir())
-    tmp = _hosts_path() + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
-    os.replace(tmp, _hosts_path())
+    # Locked (two programs at once must not drop each other's host) and written
+    # whole through a fresh temp file (a crash leaves the old list, never half).
+    with store_mod.file_lock(_hosts_path()):
+        data = known_hosts()
+        if not isinstance(data.get(host), list):
+            data[host] = []
+        if service not in data[host]:
+            data[host].append(service)
+        store_mod.write_private(_hosts_path(), json.dumps(data, indent=2))
 
 
 def ssh_port(ssh_args: list[str] | None) -> str | None:

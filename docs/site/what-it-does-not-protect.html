@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en-CA">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>What StuntKey does not protect - Calas Automations</title>
+<meta name="description" content="The honest list of what StuntKey cannot protect you from, in plain words.">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#0B2E45">
+<link rel="canonical" href="https://calasautomations.com/devtools/stuntkey/what-it-does-not-protect.html">
+<link rel="icon" type="image/png" href="favicon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Libre+Baskerville:ital,wght@0,400;0,700;1,400&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="bar"><div class="in">
+  <a class="lock" href="index.html" aria-label="StuntKey by Calas Automations, home"><span class="crest" aria-hidden="true"></span><span><span class="name">StuntKey</span><span class="sub">BY CALAS AUTOMATIONS</span></span></a>
+  <nav aria-label="Primary"><a href="index.html">Home</a><a href="how-it-works.html">How it works</a><a href="add-your-first-key.html">Add your first key</a><a href="what-it-does-not-protect.html" aria-current="page">What it does not protect</a><a href="https://github.com/calasdan-sketch/stuntkey">GitHub</a></nav>
+</div></header>
+<main id="main">
+<div class="page"><div class="wrap">
+  <p class="crumbs"><a href="index.html">StuntKey</a> / What it does not protect</p>
+  <h1>What StuntKey does <em>not</em> protect</h1>
+  <p class="lede">StuntKey lowers the risk of a leaked key. It does not remove it. Here, in plain words, is what it cannot do. You can read the same list in a terminal with <code>stuntkey limits</code>.</p>
+  <ol class="steps">
+    <li><b>It lowers the risk. It cannot make it zero.</b><p>No independent security expert has reviewed StuntKey yet. It is beta software.</p></li>
+    <li><b>It cannot stop an AI misusing a key it is allowed to use.</b><p>If you let your AI read your GitHub, it can read everything that key can read. Give each key only the permissions it needs, on the service's own website.</p></li>
+    <li><b>It does not protect you from a virus or a person already using your account.</b><p>Anything running as you on this computer can open your keychain, edit the activity log and click the permission windows. For risky AI tools, use a separate Windows account.</p></li>
+    <li><b>The Claude Code safety check is a guard, not a wall.</b><p>It looks for known tricks, and a determined or sneaky command can still get past it. It cannot hide keys from what Claude reads with Read, Grep or web tools; those are only checked before they run.</p></li>
+    <li><b>Other AI apps have no safety check.</b><p>Cursor, Codex, Gemini and Claude Desktop have no place for one, so their file tools can read a .env file.</p></li>
+    <li><b>It does not hide your data.</b><p>Answers from a service go to your AI, and so to the AI company. Only the key is hidden, not the rest.</p></li>
+    <li><b>A program started with <code>stuntkey run</code> holds the key.</b><p>That program can print it. Only start programs you trust this way.</p></li>
+    <li><b>It cannot catch every disguise.</b><p>Hiding a key inside an answer (odd letter shapes, compressed or scrambled text) is checked on a best-effort basis.</p></li>
+    <li><b>The clipboard and screen are not covered.</b><p>While you copy a key, other programs or clipboard history may see it for a moment. Screenshots are not checked.</p></li>
+    <li><b>The activity log shows accidents and casual edits, not a determined attacker.</b><p>Someone using your account can rewrite it.</p></li>
+    <li><b>It does not phone home.</b><p>StuntKey sends nothing about you. It talks only to the services you call. <code>stuntkey update-check --online</code> is the one thing that looks outside, and only when you type it.</p></li>
+  </ol>
+  <div class="note"><p>The full technical version is the <a href="https://github.com/calasdan-sketch/stuntkey/blob/main/docs/THREAT_MODEL.md">threat model</a>. Found a hole we missed? Please tell us: <a href="mailto:security@calasautomations.com">security@calasautomations.com</a>.</p></div>
+</div></div>
+</main>
+<footer class="foot"><div class="in">
+  <a class="lock" href="index.html" aria-label="StuntKey home"><span class="crest" aria-hidden="true"></span><span><span class="name">StuntKey</span><span class="sub">BY CALAS AUTOMATIONS</span></span></a>
+  <nav aria-label="Footer"><a href="index.html">Home</a><a href="how-it-works.html">How it works</a><a href="add-your-first-key.html">Add your first key</a><a href="what-it-does-not-protect.html" aria-current="page">What it does not protect</a><a href="https://github.com/calasdan-sketch/stuntkey">GitHub</a><a href="https://pypi.org/project/stuntkey/">PyPI</a><a href="https://github.com/calasdan-sketch/stuntkey/blob/main/docs/THREAT_MODEL.md">Threat model</a><a href="https://calasautomations.com/devtools/">All dev tools</a></nav>
+  <p class="fine">Free and open source, MIT licence. Python standard library only. Formerly OathKey and SafeEasyAPI.<br>
+  &copy; Calas Automations Inc., Winnipeg, Manitoba. Questions: <a href="mailto:office@calasautomations.com">office@calasautomations.com</a>. Security problem? <a href="mailto:security@calasautomations.com">security@calasautomations.com</a></p>
+</div></footer>
+</body>
+</html>

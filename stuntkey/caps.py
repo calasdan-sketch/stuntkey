@@ -14,8 +14,10 @@ stream_options.include_usage, say) counts as 0 tokens.
 from __future__ import annotations
 
 import datetime
+import hashlib
 import json
 import os
+import re
 
 from .broker import BrokerError, _file_lock
 
@@ -37,13 +39,29 @@ def caps_path(home: str) -> str:
     return os.path.join(home, "caps.json")
 
 
+_PLAIN_SERVICE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,47}(?:\.[A-Za-z0-9_-]{1,16}){0,2}\Z")
+_DEVICE_NAMES = frozenset({"con", "prn", "aux", "nul", "clock$", *(f"com{i}" for i in range(10)),
+                           *(f"lpt{i}" for i in range(10))})
+
+
+def _file_name(service: str) -> str:
+    """The file stem for a service's usage record. An ordinary name is used as it is; a name
+    with a slash, `..`, a drive letter, a control character, a Windows device name (con,
+    nul, com1 ...) or a trailing dot is replaced by a short hash of itself, so a service
+    name can never point the record at a file outside ~/.stuntkey/usage (round 13)."""
+    s = str(service)
+    if _PLAIN_SERVICE_RE.match(s) and s.split(".")[0].lower() not in _DEVICE_NAMES and not s.endswith("."):
+        return s
+    return "x-" + hashlib.sha256(s.encode("utf-8", "surrogatepass")).hexdigest()[:20]
+
+
 def usage_path(home: str, service: str) -> str:
     folder = os.path.join(home, "usage")
     try:
         os.makedirs(folder, exist_ok=True)     # the lock file lives beside it
     except OSError:
         pass
-    return os.path.join(folder, f"{service}.json")
+    return os.path.join(folder, f"{_file_name(service)}.json")
 
 
 def stop_path(home: str) -> str:
@@ -80,8 +98,15 @@ def load_caps(home: str) -> dict:
 
 
 def effective_caps(home: str, service: str) -> dict:
-    """The caps in force for `service`: DEFAULTS, then caps.json on top."""
-    return {**DEFAULTS, **load_caps(home).get(service, {})}
+    """The caps in force for `service`: DEFAULTS, then caps.json on top. The service name is
+    matched without regard to upper / lower case: a cap typed for "OpenAI" holds for
+    "openai" (round 13: it used to be skipped, leaving only the standard caps)."""
+    caps = load_caps(home)
+    mine = caps.get(service)
+    if mine is None:
+        low = str(service).lower()
+        mine = next((v for k, v in caps.items() if str(k).lower() == low), {})
+    return {**DEFAULTS, **mine}
 
 
 # ---- notices: a plain line the person can read later ------------------------------
@@ -197,9 +222,18 @@ def _read_hour(path: str) -> dict:
             h = json.load(f)
         if isinstance(h, dict) and h.get("hour") == _hour_now():
             return {"hour": h["hour"], "calls": max(0, int(h.get("calls", 0)))}
+        if isinstance(h, dict):
+            return {"hour": _hour_now(), "calls": 0}       # a record of an earlier hour
+    except FileNotFoundError:
+        return {"hour": _hour_now(), "calls": 0}           # none yet: this hour starts at 0
     except (OSError, ValueError, TypeError, OverflowError):
-        pass                            # no record or a damaged one: this hour starts at 0
-    return {"hour": _hour_now(), "calls": 0}
+        pass
+    # round 13: a record that is there but unreadable used to count as "start again at 0", so
+    # damaging or editing the file cleared the hourly cap. It now stops the calls instead
+    # (the way the daily record does) until a person deletes the file.
+    raise BrokerError("The hourly usage record for this key cannot be read, so no call was "
+                      "made. A person can delete the file ending in .hourly in "
+                      "~/.stuntkey/usage to start the hour again.", 5)
 
 
 def _begin(home: str, service: str, session_calls: int) -> None:

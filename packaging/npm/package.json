@@ -1,6 +1,6 @@
 {
   "name": "stuntkey",
-  "version": "0.9.3",
+  "version": "0.9.4",
   "description": "Keep your API keys out of your AI's environment: the key never enters it when used through the broker. Runs the Python stuntkey (needs Python 3.10+).",
   "bin": {
     "stuntkey": "bin/stuntkey.js"

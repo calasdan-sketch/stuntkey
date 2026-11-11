@@ -867,7 +867,17 @@ def save_recipe(data: dict, directory: str | None = None) -> str:
             f.write(json.dumps(data, indent=2) + "\n")
             f.flush()
             os.fsync(f.fileno())
-        os.replace(tmp, path)
+        # (no import of store: store imports this module; retry while an
+        # antivirus scanner briefly holds the file)
+        import time
+        for attempt in range(40):
+            try:
+                os.replace(tmp, path)
+                break
+            except PermissionError:
+                if attempt == 39:
+                    raise
+                time.sleep(0.05)
     except BaseException:
         try:
             os.unlink(tmp)

@@ -22,6 +22,7 @@ import json
 import os
 import re
 import socket
+import ssl
 import tempfile
 import threading
 import time
@@ -131,7 +132,8 @@ class Policy:
         caps.add_tokens(self.limits_home(), service, n)
 
     def limits_home(self) -> str:
-        return self.home or os.path.join(os.path.expanduser("~"), ".stuntkey")
+        from . import remote
+        return self.home or remote.home_dir()
 
     def ask(self, summary: str) -> bool:
         """Ask the person, one prompt at a time; after 3 refusals stop asking."""
@@ -199,6 +201,37 @@ class _Pinned(http.client.HTTPSConnection):
         self.sock = self._context.wrap_socket(sock, server_hostname=self.host)
 
 
+def _dropped_connection(exc) -> bool:
+    """Did the connection break before any answer (reset, refused, closed
+    without a reply)? Only then is a second try of a READ worth making: a
+    timeout may mean a slow server, and a certificate problem will not mend."""
+    reason = getattr(exc, "reason", exc)
+    return isinstance(reason, (ConnectionError, http.client.RemoteDisconnected)) and not isinstance(
+        reason, ssl.SSLError)
+
+
+def _net_words(exc) -> str:
+    """Plain words for why the API could not be reached. Never holds a key."""
+    reason = getattr(exc, "reason", exc)
+    if isinstance(reason, ssl.SSLCertVerificationError):
+        return ("network error talking to the API: its security certificate could "
+                "not be checked. A company firewall or an antivirus 'web shield' "
+                "that looks inside secure traffic, or a wrong date or time on "
+                "this computer, can cause this")
+    if isinstance(reason, ssl.SSLError):
+        return "network error talking to the API: the secure connection could not be set up"
+    if isinstance(reason, (TimeoutError, socket.timeout)):
+        return "network error talking to the API: it did not answer in time"
+    if isinstance(reason, socket.gaierror):
+        return ("network error talking to the API: its address could not be looked up "
+                "(is the internet connection down?)")
+    if isinstance(reason, ConnectionRefusedError):
+        return "network error talking to the API: the connection was refused"
+    if isinstance(reason, ConnectionError):
+        return "network error talking to the API: the connection was dropped"
+    return "network error talking to the API"
+
+
 def _real_send(req: urllib.request.Request, ip: str, timeout: float):
     class NoRedirect(urllib.request.HTTPRedirectHandler):
         def redirect_request(self, *a, **k):
@@ -211,14 +244,21 @@ def _real_send(req: urllib.request.Request, ip: str, timeout: float):
     # ProxyHandler({}) ignores HTTP(S)_PROXY: a proxy would defeat the pin
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}),
                                          Pin(), NoRedirect())
-    try:
-        resp = opener.open(req, timeout=timeout)
-    except urllib.error.HTTPError as e:
-        resp = e
-    except (urllib.error.URLError, OSError, http.client.HTTPException):
-        raise BrokerError("network error talking to the API", 7) from None
-    except ValueError:
-        raise BrokerError("the HTTP library refused the request", 7) from None
+    attempts = 2 if req.get_method() in READ_METHODS else 1     # never retry a write
+    for attempt in range(attempts):
+        try:
+            resp = opener.open(req, timeout=timeout)
+            break
+        except urllib.error.HTTPError as e:
+            resp = e
+            break
+        except (urllib.error.URLError, OSError, http.client.HTTPException) as e:
+            if attempt + 1 < attempts and _dropped_connection(e):
+                time.sleep(0.5)
+                continue
+            raise BrokerError(_net_words(e), 7) from None
+        except ValueError:
+            raise BrokerError("the HTTP library refused the request", 7) from None
     with resp:
         body = resp.read(MAX_BODY_OUT + 1)
         headers = {k.lower(): v for k, v in resp.headers.items()}
@@ -231,13 +271,18 @@ def open_stream(host: str, ip: str, method: str, target: str, headers: dict,
     response, so a caller can stream it (the proxy). http.client never
     follows redirects and ignores HTTP(S)_PROXY. `connect(host, timeout=)`
     is for tests only."""
-    conn = (connect or functools.partial(_Pinned, ip=ip))(host, timeout=timeout)
-    try:
-        conn.request(method, target, body=body, headers=headers)
-        return conn, conn.getresponse()
-    except (OSError, http.client.HTTPException):
-        conn.close()
-        raise BrokerError("network error talking to the API", 7) from None
+    attempts = 2 if method in READ_METHODS else 1          # never retry a write
+    for attempt in range(attempts):
+        conn = (connect or functools.partial(_Pinned, ip=ip))(host, timeout=timeout)
+        try:
+            conn.request(method, target, body=body, headers=headers)
+            return conn, conn.getresponse()
+        except (OSError, http.client.HTTPException) as e:
+            conn.close()
+            if attempt + 1 < attempts and _dropped_connection(e):
+                time.sleep(0.5)
+                continue
+            raise BrokerError(_net_words(e), 7) from None
 
 
 # ---- the call ------------------------------------------------------------------
@@ -663,7 +708,85 @@ class AuditLog:
             raise BrokerError("The activity log cannot be trusted "
                               f"({problem}), so nothing was sent. "
                               "Remove the link and try again.", 5)
-        return os.open(self.path, self._OPEN_FLAGS, 0o600)
+        for attempt in range(30):
+            try:
+                return os.open(self.path, self._OPEN_FLAGS, 0o600)
+            except PermissionError:
+                # Windows: an antivirus scanner or a backup program holds the
+                # file for a moment; give it a few seconds before giving up
+                if os.name != "nt" or attempt == 29:
+                    raise
+                time.sleep(0.1)
+
+    # ---- a write cut off by a power loss
+
+    def _torn(self) -> bool:
+        """Does the log end in the middle of a line (no final newline)?"""
+        try:
+            with open(self.path, "rb") as f:
+                if f.seek(0, 2) == 0:
+                    return False
+                f.seek(-1, 2)
+                return f.read(1) != b"\n"
+        except OSError:
+            return False
+
+    def _repair_torn_tail(self):
+        """If the log ends in half a line (the computer stopped while it was
+        written), keep those bytes in audit.log.torn-<time> and cut the log
+        back to its last whole line, so the next entry does not get glued onto
+        the fragment and make the whole log look tampered with. Nothing is
+        lost: the fragment is kept, and a cut that hides a real entry is still
+        caught by the end-marker count. Must be called with the lock held.
+        Returns {"bytes", "sha256", "kept"} or None."""
+        from . import store as store_mod
+        try:
+            if not self._torn() or store_mod.private_path_problem(self.path):
+                return None
+            size = os.path.getsize(self.path)
+            with open(self.path, "rb") as f:
+                back = min(size, 1 << 20)
+                f.seek(size - back)
+                tail = f.read()
+            cut = tail.rfind(b"\n")
+            if cut < 0 and back < size:
+                return None              # a fragment this long is not a torn write
+            keep = (size - back + cut + 1) if cut >= 0 else 0
+            fragment = tail[cut + 1:]
+            base = f"{self.path}.torn-{int(time.time())}"
+            kept, i = base, 1
+            while os.path.exists(kept):
+                i += 1
+                kept = f"{base}-{i}"
+            store_mod.write_private(kept, fragment.decode(store_mod._ENCODING,
+                                                          store_mod._UNDECODABLE))   # byte-exact
+            fd = os.open(self.path, os.O_RDWR | getattr(os, "O_BINARY", 0)
+                         | getattr(os, "O_NOFOLLOW", 0))
+            try:
+                os.ftruncate(fd, keep)
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+            return {"bytes": len(fragment), "sha256": hashlib.sha256(fragment).hexdigest(),
+                    "kept": os.path.basename(kept)}
+        except OSError:
+            return None
+
+    def _after_repair(self, info: dict) -> None:
+        """Say in the log itself that its end was repaired (signed like any
+        line) - only while the log is otherwise healthy."""
+        key = self._key()
+        s = self._scan_full(key)
+        a = self._read_anchor()
+        if self.broken_reason() is not None or self._problem(s, a, key) is not None:
+            return
+        last = self._append(self._marker(
+            "LOG-TAIL-REPAIRED",
+            f"the last line was cut off, probably because the computer stopped "
+            f"while it was written; {info['bytes']} bytes were kept in "
+            f"{info['kept']} (sha256 {info['sha256'][:16]})"),
+            s["last"], key, first=(s["n"] == 0))
+        self._save_anchor(s["n"] + 1, last, key)
 
     @property
     def anchor_path(self) -> str:
@@ -723,6 +846,9 @@ class AuditLog:
             with AuditLog._lock, _file_lock(self.path, timeout=5.0) as got:
                 if not got:
                     return {"state": "busy", "where": "", "note": BUSY_TEXT + "."}
+                repaired = self._repair_torn_tail()
+                if repaired:
+                    self._after_repair(repaired)
                 key, where = self._key_info()
                 if key is not None:
                     return {"state": "ready", "where": where, "note": "The signing key is in place."}
@@ -921,13 +1047,19 @@ class AuditLog:
             return _BAD
 
     def _save_anchor(self, count: int, h: str, key: bytes | None = None) -> None:
+        from . import store as store_mod
         tmp = self.anchor_path + ".tmp"
         try:
             with open(tmp, "w", encoding="utf-8") as f:
                 f.write(f"{count} {h}" + (f" {self._mac(key, count, h)}" if key else "") + "\n")
-            os.replace(tmp, self.anchor_path)
+                f.flush()
+                os.fsync(f.fileno())       # else a power loss can leave an empty file
+            store_mod._replace(tmp, self.anchor_path)
         except OSError:
-            pass
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
 
     def _problem(self, s: dict, a, key: bytes | None, migrating: bool = False):
         if not s["ok"]:
@@ -997,7 +1129,9 @@ class AuditLog:
         if not isinstance(ts, int) or s["n"] == 0:
             return None
         old_month = time.strftime("%Y-%m", time.gmtime(ts))
-        if old_month == time.strftime("%Y-%m", time.gmtime(time.time())):
+        # only forward: a clock set back (or a wrong date fixed) must not file
+        # a good log away under a month that has not happened yet
+        if old_month >= time.strftime("%Y-%m", time.gmtime(time.time())):
             return None
         base = f"{self.path}.{old_month}"
         target, i = base, 1
@@ -1028,6 +1162,9 @@ class AuditLog:
         with AuditLog._lock, _file_lock(self.path) as got:   # one writer at a time
             if not got:
                 raise BrokerError(BUSY_TEXT + ".", 5)
+            repaired = self._repair_torn_tail()
+            if repaired:
+                self._after_repair(repaired)
             key0 = self._key()
             fresh = key0 is None                 # no key yet: this write starts signing
             a = self._read_anchor()
@@ -1109,7 +1246,7 @@ class AuditLog:
         return {"ok": reason is None, "n": s["n"], "mode": mode, "reason": reason,
                 "note": note if mode == "unkeyed" else "",
                 "key": "present" if key is not None else self.key_state(),
-                "rotated_files": rotated}
+                "rotated_files": rotated, "torn_tail": self._torn()}
 
     def _check_rotated(self, s: dict, key: bytes | None):
         """Follow the signed links back through the monthly files. Returns

@@ -9,11 +9,12 @@ import argparse
 import difflib
 import sys
 
+from . import fixcmd
 from . import recipes as recipes_mod
 
 COMMANDS = {"remote", "trust-server", "deploy", "install", "uninstall", "start",
             "overview", "audit", "call", "serve", "selftest", "scan-git", "doctor",
-            "try", "import"}
+            "try", "import", "fix", "update-check", "limits"}
 
 
 PER_FOLDER_NOTE = ("Run this in your project folder. claude-code and vscode are set up for "
@@ -50,6 +51,11 @@ def add_parsers(sub) -> None:
     dc = sub.add_parser("doctor", help="Check this computer is ready (keychain, ssh, git, "
                                        "and stuntkey's own self-attack test).")
     dc.add_argument("--json", action="store_true", help="Machine-readable output.")
+    dc.add_argument("--fix", action="store_true",
+                    help="After the check, offer to repair what stuntkey can repair by "
+                         "itself (same as `stuntkey fix`).")
+    dc.add_argument("--yes", action="store_true",
+                    help="With --fix: do not ask first (for scripts).")
     dc.add_argument("--self", dest="self_check", action="store_true",
                     help="Instead: check the installed stuntkey files have not been "
                          "changed since you installed them.")
@@ -88,11 +94,39 @@ def add_parsers(sub) -> None:
     ins.add_argument("targets", nargs="*", help="claude-desktop, cursor, claude-code, vscode "
                                                 "(default: the ones found)")
     ins.add_argument("--yes", action="store_true", help="Do not ask (for scripts)")
-    un = sub.add_parser("uninstall", help="Remove stuntkey from your AI tools' settings "
-                                          "(your saved keys are not touched).",
-                          description=PER_FOLDER_NOTE)
+    un = sub.add_parser("uninstall", help="Undo the setup: take stuntkey out of your AI "
+                                          "tools' settings and switch the Claude Code "
+                                          "safety check off (your saved keys are not "
+                                          "touched).",
+                          description=PER_FOLDER_NOTE + " Also removes the Claude Code "
+                                      "safety check from ~/.claude/settings.json (other "
+                                      "hooks stay). Use --keep-hook to leave that one.")
     un.add_argument("targets", nargs="*")
     un.add_argument("--yes", action="store_true", help="Do not ask (for scripts)")
+    un.add_argument("--keep-hook", action="store_true",
+                    help="Do not touch the Claude Code safety check.")
+    fx = sub.add_parser("fix", help="Repair the common problems by itself (safety check "
+                                    "missing, program moved after an upgrade, AI app "
+                                    "not plugged in).",
+                        description="Looks for the usual problems, lists what it can "
+                                    "repair, asks once, repairs, and checks again. Every "
+                                    "changed file is backed up first. Your keys are not "
+                                    "touched.")
+    fx.add_argument("--yes", action="store_true", help="Do not ask first (for scripts).")
+    fx.add_argument("--json", action="store_true",
+                    help="Only list what could be repaired, as JSON (changes nothing "
+                         "unless --yes is also given).")
+    hp = sub.add_parser("help", help="The commands, grouped by what you want to do.")
+    hp.add_argument("topic", nargs="?", default=None,
+                    help="A command name, for more about that one.")
+    uc = sub.add_parser("update-check", help="Say which version you have, and (only if you "
+                                              "ask) whether a newer one exists.")
+    uc.add_argument("--online", action="store_true",
+                    help="Ask pypi.org for the latest version number. Nothing else is sent.")
+    sub.add_parser("limits", help="What StuntKey does NOT protect you from, in plain words.")
+    cp = sub.add_parser("completion", help="Print a script that completes stuntkey "
+                                           "commands when you press Tab.")
+    cp.add_argument("shell", choices=["powershell", "bash"])
     st = sub.add_parser("start", help="First run: check this computer, look for loose "
                                       "keys, and say what to do next.",
                       description="Run it in your project folder.")
@@ -117,7 +151,7 @@ def add_parsers(sub) -> None:
     ca.add_argument("--data", default=None, help="JSON body for POST/PUT/PATCH")
     ca.add_argument("--json", action="store_true")
     ca.add_argument("--env-file", default=".env")
-    sv = sub.add_parser("serve", help="Open a local web door for AI tools without MCP "
+    sv = sub.add_parser("serve", help="Open a private page and doorway on this computer, for AI tools that cannot plug in "
                                       "(OpenAI-style functions, Ollama, scripts).")
     sv.add_argument("--port", type=int, default=8787)
     sv.add_argument("--env-file", default=".env")
@@ -192,8 +226,9 @@ def self_check(dist=None) -> dict:
     hashed = [p for p in files if getattr(p, "hash", None)
               and p.suffix != ".pyc" and p.name != "RECORD"]
     if not hashed:
-        res["why"] = ("this looks like a developer install (no file fingerprints were "
-                      "recorded), so there is nothing to compare against")
+        res["why"] = ("this looks like a developer install (the installer did not "
+                      "record what each file should look like), so there is nothing "
+                      "to compare against")
         return res
     for p in hashed:
         try:
@@ -253,6 +288,9 @@ def _ensure_log_key() -> None:
         pass
 
 
+fixcmd.HELPERS.update(self_check=lambda: self_check(), ensure_log_key=lambda: _ensure_log_key())
+
+
 def unknown_service(catalog: dict, name: str) -> int:
     close = difflib.get_close_matches(str(name).lower(), list(catalog), n=3, cutoff=0.5)
     msg = f"I don't know a service called '{recipes_mod.printable(name)}'."
@@ -270,6 +308,43 @@ def no_key_saved(name: str) -> int:
     return 3
 
 
+def _hook_hint() -> None:
+    """After `install`: say so when Claude Code's safety check is not on."""
+    try:
+        from . import hook
+        if not hook.is_installed():
+            print("\nOne more step for Claude Code: run `stuntkey fix` to switch on its "
+                  "safety check (it stops Claude opening your .env files).")
+    except Exception:           # noqa: BLE001
+        pass
+
+
+def _uninstall_hook(yes: bool, ask=None) -> int:
+    """The undo for the Claude Code safety check: ask, then take only our own
+    entry out of ~/.claude/settings.json (a backup is kept)."""
+    import argparse as _ap
+    from . import hook
+    path = hook.user_settings_path()
+    try:
+        groups = hook._pretool_list(hook.load_settings(path), create=False) or []
+        present = any(True for _ in hook._our_handlers(groups))
+    except hook.SettingsError:
+        return 0                    # unreadable: leave it alone, say nothing more
+    if not present:
+        return 0
+    print(f"  claude-code safety check: will remove it from {recipes_mod.printable(path)} "
+          "(your other hooks stay)")
+    if not yes:
+        try:
+            if (ask or input)("    go ahead? [y/N] ").strip().lower() not in ("y", "yes"):
+                print("    skipped.")
+                return 0
+        except (EOFError, KeyboardInterrupt, OSError):
+            print("    skipped (no terminal to answer on; add --yes to go ahead).")
+            return 0
+    return hook.cmd_hook(_ap.Namespace(hook_cmd="uninstall", project=False, settings=None))
+
+
 def _tail(args) -> list:
     command = list(getattr(args, "command", []) or [])
     return command[1:] if command[:1] == ["--"] else command
@@ -282,10 +357,24 @@ def dispatch(args, catalog: dict):
         return None
     if cmd == "install":
         from . import clients
-        return clients.run(args.targets, args.yes)
+        code = clients.run(args.targets, args.yes)
+        _hook_hint()
+        return code
     if cmd == "uninstall":
         from . import clients
-        return clients.remove(args.targets, args.yes)
+        code = clients.remove(args.targets, args.yes)
+        if not args.keep_hook and not args.targets:
+            code = max(code, _uninstall_hook(args.yes))
+        return code
+    if cmd == "fix":
+        from . import fixcmd
+        return fixcmd.cmd_fix(args, catalog)
+    if cmd == "limits":
+        from . import fixcmd
+        return fixcmd.cmd_limits()
+    if cmd == "update-check":
+        from . import fixcmd
+        return fixcmd.cmd_update_check(args)
     if cmd == "try":
         from . import connect_try
         return connect_try.cmd_try(auto=args.auto)
@@ -346,7 +435,11 @@ def dispatch(args, catalog: dict):
         _ensure_log_key()
         res = gitscan.doctor()
         print(_json.dumps(res, indent=2) if args.json else gitscan.format_doctor(res))
-        return 0 if res["ok"] else 1
+        code = 0 if res["ok"] else 1
+        if getattr(args, "fix", False) and not args.json:
+            from . import fixcmd
+            code = max(code, fixcmd.cmd_fix(args, catalog))
+        return code
     # remote, trust-server, deploy -- DEPRECATED, removed at 1.0 (see add_parser above).
     print("warning: `stuntkey " + cmd + "` is deprecated and will be removed in 1.0. "
           "It runs commands on another machine, which is the largest attack surface "

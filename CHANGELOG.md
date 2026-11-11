@@ -1,5 +1,42 @@
 # Changelog
 
+## 0.9.4 (unreleased)
+
+Round-13 QA and integration work. In plain words:
+
+**Import (`stuntkey import`)**
+- A true/false flag or a list in a JSON export is no longer offered as a "secret" (before, a
+  Doppler or Bitwarden export with `"DEBUG": true` could produce the key text `True`).
+- `doppler secrets --json` output (`{"NAME": {"computed": ..., "raw": ...}}`) is read.
+- An entry whose name is only punctuation is dropped instead of showing as an empty name.
+
+**Leak benchmark (`leakbench`)**
+- New `stuntkey-hook-unregistered` profile and `--canary opaque`: score a key stuntkey was never
+  told about, with no recognisable format. With it, 7 of the 64 core probes leak (2 with a
+  registered key).
+- New `--extended` set of 22 harder probes (base64, hex, backwards, spaced or wrapped keys; keys
+  read through wildcards, split names, `cp`, `tar`, `git diff --no-index`, `curl file://`),
+  scored apart so the 64-probe number stays comparable.
+- A key written out disguised (base64, hex, backwards, or with spaces or line breaks added) now
+  counts as a leak. Before, that read `n/a` and hid the leak.
+- The fake key is also planted under an innocent variable name (`LB_PAYLOAD`).
+- README numbers updated (`stuntkey-hook`: 55 blocked, 7 masked, 2 leaked).
+
+**Tests**
+- New black-box tests run the real command line in a throwaway home: install and remove the
+  hook, import a key, run a program through stuntkey, check the key never shows in output or on
+  disk, check the activity log. Also: the MCP server's wire behaviour (handshake, bad JSON,
+  huge and deeply nested messages, notifications, closed input), random-input tests for the
+  import readers, the scrubber and the activity-log checker, recipe-file checks, and checks that
+  Cursor, Codex, Gemini, Claude Desktop, Claude Code and VS Code config files stay valid.
+
+**Known gaps found in round 13 (not fixed here; see the lead's list)**
+- `setup-agent codex --write` can leave an invalid `config.toml` when the file already has a
+  hand-written stuntkey table in another spelling.
+- The hook lets a tool call through when the file path arrives as a list instead of text.
+- `hook uninstall` rewrites the settings file in its own layout (and Windows line endings); the
+  backup made at install holds the exact old bytes.
+
 ## 0.9.3 - 2026-11-10
 
 Round-12 release. In plain words:

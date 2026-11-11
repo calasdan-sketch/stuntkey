@@ -271,6 +271,11 @@ def _win_structs(ctypes_mod):
     return CREDENTIAL
 
 
+WINDOWS_MAX_USERNAME = 512     # CRED_MAX_USERNAME_LENGTH is 513 including the end mark
+# Windows error numbers that mean "the Credential Manager cannot be used from
+# here" (no logon session: a service account, a locked or roaming profile that
+# has not loaded, an unreachable domain) - as opposed to "no such entry".
+_WIN_UNREACHABLE = {1311, 1312, 1355}
 WINDOWS_MAX_BLOB = 2560      # CRED_MAX_CREDENTIAL_BLOB_SIZE: 1280 UTF-16 characters
 
 
@@ -278,6 +283,35 @@ def _check_windows_size(blob: bytes) -> None:
     if len(blob) > WINDOWS_MAX_BLOB:
         raise KeychainError("Windows Credential Manager keeps at most 1280 "
                             f"characters per key; this one is {len(blob) // 2}.")
+
+
+def _win_last_error(ct):
+    try:
+        code = ct.GetLastError()
+    except Exception:  # noqa: BLE001 - a fake or odd ctypes: no code
+        return None
+    return code if isinstance(code, int) else None
+
+
+def _win_error_words(code, what: str) -> str:
+    """Plain words for why the Credential Manager would not `what` the key."""
+    if code in _WIN_UNREACHABLE:
+        return ("the Windows Credential Manager is not available to this "
+                "program (it is probably running as a service or another "
+                "account, or your profile is locked or not loaded). Sign in "
+                "normally, or use the .env file instead (--store env)")
+    if code == 5:
+        return (f"Windows would not let StuntKey {what} the key (access "
+                "denied). Another program or a company policy may be blocking "
+                "the Credential Manager")
+    if code in (1006, 1117):
+        return "the Windows Credential Manager reported a disk problem; try again"
+    return f"the Windows Credential Manager could not {what} the key (Windows error {code})"
+
+
+def _win_unreachable(code) -> None:
+    if code in _WIN_UNREACHABLE:
+        raise KeychainUnavailable(_win_error_words(code, "read"))
 
 
 def _windows(op: str, service: str, account: str, key: str | None,
@@ -293,6 +327,9 @@ def _windows(op: str, service: str, account: str, key: str | None,
     if op == "store":
         blob = (key or "").encode("utf-16-le")
         _check_windows_size(blob)
+        if len(account) > WINDOWS_MAX_USERNAME:
+            raise KeychainError("Windows Credential Manager cannot keep a "
+                                "variable name this long.")
         buf = ct.create_string_buffer(blob, len(blob))
         cred = CREDENTIAL()
         cred.Flags = 0
@@ -307,20 +344,29 @@ def _windows(op: str, service: str, account: str, key: str | None,
         cred.TargetAlias = None
         cred.UserName = account
         if not advapi32.CredWriteW(ct.byref(cred), 0):
-            raise KeychainError("CredWriteW failed "
-                                f"(error {ct.GetLastError()})")
+            raise KeychainError(_win_error_words(_win_last_error(ct), "save"))
         return None
     if op == "read":
         pcred = ct.POINTER(CREDENTIAL)()
         if not advapi32.CredReadW(target, CRED_TYPE_GENERIC, 0, ct.byref(pcred)):
+            _win_unreachable(_win_last_error(ct))     # "not there" is None; "cannot ask" raises
             return None
         try:
             c = pcred.contents
             blob = ct.string_at(c.CredentialBlob, c.CredentialBlobSize)
         finally:
             advapi32.CredFree(pcred)
-        return blob.decode("utf-16-le")
+        try:
+            return blob.decode("utf-16-le")
+        except UnicodeDecodeError:
+            # an entry of this name that another program wrote in another
+            # format: say so, never a traceback and never "not stored"
+            raise KeychainError("the Windows Credential Manager entry for this "
+                                "key is not in a format StuntKey can read "
+                                "(another program may have written it)") from None
     ok = advapi32.CredDeleteW(target, CRED_TYPE_GENERIC, 0)
+    if not ok:
+        _win_unreachable(_win_last_error(ct))
     return None if ok else ""
 
 
@@ -493,7 +539,7 @@ def _fingerprint(action: str, name: str, key: str | None = None) -> None:
         else:
             scrub.forget_key(name)
     except Exception as e:  # noqa: BLE001 - the key is saved; say why masking may miss it
-        sys.stderr.write(f"stuntkey: could not update key fingerprints ({type(e).__name__})\n")
+        sys.stderr.write(f"stuntkey: could not update the hook's key list ({type(e).__name__})\n")
 
 
 def read(service: str, env_var: str, backend: str | None = None,

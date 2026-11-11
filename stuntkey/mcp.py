@@ -48,6 +48,7 @@ PARSE_ERROR = -32700
 # depends on the version and on the size of the C stack (3.14 parsed 100000
 # levels on some machines), and the answer must not depend on either.
 MAX_JSON_DEPTH = 200
+MAX_LINE = 8 * 1024 * 1024      # longest request line read; more is refused, not stored
 
 
 def _too_deep(text: str, limit: int = MAX_JSON_DEPTH) -> bool:
@@ -662,12 +663,28 @@ def _serve(catalog: dict[str, dict] | None = None,
     reader = getattr(stdin, "buffer", stdin)
     writer = getattr(stdout, "buffer", stdout)
     while True:
-        raw = reader.readline()
+        try:
+            raw = reader.readline(MAX_LINE + 1)
+            too_long = len(raw) > MAX_LINE and not (
+                raw.endswith(b"\n") if isinstance(raw, bytes) else raw.endswith("\n"))
+            while too_long:          # throw the rest of that one line away, keep the memory small
+                rest = reader.readline(1 << 16)
+                if not rest or (rest.endswith(b"\n") if isinstance(rest, bytes)
+                                else rest.endswith("\n")):
+                    break
+        except KeyboardInterrupt:
+            return 0
+        except (OSError, ValueError):
+            break                    # the pipe was closed under us: same as the end of input
         if not raw:
             break
+        if too_long:
+            _write_reply(writer, _error(None, INVALID_REQUEST,
+                                        "the request is too large (over %d bytes)" % MAX_LINE))
+            continue
         if isinstance(raw, str):
             raw = raw.encode("utf-8")
-        line = raw.decode("utf-8", "replace").strip()
+        line = raw.decode("utf-8", "replace").lstrip("\ufeff").strip()   # a BOM from some shells
         if not line:
             continue
         try:
@@ -700,9 +717,23 @@ def _serve(catalog: dict[str, dict] | None = None,
                 data = (json.dumps(_error(
                     None, INTERNAL_ERROR, "the reply could not be written"))
                     + "\n").encode("utf-8")
-            if isinstance(writer, io.TextIOBase):
-                writer.write(data.decode("utf-8"))
-            else:
-                writer.write(data)
-            writer.flush()
+            if not _write_bytes(writer, data):
+                break                # the program that started us has gone away
     return 0
+
+
+def _write_bytes(writer, data: bytes) -> bool:
+    """Write one reply. False when the other end has closed the pipe."""
+    try:
+        if isinstance(writer, io.TextIOBase):
+            writer.write(data.decode("utf-8"))
+        else:
+            writer.write(data)
+        writer.flush()
+        return True
+    except (BrokenPipeError, ConnectionError, OSError, ValueError):
+        return False
+
+
+def _write_reply(writer, response: dict) -> bool:
+    return _write_bytes(writer, (json.dumps(response) + "\n").encode("utf-8"))

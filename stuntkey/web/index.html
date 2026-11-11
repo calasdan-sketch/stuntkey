@@ -163,6 +163,7 @@ ul.tick{padding-left:20px}ul.tick li{margin:0 0 8px}
 </div></header>
 
 <main id="main">
+<noscript><div class="wrap"><div class="note"><p>This page shows your key names with a little script. The script is switched off in your browser, so the list below stays empty. Your keys are fine: run <code>stuntkey status</code> in a terminal to see them.</p></div></div></noscript>
 <section class="hero" id="top"><div class="wrap">
   <p class="eyebrow">Running on this computer only</p>
   <h1>Your AI uses your keys. <em>The key stays out of its environment.</em></h1>
@@ -187,7 +188,7 @@ ul.tick{padding-left:20px}ul.tick li{margin:0 0 8px}
 
 <section class="sunk" id="add"><div class="wrap">
   <p class="eyebrow">Add a key</p>
-  <h2>Three steps. You never type your key into this page.</h2>
+  <h2>Four steps. You never type your key into this page.</h2>
   <ol class="steps">
     <li><b>Say which service.</b>
       <p>For example OpenAI, GitHub or Stripe. Type it here and the command below updates.</p>
@@ -196,10 +197,12 @@ ul.tick{padding-left:20px}ul.tick li{margin:0 0 8px}
         style="font:inherit;font-family:var(--mono);padding:10px 12px;border:1.5px solid var(--accent);border-radius:6px;background:var(--paper);color:var(--ink);width:min(100%,320px);min-height:44px">
       <p class="say" id="svc-help" style="font-size:14px;margin-top:6px">Letters and numbers only.</p></li>
     <li><b>Copy this command and paste it into a terminal.</b>
-      <div class="cmd"><code id="cmd">stuntkey get openai</code><button type="button" class="btn copy" id="copy" aria-describedby="copy-live">Copy</button></div>
+      <div class="cmd"><code id="cmd">stuntkey get openai</code><button type="button" class="btn copy" id="copy" aria-label="Copy the add-a-key command" aria-describedby="copy-live">Copy</button></div>
       <p class="live" id="copy-live" role="status"></p></li>
     <li><b>Follow the prompts.</b>
       <p>StuntKey opens the key page for you. Click that site's own Copy button. StuntKey takes the key from your copy, tests it, and locks it in your keychain.</p></li>
+    <li><b>Switch it on, once.</b>
+      <p>Run <code>stuntkey fix</code>. It plugs StuntKey into your AI apps and turns on the Claude Code safety check. Then restart the AI app.</p></li>
   </ol>
 </div></section>
 
@@ -208,7 +211,7 @@ ul.tick{padding-left:20px}ul.tick li{margin:0 0 8px}
   <h2>Want to see it work first?</h2>
   <div class="card">
     <p class="big">Run a safe practice. StuntKey saves a pretend key, uses it, then forgets it, in a throwaway place that is deleted afterwards. No real key is used. Nothing real is changed.</p>
-    <div class="cmd"><code id="pcmd">stuntkey try</code><button type="button" class="btn copy" id="pcopy" aria-describedby="pcopy-live">Copy</button></div>
+    <div class="cmd"><code id="pcmd">stuntkey try</code><button type="button" class="btn copy" id="pcopy" aria-label="Copy the practice command" aria-describedby="pcopy-live">Copy</button></div>
     <p class="live" id="pcopy-live" role="status"></p>
   </div>
 </div></section>
@@ -233,7 +236,8 @@ ul.tick{padding-left:20px}ul.tick li{margin:0 0 8px}
       <li>Has no box to type a key into, on purpose.</li>
       <li>Sends nothing anywhere.</li></ul></div>
   </div>
-  <div class="note"><p><b>Leaked a key?</b> Run <code>stuntkey panic openai</code>. It walks you through cancelling it and making a new one.</p></div>
+  <div class="note"><p><b>Leaked a key?</b> Run <code>stuntkey panic openai</code>. It walks you through cancelling it and making a new one.</p>
+  <p><b>Something not working?</b> Run <code>stuntkey status</code>: it shows green, yellow or red for each part. Then <code>stuntkey fix</code> repairs what it can. For the full list of what StuntKey does not cover, run <code>stuntkey limits</code>.</p></div>
 </div></section>
 </main>
 

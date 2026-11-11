@@ -64,6 +64,113 @@ def consent_path() -> str:
     return os.path.join(consent_dir(), FILE_NAME)
 
 
+# ------------------------------------------------------ owner-only on Windows (round 13)
+#
+# `os.makedirs(mode=0o700)` and `chmod 0o600` do nothing on Windows. The files in
+# ~/.stuntkey are protected there only by what the profile folder hands down. This
+# makes the store's own folder (and the files in it) readable by this user and the
+# system only: `icacls <path> /inheritance:r /grant:r *<my SID>:F *S-1-5-18:F`
+# (the first one with (OI)(CI) for a folder, so files made later inherit it). It
+# runs once per path per program, never opens a window, never touches a folder that
+# is not named .stuntkey, and failing is quiet (best effort). A person who wants the
+# old behaviour sets STUNTKEY_NO_ACL=1. Honest limit: another program running as the
+# SAME user can still read these files; this stops other accounts and a loose
+# profile ACL, nothing more.
+_HARDENED: set = set()
+SYSTEM_SID = "S-1-5-18"
+
+
+def _current_sid() -> str | None:
+    """The SID text of the user running this program (Windows), else None."""
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+        advapi = ctypes.WinDLL("advapi32", use_last_error=True)
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.GetCurrentProcess.restype = wintypes.HANDLE
+        kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel.LocalFree.argtypes = [ctypes.c_void_p]
+        advapi.OpenProcessToken.argtypes = [wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE)]
+        advapi.GetTokenInformation.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD,
+                                               ctypes.POINTER(wintypes.DWORD)]
+        advapi.ConvertSidToStringSidW.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p)]
+        token = wintypes.HANDLE()
+        if not advapi.OpenProcessToken(kernel.GetCurrentProcess(), 0x0008, ctypes.byref(token)):   # TOKEN_QUERY
+            return None
+        try:
+            size = wintypes.DWORD(0)
+            advapi.GetTokenInformation(token, 1, None, 0, ctypes.byref(size))                    # TokenUser
+            buf = ctypes.create_string_buffer(size.value)
+            if not advapi.GetTokenInformation(token, 1, buf, size, ctypes.byref(size)):
+                return None
+            psid = ctypes.cast(buf, ctypes.POINTER(ctypes.c_void_p))[0]
+            out = ctypes.c_void_p()
+            if not advapi.ConvertSidToStringSidW(psid, ctypes.byref(out)):
+                return None
+            try:
+                return ctypes.wstring_at(out.value)
+            finally:
+                kernel.LocalFree(out)
+        finally:
+            kernel.CloseHandle(token)
+    except Exception:
+        return None
+
+
+def harden_acl(path: str, run=subprocess.run) -> bool:
+    """Make `path` (the .stuntkey folder, or a file in it) owner-only on Windows.
+    True when it was done (or already done this run); False when not applicable or
+    it could not be done. Never raises, never opens a window."""
+    if os.name != "nt" or os.environ.get("STUNTKEY_NO_ACL") == "1":
+        return False
+    path = os.path.abspath(path)
+    parts = os.path.normcase(path).split(os.sep)
+    if DIR_NAME not in parts[-2:]:
+        return False
+    if path in _HARDENED:
+        return True
+    sid = _current_sid()
+    if not sid or not sid.startswith("S-1-"):
+        return False
+    try:
+        root = os.environ.get("SystemRoot") or r"C:\Windows"
+        try:
+            import ctypes
+            buf = ctypes.create_unicode_buffer(260)
+            if ctypes.windll.kernel32.GetSystemDirectoryW(buf, 260):
+                root = os.path.dirname(buf.value)
+        except Exception:
+            pass
+        icacls = os.path.join(root, "System32", "icacls.exe")
+        if not os.path.isfile(icacls):
+            return False
+        flags = "(OI)(CI)F" if os.path.isdir(path) else "F"
+        done = run([icacls, path, "/inheritance:r", "/grant:r", f"*{sid}:{flags}",
+                    "/grant:r", f"*{SYSTEM_SID}:{flags}"],
+                   capture_output=True, timeout=20, env={"SystemRoot": root, "PATH": os.path.join(root, "System32")},
+                   creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        if done.returncode == 0:
+            _HARDENED.add(path)
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _is_link(path: str) -> bool:
+    """A symbolic link, or on Windows any reparse point (a junction too)."""
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return False
+    import stat as stat_mod
+    if stat_mod.S_ISLNK(st.st_mode):
+        return True
+    return bool(getattr(st, "st_file_attributes", 0) & 0x400)      # FILE_ATTRIBUTE_REPARSE_POINT
+
+
 # ------------------------------------------------------------- the secret
 
 class FileSecret:
@@ -77,6 +184,8 @@ class FileSecret:
         return self.path or os.path.join(consent_dir(), SECRET_FILE)
 
     def load(self) -> bytes | None:
+        if _is_link(self._p()):
+            return None          # a link planted where the secret should be is not the secret
         try:
             with open(self._p(), "rb") as f:
                 data = f.read(256)
@@ -104,6 +213,7 @@ def _private_dir(path: str) -> None:
             os.chmod(path, 0o700)
         except OSError:
             pass
+    harden_acl(path)
 
 
 def _write_private(path: str, data: bytes) -> None:
@@ -118,6 +228,7 @@ def _write_private(path: str, data: bytes) -> None:
             with os.fdopen(fd, "wb") as f:
                 f.write(data)
             _replace(tmp, path)
+            harden_acl(path)
         except BaseException:
             try:
                 os.unlink(tmp)
@@ -127,6 +238,7 @@ def _write_private(path: str, data: bytes) -> None:
         return
     with os.fdopen(fd, "wb") as f:
         f.write(data)
+    harden_acl(path)
 
 
 class DpapiSecret(FileSecret):
@@ -367,7 +479,24 @@ def read_grants(path: str | None = None, store=None) -> tuple[list[dict], str]:
     if data["counter"] != counter:
         return [], "stale"                      # an older (or newer) copy of the file
     return [g for g in data["grants"] if isinstance(g, dict)
-            and isinstance(g.get("project"), str) and isinstance(g.get("service"), str)], ""
+            and isinstance(g.get("project"), str) and isinstance(g.get("service"), str)
+            and not _expired(g)], ""
+
+
+def _expired(grant: dict, now: datetime.datetime | None = None) -> bool:
+    """A grant with an "expires" date in the past (round 13). A grant without one lasts
+    until it is revoked, as before; an "expires" that cannot be read counts as expired
+    (the safe answer)."""
+    stamp = grant.get("expires")
+    if stamp is None:
+        return False
+    try:
+        end = datetime.datetime.fromisoformat(str(stamp))
+        if end.tzinfo is None:
+            end = end.replace(tzinfo=datetime.timezone.utc)
+        return end <= (now or datetime.datetime.now(datetime.timezone.utc))
+    except (ValueError, TypeError, OverflowError):
+        return True
 
 
 def _replace(src: str, dst: str) -> None:
@@ -394,6 +523,7 @@ def _write(grants: list, path: str, key: bytes, counter: int) -> None:
         except OSError:
             pass
         _replace(tmp, path)
+        harden_acl(path)
     except BaseException:
         try:
             os.unlink(tmp)
@@ -555,7 +685,7 @@ def _commit(grants: list, path: str, store) -> None:
 
 def grant(project: str, service: str, history_ok: bool = False, path: str | None = None,
           env_file: str | None = None, store=None,
-          now: datetime.datetime | None = None) -> None:
+          now: datetime.datetime | None = None, days: int | None = None) -> None:
     path = path or consent_path()
     store = store or secret_store()
     with _FolderLock(os.path.dirname(path)):
@@ -566,6 +696,8 @@ def grant(project: str, service: str, history_ok: bool = False, path: str | None
                  "clipboard_history_ok": bool(history_ok), "granted": stamp.isoformat()}
         if env_file:
             entry["env_file"] = env_file
+        if days is not None and days > 0:
+            entry["expires"] = (stamp + datetime.timedelta(days=int(days))).isoformat()
         grants.append(entry)
         _commit(grants, path, store)
 

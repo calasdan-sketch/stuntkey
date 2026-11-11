@@ -68,10 +68,13 @@ pipx install stuntkey
 stuntkey try                   # practice first, with a pretend key (touches nothing real)
 stuntkey scan                  # step 0: finds keys already sitting in your project
 stuntkey get github            # opens the key page; you click Copy; stuntkey tests the key and saves it
-stuntkey install               # plug stuntkey into Claude, Cursor or VS Code, then restart that app
-stuntkey hook install          # stops Claude reading .env files
-stuntkey doctor                # health check; "AI tools: plugged into ..." means it is connected
+stuntkey fix                   # switches everything on: Claude Code's safety check, Claude Desktop, Cursor
+stuntkey status                # green, yellow or red for each part, and what to do about any that is not green
 ```
+
+Three commands do the whole setup. `stuntkey fix` lists what it will change, asks once, backs up every file it touches, and checks again. It also repairs the usual breakage later (for example after an upgrade moves the program), so if something stops working, run `stuntkey status`, then `stuntkey fix`. `stuntkey help` lists every command grouped by what you want to do, `stuntkey limits` lists what stuntkey does not protect you from, and `stuntkey uninstall` undoes the setup (your saved keys stay). `stuntkey update-check` says which version you have; it looks online only if you add `--online`. To get Tab completion in PowerShell: `stuntkey completion powershell`.
+
+If you prefer the single steps: `stuntkey install` (AI apps) and `stuntkey hook install` (Claude Code's safety check) do the same one at a time.
 
 The hook stops the agent running `stuntkey run`; you start your app yourself with `stuntkey run <svc> -- <your command>`.
 
@@ -157,7 +160,10 @@ stuntkey uses only Python's own standard library, and a test in the repository (
 - `get <service>` - one command: opens the key page, takes the key when you click Copy (then empties the clipboard), tests it, saves it in the keychain. If you are slow, it keeps waiting (up to 9 minutes in all) and says so. `--no-clipboard` uses hidden typing instead; `--no-browser` does not open the page. `--key-from-stdin` is for scripts and tests only: it reads the key from a pipe and refuses to run at a terminal. Any site works too: `stuntkey get example.com` saves the key untested (stuntkey does not know that site's API yet; `stuntkey add` teaches it).
 - `try` - a practice run (add, use, forget) with a pretend key, in a throwaway store; nothing real is touched. `--auto` skips the pauses.
 - `import <file>` - move keys you already have (a `.env` file, a Doppler or Bitwarden JSON export, a 1Password or Bitwarden CSV export) into the keychain. It shows only the names, asks first, and then tells you to delete the file (`--delete-source` does that for you). `--paste` takes pasted `NAME=value` lines instead of a file.
-- `install` / `uninstall` - plug stuntkey into (or remove it from) Claude Desktop, Cursor, Claude Code and VS Code.
+- `fix` - repair the usual problems by itself (safety check missing, program moved after an upgrade, AI app not plugged in), or switch everything on the first time. Asks once; backs up first. `doctor --fix` is the same after the health check; `--yes` skips the question.
+- `status` - one screen: green, yellow or red for the safety check, the AI apps, the keychain, the activity log and the web page's port, each with one next step. In a project folder it also lists the project's keys.
+- `help` - every command, grouped by what you want to do. `limits` - what stuntkey does not protect you from. `update-check` - your version (`--online` asks pypi.org for the newest). `completion powershell|bash` - Tab completion.
+- `install` / `uninstall` - plug stuntkey into (or remove it from) Claude Desktop, Cursor, Claude Code and VS Code. `uninstall` also takes the Claude Code safety check out of `~/.claude/settings.json` (other hooks stay; `--keep-hook` leaves it) and keeps a backup of every file it changes.
 - `doctor` - the health check above. `doctor --self` instead checks that the installed stuntkey files are unchanged since you installed them.
 - `start` - a short guided tour: what is connected and what to do next.
 - `start --simple` - for apps made with Lovable, Bolt, Replit or Vercel: one plain question at a time. It gets your key, shows where to paste it in your host's secret settings (never in a `VITE_` or `NEXT_PUBLIC_` setting), then checks your live site does not hand the key to visitors.

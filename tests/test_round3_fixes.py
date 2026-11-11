@@ -562,7 +562,8 @@ class TestKeychain(unittest.TestCase):
                 err = io.StringIO()
                 with redirect_stderr(err):
                     self.assertEqual(cli_mod.main(["run", "acme", "--", *prog]), 1)
-                self.assertIn(".env", err.getvalue())
+                # round 13: plain words, one next step (`stuntkey status`)
+                self.assertIn("no safe place", err.getvalue())
             # backend present, key missing -> helpful hint, exit 1
             with mock.patch.object(keychain_mod, "detect_backend",
                                    return_value=keychain_mod.LINUX), \

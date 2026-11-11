@@ -106,6 +106,20 @@ def _command_line(argv: list[str], platform: str | None = None) -> str:
     return " ".join(shlex.quote(a) for a in argv)
 
 
+def _toml_ok(text: str) -> bool:
+    """True when `text` parses as TOML (Python 3.11+). Older Pythons cannot check,
+    so the answer is True there and the existing plain-text handling applies."""
+    try:
+        import tomllib
+    except ImportError:
+        return True
+    try:
+        tomllib.loads(text)
+        return True
+    except Exception:       # noqa: BLE001 - any parse problem means: do not write
+        return False
+
+
 _TABLE = re.compile(r"^\[mcp_servers\.stuntkey\][^\n]*\n(?:(?!\[)[^\n]*\n?)*", re.M)
 
 
@@ -153,6 +167,12 @@ def cmd_setup_agent(args, out=None, home: str | None = None, cwd: str | None = N
                 what = "added the stuntkey entry to"
             if new == existing:
                 out.write(f"  {shown} already has this stuntkey entry; left alone.\n")
+            elif not _toml_ok(new):
+                # a table written another way (quoted, spaced, dotted, inline) would
+                # be declared twice and Codex would refuse to start: check, don't guess
+                out.write(f"  {shown} already mentions stuntkey in a form I cannot safely "
+                          f"edit; I will not touch it. Add this by hand:\n\n{block}\n")
+                return 1
             else:
                 _atomic_write(path, new.replace("\n", eol), bom)
                 out.write(f"  \u2713 {what} {shown} (your other entries are kept). Restart the client.\n")
