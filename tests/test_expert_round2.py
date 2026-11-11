@@ -59,7 +59,7 @@ class CliText(unittest.TestCase):
         rc, out, _ = run_cli()
         self.assertEqual(rc, 0)
         for word in ("stuntkey get", "stuntkey fix", "stuntkey status", "ask it",
-                     "Restart the AI app", "stuntkey help"):   # r13: three-step journey
+                     "Close and reopen your AI app", "stuntkey help"):   # r13: three-step journey
             self.assertIn(word, out)
 
     def test_typo_gets_did_you_mean(self):

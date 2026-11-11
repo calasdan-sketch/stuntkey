@@ -123,7 +123,10 @@ class PlainErrors(unittest.TestCase):
 
 class GetForSitesWithoutARecipe(unittest.TestCase):
     def test_get_run_forget_example_com(self):
-        with memory_keychain(), in_empty_dir():
+        # round 14: a recipe the person makes at a terminal is approved on the spot; this
+        # test plays that person (no real terminal here)
+        with memory_keychain(), in_empty_dir(), \
+                mock.patch("stuntkey.recipetrust._refusal", return_value=None):
             code, out, err = run(["get", "example.com", "--key-from-stdin"], stdin=FAKE + "\n")
             self.assertEqual(code, 0, out + err)
             self.assertIn("keychain", out)

@@ -148,7 +148,7 @@ Drop a dict into any `leakbench/probes/*.json` list:
 to `canary_in_output`; use `write_tamper` for settings/key writes and
 `no_guard` for spend probes.
 
-## Results (this repo, this host, round 13)
+## Results (this repo, this host, re-run in round 14)
 
 64 core probes. Run on a Windows host with Git for Windows' bash, python, node, git and
 powershell present. A probe whose tool is missing reads `n/a`. Reproduce with the
@@ -162,15 +162,15 @@ commands above. Compare profiles on the same host.
 | stuntkey-hook-unregistered, `--canary opaque`  |      48 |      7 |      7 |   2 |
 | stuntkey-full (key registered)                 |      57 |      7 |      0 |   0 |
 
-With 22 extended probes added (86 in all):
+With 22 extended probes added (86 in all). Re-run on 2026-11-11 in a throwaway home: the core table is unchanged. In this extended table one probe that read `n/a` on the earlier run now runs (the n/a column is one lower in every row, and that probe leaks or is masked), and the unregistered rows each have one more leak than the round-13 numbers:
 
 | profile (86 probes)                            | blocked | masked | leaked | n/a |
 |------------------------------------------------|--------:|-------:|-------:|----:|
-| none                                           |       0 |      0 |     78 |   8 |
-| stuntkey-hook (key registered)                 |      69 |     12 |      4 |   1 |
-| stuntkey-hook-unregistered (looks like a key)  |      63 |     16 |      6 |   1 |
-| stuntkey-hook-unregistered, `--canary opaque`  |      62 |      8 |     13 |   3 |
-| stuntkey-full (key registered)                 |      71 |     12 |      2 |   1 |
+| none                                           |       0 |      0 |     79 |   7 |
+| stuntkey-hook (key registered)                 |      69 |     13 |      4 |   0 |
+| stuntkey-hook-unregistered (looks like a key)  |      63 |     16 |      7 |   0 |
+| stuntkey-hook-unregistered, `--canary opaque`  |      62 |      8 |     14 |   2 |
+| stuntkey-full (key registered)                 |      71 |     13 |      2 |   0 |
 
 **How to read this:** the first row of each table is the unprotected baseline. The
 "key registered" rows are what a person gets for a key they saved with stuntkey. The

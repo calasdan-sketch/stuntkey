@@ -235,18 +235,63 @@ def _client_items() -> list:
                 "Run `stuntkey fix`, then restart that app.",
                 lambda n=apps: fix_clients(n),
                 "plug stuntkey into " + ", ".join(clients.LABELS[n] for n in apps)))
-        else:
+        elif not _claude_code_seen():
             out.append(Item(
                 "client:none", YELLOW,
-                "No AI app was found to plug stuntkey into (looked for Claude Desktop "
-                "and Cursor).",
-                "If you use Claude Code, open your project folder and run "
-                "`stuntkey install claude-code`."))
+                "No AI app was found to plug stuntkey into (looked for Claude Desktop, "
+                "Cursor and Claude Code).",
+                "Install one of them, then run `stuntkey fix`."))
     elif not (broken or outdated):
         out.append(Item("client:ok", GREEN,
                         "stuntkey is plugged into " + ", ".join(
                             clients.LABELS.get(n, n) for n in found) + "."))
+    out += _claude_code_items()
     return out
+
+
+def _claude_code_seen() -> bool:
+    from . import claudecode
+    return claudecode.detected()
+
+
+def fix_claude_code() -> None:
+    """Plug stuntkey into Claude Code for every folder (its own command does
+    the writing). Raises with a plain sentence when it cannot."""
+    from . import claudecode, undo
+    ok, why = claudecode.add_user_scope()
+    if not ok:
+        raise RuntimeError(why)
+    undo.note_claude_user()
+
+
+def _claude_code_items() -> list:
+    """Claude Code, all folders. Only for a person who uses Claude Code (its
+    folder exists)."""
+    from . import claudecode
+    if not claudecode.detected():
+        return []
+    state = claudecode.state()
+    if state == "ok":
+        return [Item("claude-code:user", GREEN,
+                     "stuntkey is plugged into Claude Code for all your folders.")]
+    cli = claudecode.cli_path()
+    if state == "unreadable":
+        return [Item("claude-code:user", YELLOW,
+                     "Claude Code's own settings file (~/.claude.json) cannot be read, "
+                     "so I left it alone.",
+                     "Open it in Notepad and fix or delete it, then run `stuntkey fix`.")]
+    what = ("is out of date" if state == "outdated" else "is not plugged into Claude Code "
+            "for all your folders (only a folder that has its own .mcp.json)")
+    if cli is None:
+        return [Item("claude-code:user", YELLOW,
+                     f"stuntkey {what}, and I cannot find the `claude` program to do it "
+                     "for you.",
+                     "Type this one command: " + claudecode.one_command())]
+    return [Item("claude-code:user", YELLOW,
+                 f"stuntkey {what}.",
+                 "Run `stuntkey fix`, then close and reopen Claude Code.",
+                 fix_claude_code,
+                 "plug stuntkey into Claude Code for all your folders")]
 
 
 def _keychain_item() -> Item:
@@ -323,6 +368,8 @@ def _home_items() -> list:
 
 
 def _port_item(port: int) -> Item:
+    """Only a note, never a warning: the port matters only to a person who
+    opens the stuntkey web page (`stuntkey serve`)."""
     s = socket.socket()
     s.settimeout(0.3)
     try:
@@ -332,11 +379,14 @@ def _port_item(port: int) -> Item:
     finally:
         s.close()
     if busy:
-        return Item("port", YELLOW,
-                    f"Something is already using port {port}. Fine if it is your own "
-                    "stuntkey window; otherwise the web page cannot open on that number.",
-                    f"Run `stuntkey serve --port {port + 1}` to use another number.")
-    return Item("port", GREEN, f"The web page's port ({port}) is free.")
+        it = Item("port", GREEN,
+                  f"Port {port} is in use by something else. This only matters if you "
+                  f"use the stuntkey web page; then run `stuntkey serve --port {port + 1}`.")
+        it.quiet = False
+        return it
+    it = Item("port", GREEN, f"The web page's port ({port}) is free.")
+    it.quiet = True             # nothing to say: left out of the screen
+    return it
 
 
 def _files_item() -> Item | None:
@@ -388,7 +438,9 @@ def collect(catalog: dict | None = None, port: int = DEFAULT_PORT) -> list:
     items += _client_items()
     items += _home_items()
     items.append(_keys_item(catalog))
-    items.append(_port_item(port))
+    port_item = _port_item(port)
+    if not getattr(port_item, "quiet", False):
+        items.append(port_item)
     f = _files_item()
     if f:
         items.append(f)
@@ -471,6 +523,39 @@ def cmd_fix(args, catalog=None, out=None, ask=None, collector=None) -> int:
         except (EOFError, KeyboardInterrupt, OSError):
             out.write("  Not changed.\n")
             return 0
+    from . import undo
+    change = undo.begin("fix")
+    try:
+        snapshot_files(change)
+        failed = apply_fixes(fixable, out)
+    finally:
+        change.commit()
+    out.write("\n  Now I will check again.\n")
+    after = (collector or collect)(catalog)
+    out.write(render(after))
+    if any(i.key.startswith(("hook", "client", "claude-code")) for i in fixable) and failed == 0:
+        out.write("  Close and reopen Claude Code and your other AI apps so they pick "
+                  "this up. Changed your mind? `stuntkey undo`.\n")
+    return 1 if failed or any(i.level == RED for i in after) else 0
+
+
+def snapshot_files(change) -> None:
+    """Copy the files a fix may change, so `stuntkey undo` can put them back."""
+    from . import clients, hook
+    try:
+        change.snapshot_file(hook.user_settings_path())
+        proj = hook.project_settings_path()
+        if os.path.exists(proj):
+            change.snapshot_file(proj)
+        for path, _key in clients.targets().values():
+            if os.path.exists(path) or path:
+                change.snapshot_file(path)
+    except Exception:           # noqa: BLE001 - a missing snapshot must not stop a fix
+        pass
+
+
+def apply_fixes(fixable: list, out) -> int:
+    """Run each repair once (several items may share one). Returns how many failed."""
     failed = 0
     done_fixers = []
     for i in fixable:
@@ -483,13 +568,8 @@ def cmd_fix(args, catalog=None, out=None, ask=None, collector=None) -> int:
         except Exception as e:      # noqa: BLE001
             failed += 1
             out.write(f"  Could not do this one ({_p(i.fix_text or i.key)}): "
-                      f"{_p(getattr(e, 'strerror', None) or e)[:200]}\n")
-    out.write("\n  Now I will check again.\n")
-    after = (collector or collect)(catalog)
-    out.write(render(after))
-    if any(i.key.startswith(("hook", "client")) for i in fixable) and failed == 0:
-        out.write("  Restart Claude Code and your other AI apps so they pick this up.\n")
-    return 1 if failed or any(i.level == RED for i in after) else 0
+                      f"{_p(getattr(e, 'strerror', None) or e)[:300]}\n")
+    return failed
 
 
 # ----------------------------------------------------------------- limits
@@ -551,14 +631,28 @@ def cmd_limits(args=None, out=None) -> int:
 # ----------------------------------------------------------------- help
 
 GROUPS = [
-    ("Get started", ["start", "try", "get", "import", "fix"]),
-    ("Use a key", ["run", "call", "setup", "serve", "list", "rotate"]),
+    ("Get started", ["setup", "start", "try", "get", "import", "fix", "test"]),
+    ("Use a key", ["run", "call", "serve", "list", "rotate", "recipe"]),
     ("Keep keys out of your AI's sight", ["install", "hook", "scan", "scan-git",
                                            "skill", "setup-agent", "mcp", "wrap"]),
     ("Check that it is working", ["status", "doctor", "overview", "audit", "selftest",
-                                   "limits", "about", "update-check"]),
-    ("Undo, stop, or recover", ["uninstall", "forget", "stop", "resume", "panic",
-                                 "migrate"]),
+                                   "limits", "about", "update-check", "sessions"]),
+    ("Undo, stop, or recover", ["undo", "uninstall", "forget", "stop", "resume", "panic",
+                                 "revoke", "migrate"]),
+]
+
+# The few commands a person uses every day. Shown by plain `stuntkey help`;
+# everything else is behind `stuntkey help --all`. Fixed text, so showing
+# this does not need to build the whole command parser.
+EVERYDAY = [
+    ("setup", "Do it all in one go: find keys, protect them, switch it on, test it."),
+    ("get", "Add a key: copy it on the service's page; I name it, test it, save it."),
+    ("test", "Check that it all works: one line, PASS or FAIL, and what to do next."),
+    ("status", "One screen: is everything fine? Green, yellow or red."),
+    ("fix", "Repair the usual problems by itself (asks once)."),
+    ("undo", "Put back what setup, fix or get changed last."),
+    ("run", "Start a program that needs a key. The key stays hidden."),
+    ("scan", "Find keys lying around in files your AI can read."),
 ]
 
 
@@ -569,6 +663,24 @@ def _help_texts(parser) -> dict:
             for c in a._choices_actions:
                 texts[c.dest] = c.help or ""
     return texts
+
+
+def render_everyday() -> str:
+    """The short help: eight commands, in plain words."""
+    lines = ["", "  stuntkey: let your AI use your API keys without holding them.", "",
+             "  The commands you use every day", ""]
+    for name, text in EVERYDAY:
+        lines.append(_row(name, text))
+    lines += ["", "  Undo, stop, or recover",
+              "    Take back the last change: stuntkey undo (shown above).",
+              "    Remove one key: stuntkey forget <service>. Take it all out: stuntkey uninstall (your keys stay).",
+              "    Switch everything off: stuntkey stop (stuntkey resume turns it back on).",
+              "    Leaked a key: stuntkey panic <service>."]
+    lines += ["", "  First time? Run `stuntkey setup`. It does everything.",
+              "  `stuntkey help --all` lists every command (about 50).",
+              "  `stuntkey help <command>` says more about one.",
+              "  What stuntkey does NOT protect against: `stuntkey limits`."]
+    return "\n".join(lines) + "\n"
 
 
 def render_help(parser) -> str:

@@ -38,6 +38,15 @@ MCP "first use" window and the "3 refusals" stop):
   * The first-time host and every refusal leave a plain line in the notices
     file (caps.notice) that `stuntkey caps show` prints.
 
+PLACEHOLDERS AND SESSIONS (round 14): each service gets its OWN placeholder per run,
+sk_ph_<service>_<random> (mint_tokens). It is accepted only for that service; used for
+another one it is refused and written to the activity log. Every run also has a signed
+session file (stuntkey/session.py) with a time limit (`--ttl`, default 8 hours) that
+`stuntkey revoke` and `stuntkey sessions` manage; `--max-calls N` caps a run. What a
+placeholder does NOT prevent: a program running as you can still ask the Windows
+password vault for a key itself, or delete the sessions folder. It stops a leaked
+environment from working for other services, after the run, or once revoked.
+
 What the program gets in its environment: an ALLOW-LIST (see ALLOW_ENV), not a
 copy of yours. PATH, Windows system folders, home and temp folders, language
 and terminal settings, Python/Node basics and certificate-file settings pass;
@@ -83,6 +92,7 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler
 
 from . import broker, caps, httpd
+from . import session as session_mod
 from . import policy as route
 from . import recipes as recipes_mod
 from . import validate as _v
@@ -308,26 +318,44 @@ def child_env(catalog: dict, base: str, token: str, environ=None, keep=(),
         old = ""
     _set_name(env, "NO_PROXY", old if "127.0.0.1" in old
               else (old + "," if old else "") + LOOPBACK)
+    def tok(service):
+        return token.get(service) if isinstance(token, dict) else token
     for service, (var, suffix) in ENV.items():
-        if service in catalog:
+        if service in catalog and tok(service):
             env[var] = base + suffix
             for key_var in recipes_mod.env_vars(catalog[service]):
-                env[key_var] = token
+                env[key_var] = tok(service)
     for var, (service, suffix) in (maps or {}).items():
         env[var] = f"{base}/{service}{suffix}"
         for key_var in recipes_mod.env_vars(catalog[service]):
-            env[key_var] = token
+            if tok(service):
+                env[key_var] = tok(service)
     if generic:
         for service, recipe in catalog.items():
-            if proxyable(recipe):
+            if proxyable(recipe) and tok(service):
                 env[f"STUNTKEY_URL_{_slug_var(service)}"] = f"{base}/{service}"
                 for key_var in recipes_mod.env_vars(recipe):
-                    env[key_var] = token
+                    env[key_var] = tok(service)
     if tunnel:
         port = base.rsplit(":", 1)[-1]
         _pop_names(env, "HTTPS_PROXY")
-        _set_name(env, "HTTPS_PROXY", f"http://stuntkey:{token}@127.0.0.1:{port}")
+        pw = token.get(session_mod.TUNNEL) if isinstance(token, dict) else token
+        _set_name(env, "HTTPS_PROXY", f"http://stuntkey:{pw}@127.0.0.1:{port}")
     return env
+
+
+def mint_tokens(catalog: dict) -> dict:
+    """One placeholder per service for this run, form sk_ph_<service>_<random>,
+    plus one for the tunnel. Each is only the proxy's password for THAT service:
+    a program that leaks its environment leaks nothing that works for another
+    service, and nothing real. The real key is never involved."""
+    names = {s for s, r in catalog.items() if proxyable(r)} | {s for s in ENV if s in catalog}
+    out = {}
+    for s in sorted(names):
+        slug = "".join(c for c in s.lower() if c.isalnum()) or "svc"
+        out[s] = f"sk_ph_{slug}_{secrets.token_urlsafe(24)}"
+    out[session_mod.TUNNEL] = f"sk_ph_tunnel_{secrets.token_urlsafe(24)}"
+    return out
 
 
 def _clean_host(host: str) -> str:
@@ -436,10 +464,36 @@ def _given_token(headers) -> str:
 
 def make_proxy(catalog: dict, get_values, token: str, policy: broker.Policy,
                audit=None, port: int = 0, resolver=None, connect=None,
-               timeout: float = UPSTREAM_TIMEOUT, tunnel=None, tunnel_connect=None):
-    """`tunnel`: {host: service-or-None} turns on the CONNECT tunnel for exactly
-    those hosts (see tunnel_hosts); None leaves it off. `tunnel_connect(ip, port)`
-    is for tests only."""
+               timeout: float = UPSTREAM_TIMEOUT, tunnel=None, tunnel_connect=None,
+               session=None):
+    """`token`: one password for every service (a plain string: older callers and
+    tests) or {service: placeholder} from mint_tokens, where each placeholder is
+    accepted only for its own service (and the TUNNEL entry only for CONNECT; a
+    service placeholder is accepted by CONNECT only for that service's hosts).
+    `tunnel`: {host: service-or-None} turns on the CONNECT tunnel for exactly
+    those hosts (see tunnel_hosts); None leaves it off. `session`: a
+    session.Guard checked on every request (time up, `stuntkey revoke`).
+    `tunnel_connect(ip, port)` is for tests only."""
+    table = dict(token) if isinstance(token, dict) else {"*": token}
+
+    def who(given: str):
+        """Which entry of the table this password belongs to, or None. Every
+        entry is compared (no early exit)."""
+        found, raw = None, given.encode("utf-8", "replace")
+        for name, tok in table.items():
+            if hmac.compare_digest(raw, tok.encode()):
+                found = name
+        return found
+
+    def refuse_wrong(service, method, host="(none)"):
+        if audit is not None:
+            try:
+                audit.write({"service": service or "(tunnel)", "method": method,
+                             "host": _clean_host(host), "path": "", "status": 0, "bytes": 0,
+                             "result": "refused-wrong-placeholder", "ms": 0})
+            except Exception:
+                pass
+
     class Handler(BaseHTTPRequestHandler):
         server_version = "stuntkey"
         sys_version = ""
@@ -448,21 +502,59 @@ def make_proxy(catalog: dict, get_values, token: str, policy: broker.Policy,
         def log_message(self, *a):
             pass
 
+        def _drain(self) -> None:
+            """Read (and throw away) a small unread request body before
+            answering a refusal, so the client sees our message and not a
+            'connection reset' while it is still sending."""
+            try:
+                n = int((self.headers.get("Content-Length") or "0").strip() or 0)
+                if 0 < n <= 1_000_000 and self.headers.get("Transfer-Encoding") is None:
+                    self.connection.settimeout(2)
+                    left, end = n, time.monotonic() + 2
+                    while left > 0 and time.monotonic() < end:
+                        chunk = self.rfile.read(min(left, 65536))
+                        if not chunk:
+                            break
+                        left -= len(chunk)
+            except (ValueError, OSError):
+                pass
+
         def _fail(self, code: int, message: str) -> None:
             data = json.dumps({"error": {"type": "stuntkey", "message": message}}).encode()
             self.send_response(code)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(data)))
             self.send_header("Cache-Control", "no-store")
+            self.send_header("Connection", "close")
             self.end_headers()
             self.wfile.write(data)
+            self.close_connection = True
 
         def _handle(self):
             if not httpd.local_only(self.headers, self.server.server_address[1]):
                 return self._fail(403, "forbidden")
-            if not hmac.compare_digest(_given_token(self.headers).encode(), token.encode()):
-                return self._fail(401, "unauthorized: use the key stuntkey proxy gave you")
             service, _, rest = self.path.lstrip("/").partition("/")
+            given = _given_token(self.headers)
+            holder = who(given)
+            if holder is None:
+                self._drain()
+                return self._fail(401, "unauthorized: this key is not one this stuntkey run "
+                                       "gave out (an earlier run may have ended or been "
+                                       "switched off). Run your program again through "
+                                       "`stuntkey proxy` to get a fresh one.")
+            if holder not in ("*", service):
+                self._drain()
+                refuse_wrong(service, self.command)
+                what = ("the tunnel's password" if holder == session_mod.TUNNEL
+                        else f"the placeholder for '{holder}'")
+                return self._fail(403, f"this is {what}, not a key for '{service[:40]}'; it "
+                                       "was refused. Each service has its own placeholder.")
+            if session is not None:
+                try:
+                    session.check(service if service in catalog else None)
+                except session_mod.SessionEnded as e:
+                    self._drain()
+                    return self._fail(401, str(e))
             recipe = catalog.get(service)
             if not recipe:
                 return self._fail(404, "unknown service; the path starts with /<service>/")
@@ -505,7 +597,8 @@ def make_proxy(catalog: dict, get_values, token: str, policy: broker.Policy,
             try:
                 scheme, _, blob = (self.headers.get("Proxy-Authorization") or "").partition(" ")
                 given = base64.b64decode(blob.strip(), validate=True).decode("utf-8").partition(":")[2]
-                if scheme.lower() != "basic" or not hmac.compare_digest(given.encode(), token.encode()):
+                holder = who(given)
+                if scheme.lower() != "basic" or holder is None:
                     raise ValueError
             except (ValueError, UnicodeDecodeError):
                 self.send_response(407)
@@ -531,6 +624,16 @@ def make_proxy(catalog: dict, get_values, token: str, policy: broker.Policy,
                                        "host list, so the connection was not made. A person "
                                        "can add it with --allow-host.")
             service = tunnel[host]
+            if holder not in ("*", session_mod.TUNNEL) and holder != service:
+                refuse_wrong(service, "CONNECT", host)
+                return self._fail(403, f"this is the placeholder for '{holder}', which is not "
+                                       f"for {_clean_host(host)}; it was refused.")
+            if session is not None:
+                try:
+                    session.check(None if holder in ("*", session_mod.TUNNEL) else holder)
+                except session_mod.SessionEnded as e:
+                    note("refused")
+                    return self._fail(401, str(e))
             try:
                 if os.path.lexists(caps.stop_path(policy.limits_home())):
                     raise broker.BrokerError(caps.STOPPED, 5)
@@ -586,6 +689,8 @@ def make_proxy(catalog: dict, get_values, token: str, policy: broker.Policy,
                     raise broker.BrokerError(
                         "The computer's password vault did not answer, so no call was "
                         "made. Unlock it (sign in to Windows again) and retry.", 5) from None
+                if isinstance(e, remote.RecipeNotApproved):
+                    raise broker.BrokerError(str(e), 5) from None
                 raise broker.BrokerError(f"no key is stored for '{service}'. Run "
                                          f"`stuntkey get {service}` first.", 5) from None
             spec = dict(recipe["validate"], url=url)
@@ -770,7 +875,18 @@ def add_parsers(sub) -> None:
                          "(for example api.github.com). Repeat for more.")
     pr.add_argument("--port", type=int, default=0,
                     help="Use this port for the proxy (default: any free one).")
+    pr.add_argument("--ttl", default=None, metavar="TIME",
+                    help="How long this run may last, like 30m, 2h or 1d (default 8h; "
+                         "0 = no limit). When time is up the proxy refuses every call.")
+    pr.add_argument("--max-calls", dest="max_calls", type=int, default=None, metavar="N",
+                    help="Stop after N calls through this run (all services together).")
     pr.add_argument("command", nargs=argparse.REMAINDER)
+    rv = sub.add_parser("revoke", help="Switch off running proxy runs at once "
+                                       "(`--all`, or one service).")
+    rv.add_argument("service", nargs="?", default=None, help="Cut off just this service.")
+    rv.add_argument("--all", action="store_true", help="End every open proxy run.")
+    sub.add_parser("sessions", help="List the open proxy runs (services, time left, "
+                                    "process number; never placeholders).")
     cp = sub.add_parser("caps", help="Show or set per-key call and token caps.")
     cps = cp.add_subparsers(dest="caps_cmd", required=True)
     cps.add_parser("show", help="Caps and today's usage.")
@@ -788,7 +904,7 @@ def add_parsers(sub) -> None:
     po.add_argument("policy_cmd", choices=["show", "approve"])
 
 
-COMMANDS = {"proxy", "caps", "stop", "resume", "policy"}
+COMMANDS = {"proxy", "caps", "stop", "resume", "policy", "revoke", "sessions"}
 
 
 def dispatch(args, catalog: dict):
@@ -806,6 +922,10 @@ def dispatch(args, catalog: dict):
             return caps.cmd_resume(home, approve_mod.ask_person)
         if args.cmd == "policy":
             return _cmd_policy(args.policy_cmd, home, approve_mod.ask_person)
+        if args.cmd == "revoke":
+            return session_mod.cmd_revoke(args, home)
+        if args.cmd == "sessions":
+            return session_mod.cmd_sessions(args, home)
     except broker.BrokerError as e:
         print(f"error: {e}", file=sys.stderr)
         return e.code
@@ -859,45 +979,115 @@ def cmd_proxy(catalog: dict, args, home: str) -> int:
     except ValueError as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
-    token = "ok-" + secrets.token_urlsafe(24)
+    try:
+        given_ttl = getattr(args, "ttl", None)
+        usable = isinstance(given_ttl, (str, int)) and not isinstance(given_ttl, bool)
+        ttl = (session_mod.parse_ttl(given_ttl) if usable and given_ttl != ""
+               else session_mod.DEFAULT_TTL)
+        max_calls = getattr(args, "max_calls", None)
+        if not isinstance(max_calls, int) or isinstance(max_calls, bool):
+            max_calls = None            # not given (a test double may hold anything)
+        elif max_calls < 1:
+            raise ValueError("--max-calls wants a whole number of 1 or more")
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    tokens = mint_tokens(catalog)
     # approve=ask_person: non-AI reads and writes ask (see _ask_person)
-    policy = broker.Policy(max_calls=MAX_CALLS, max_per_minute=PER_MINUTE,
-                           approve=approve_mod.ask_person)
+    policy = RunPolicy(max_calls=min(max_calls or MAX_CALLS, MAX_CALLS),
+                       run_cap=max_calls or 0, max_per_minute=PER_MINUTE,
+                       approve=approve_mod.ask_person)
     audit = broker.AuditLog(os.path.join(home, "audit.log"))
     port = getattr(args, "port", 0)
     port = port if isinstance(port, int) and not isinstance(port, bool) else 0
     try:
+        guard = session_mod.create(home, tokens, ttl, max_calls or 0)
+    except (session_mod.SessionError, OSError) as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    try:
         srv = make_proxy(catalog, lambda r: remote.collect_values(r, args.env_file),
-                         token, policy, audit, port=port, tunnel=hosts)
+                         tokens, policy, audit, port=port, tunnel=hosts, session=guard)
     except httpd.PortBusy as e:
+        guard.close()
         print(f"error: {e}", file=sys.stderr)
         return 1
     base = f"http://127.0.0.1:{srv.server_address[1]}"
-    env = child_env(catalog, base, token, keep=keep, generic=generic, maps=maps,
+    env = child_env(catalog, base, tokens, keep=keep, generic=generic, maps=maps,
                     tunnel=use_tunnel)
-    if args.print_env or not command:
-        # only what stuntkey itself sets: the proxy address and the session password
-        # flush=True: when piped, Python buffers stdout, so the variables would
-        # never appear while the proxy keeps running
-        for var, value in env.items():
-            if base in value or token in value:
-                print(f"{var}={value}", flush=True)
-        print("stuntkey proxy is open (other services: /<service>/...). These "
-              "values are not your keys. Ctrl+C to close.\n"
-              "NOTICE: AI chat/message calls and the model list go through without a "
-              "question. Anything else (for example GET /github/user) opens a "
-              "permission window the first time for each service, and after 3 'no' "
-              "answers nothing more is allowed. If no window can open, it is refused.",
-              file=sys.stderr, flush=True)
-        httpd.serve_forever(srv)
-        return 0
-    httpd.start_background(srv)
     try:
-        return subprocess.call(command, env=env)
-    except OSError as e:
-        name = command[0] if re.fullmatch(r"[\w.:\\/ -]{1,80}", command[0]) else "the program"
-        print(f"error: could not start {name!r}: {e.strerror or e}", file=sys.stderr)
-        return 127
+        if args.print_env or not command:
+            # only what stuntkey itself sets: the proxy address and the placeholders
+            # flush=True: when piped, Python buffers stdout, so the variables would
+            # never appear while the proxy keeps running
+            for var, value in env.items():
+                if base in value or any(t in value for t in tokens.values()):
+                    print(f"{var}={value}", flush=True)
+            when = ("has no time limit" if not ttl else
+                    f"ends in {session_mod.span_text(ttl)}")
+            print("stuntkey proxy is open (other services: /<service>/...). These "
+                  "values are not your keys, and each placeholder works for its own "
+                  f"service only. This run {when}"
+                  + (f" or after {max_calls} calls" if max_calls else "")
+                  + "; `stuntkey revoke --all` ends it at once. Ctrl+C to close.\n"
+                  "NOTICE: AI chat/message calls and the model list go through without a "
+                  "question. Anything else (for example GET /github/user) opens a "
+                  "permission window the first time for each service, and after 3 'no' "
+                  "answers nothing more is allowed. If no window can open, it is refused. "
+                  "A placeholder does not stop a program running as you from asking the "
+                  "Windows password vault for a key itself.",
+                  file=sys.stderr, flush=True)
+            watch(srv, guard)
+            httpd.serve_forever(srv)
+            return 0
+        httpd.start_background(srv)
+        try:
+            return subprocess.call(command, env=env)
+        except OSError as e:
+            name = command[0] if re.fullmatch(r"[\w.:\\/ -]{1,80}", command[0]) else "the program"
+            print(f"error: could not start {name!r}: {e.strerror or e}", file=sys.stderr)
+            return 127
+        finally:
+            srv.shutdown()
+            srv.server_close()
     finally:
-        srv.shutdown()
-        srv.server_close()
+        guard.close()
+
+
+class RunPolicy(broker.Policy):
+    """broker.Policy with a plain message for `--max-calls`: when the person's
+    own limit for this run is reached, say so (not 'restart the AI app')."""
+
+    def __init__(self, *a, run_cap: int = 0, **kw):
+        super().__init__(*a, **kw)
+        self.run_cap = run_cap
+
+    def count(self, now=None) -> None:
+        with self.lock:
+            if self.run_cap and self.calls >= self.run_cap:
+                msg = (f"This run's limit of {self.run_cap} calls (--max-calls) is used up, "
+                       "so no call was made. Run `stuntkey proxy` again to start a new run.")
+                try:
+                    caps.notice(self.limits_home(), msg)
+                except Exception:
+                    pass
+                raise broker.BrokerError(msg, 5)
+            super().count(now)
+
+
+def watch(srv, guard, interval: float = 2.0):
+    """For `--print-env` runs: when the session ends (time up, `stuntkey
+    revoke`), close the proxy so the command exits cleanly."""
+    import threading
+    stop = threading.Event()
+
+    def loop():
+        while not stop.wait(interval):
+            why = guard.ended()
+            if why:
+                print(session_mod.ended_text(why), file=sys.stderr, flush=True)
+                srv.shutdown()
+                return
+    t = threading.Thread(target=loop, daemon=True)
+    t.start()
+    return stop

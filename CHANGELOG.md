@@ -2,6 +2,33 @@
 
 ## 0.9.4 (unreleased)
 
+Round 14. In plain words:
+
+**Install on Windows without knowing Python**
+- New `packaging/windows/install.ps1`: finds Python 3.10+, offers to install Python 3.12 with winget
+  (asks once, no admin), installs pipx, installs stuntkey with pipx (or from a local wheel with
+  `-Wheel`), then starts the guided first run. `-WhatIf` prints the plan and changes nothing. It
+  prints every command it runs and talks only to PyPI, winget and python.org.
+- New `packaging/make_release.py`: builds the wheel, the `.pyz` and the Windows zip into a fresh
+  folder, writes `SHA256SUMS`, and fills a COPY of the winget manifest with the real hash. The
+  committed manifest keeps its placeholder. A test fails on a placeholder when run with
+  `SK_RELEASE_CHECK=1`.
+- New `docs/SECURITY_REVIEW_BRIEF.md`: a one-page scope for an outside reviewer. The release checklist
+  now has a rollback section and the review plan. Still no independent review.
+
+**Tests**
+- Tests can be marked `slow`; `pytest --fast` (or `-m "not slow"`) skips them.
+- Leak benchmark re-run (core numbers unchanged; one extended probe that read `n/a` now runs).
+
+**Also in this round (added by other work in the same tree; the files exist)**
+- Recipes made in your own recipes folder are used only after a person approves them
+  (`stuntkey/recipetrust.py`).
+- Proxy runs can expire and be switched off, and each holds no key (`stuntkey/session.py`).
+- `stuntkey undo` puts back the last change that setup, fix or get made (`stuntkey/undo.py`).
+- `stuntkey get` with no name shows a short menu and recognises a key by its shape
+  (`stuntkey/getmenu.py`); one command plugs stuntkey into Claude Code for all folders
+  (`stuntkey/claudecode.py`).
+
 Round-13 QA and integration work. In plain words:
 
 **Import (`stuntkey import`)**

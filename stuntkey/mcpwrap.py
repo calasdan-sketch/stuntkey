@@ -623,7 +623,8 @@ def wrap_one(server: Server, text: str, strict: bool, catalog: dict, *, dry_run:
     try:
         for slug, recipe, _s in p["groups"]:
             if recipe:
-                recipes_mod.save_recipe(recipe)
+                from . import remote as _remote     # the person said yes at a terminal
+                _remote.recipe_save_and_approve(recipe)
                 if slug not in recipes_mod.load_recipes():
                     raise WrapError(f"the recipe '{slug}' was not accepted")
         for slug, _r, secs in p["groups"]:

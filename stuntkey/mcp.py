@@ -34,6 +34,7 @@ from . import capture as capture_mod
 from . import dialog as dialog_mod
 from . import publicapis as pa_mod
 from . import recipes as recipes_mod
+from . import recipetrust as recipetrust_mod
 
 SERVER_INFO = {"name": "stuntkey", "version": __version__}
 
@@ -204,6 +205,9 @@ def _call_api(catalog: dict, args: dict) -> dict:
     if not recipe:
         return fail("Unknown service '%s'. Call list_services to see the names."
                     % str(args.get("service"))[:40])
+    unapproved = remote.recipe_use_problem(recipe)      # made here, not approved by the person
+    if unapproved:
+        return fail(unapproved)
     try:
         query = json.loads(args["query_json"]) if args.get("query_json") else None
         body = json.loads(args["body_json"]) if args.get("body_json") else None
@@ -234,6 +238,8 @@ def _call_api(catalog: dict, args: dict) -> dict:
                              query, body, policy=_session_policy(), audit=audit,
                              max_chars=max_chars)
     except broker.BrokerError as e:
+        return fail(str(e))
+    except remote.RecipeNotApproved as e:
         return fail(str(e))
     except remote.RemoteError as e:
         if "did not answer" in str(e):
@@ -287,6 +293,16 @@ def _argument_problem(schema: dict, args: dict) -> str | None:
             return (f"argument '{name}' must be "
                     f"{_TYPE_WORDS.get(json_type, json_type)}")
     return None
+
+
+def _recipe_held(recipe) -> str | None:
+    """Plain words when `recipe` (made on this computer) is not approved yet, else
+    None: an AI tool is told nothing of what an unapproved recipe says, only that
+    the person has to look at it."""
+    if not recipe:
+        return None
+    from . import remote
+    return remote.recipe_use_problem(recipe)
 
 
 def _public_recipe(recipe: dict) -> dict:
@@ -412,7 +428,9 @@ def handle(request, catalog: dict[str, dict],
     """Every answer is passed through agent.guard_text on the way out (see
     agent.py): if a secret value this process can reach ever got into a
     reply, it is blanked."""
-    response = _handle(request, catalog, pa_loader, opener, cwd)
+    # Whatever runs inside here is an AI tool's call: it can never approve a recipe.
+    with recipetrust_mod.agent_context():
+        response = _handle(request, catalog, pa_loader, opener, cwd)
     if response is not None and "result" in response:
         for item in response["result"].get("content", []) if isinstance(response["result"], dict) else []:
             if isinstance(item, dict) and isinstance(item.get("text"), str):
@@ -528,9 +546,13 @@ def _handle(request, catalog: dict[str, dict],
                 connected = _has(r)
                 if only and not connected:
                     continue
-                services.append({"service": r["service"], "display": r["display"],
-                                 "env_vars": recipes_mod.env_vars(r),
-                                 "connected": connected})
+                entry = {"service": r["service"], "display": r["display"],
+                         "env_vars": recipes_mod.env_vars(r),
+                         "connected": connected}
+                flagged = _remote.recipe_flag(r)
+                if flagged:
+                    entry["approval"] = flagged + " (the person must run `stuntkey recipe approve %s`)" % r["service"]
+                services.append(entry)
             return ok({"content": [{"type": "text",
                                     "text": json.dumps(services)}]})
         if name == "get_recipe":
@@ -542,6 +564,10 @@ def _handle(request, catalog: dict[str, dict],
                         sorted(catalog),)})
                 return ok({"content": [{"type": "text", "text": err_text}],
                            "isError": True})
+            held = _recipe_held(recipe)
+            if held:
+                return ok({"content": [{"type": "text", "text": json.dumps(
+                    {"service": recipe["service"], "approval": held})}], "isError": True})
             hint = ("\n\nTo complete the connection call the capture_key tool "
                     f"(service={recipe['service']}) and click the vendor's Copy button; "
                     "if it is unavailable, ask the person to run "
@@ -550,6 +576,11 @@ def _handle(request, catalog: dict[str, dict],
             return ok({"content": [{"type": "text",
                                     "text": json.dumps(
                                         _public_recipe(recipe)) + hint}]})
+        if name in ("request_connect", "capture_key"):
+            held = _recipe_held(catalog.get(agent_mod.clean_slug(args.get("service")) or ""))
+            if held:
+                return ok({"content": [{"type": "text", "text": json.dumps(
+                    {"error": held})}], "isError": True})
         if name == "request_connect":
             answer = agent_mod.request_connect(
                 args.get("service"), catalog, bool(args.get("open_key_page")),
@@ -635,7 +666,8 @@ def serve(catalog: dict[str, dict] | None = None,
     """Run the server; when it ends for any reason, stop an armed key capture
     and leave nothing on the clipboard."""
     try:
-        return _serve(catalog, pa_loader, stdin, stdout)
+        with recipetrust_mod.agent_context():      # this whole process serves an AI tool
+            return _serve(catalog, pa_loader, stdin, stdout)
     finally:
         capture_mod.shutdown()
 

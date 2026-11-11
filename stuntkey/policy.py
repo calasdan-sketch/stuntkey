@@ -22,11 +22,12 @@ import json
 import os
 import urllib.parse
 
-from .broker import MAX_REVIEW, BrokerError
+from .broker import BrokerError
 
 FILE = "stuntkey.policy"
 LEGACY_FILE = "oathkey.policy"     # 0.8's name: used when ours is absent
 MAX_BYTES = 64_000
+POLICY_REVIEW = 900       # longest policy file a person is asked to read in one window
 
 
 def user_file(home: str) -> str:
@@ -225,7 +226,7 @@ def approve(home: str, project_dir: str, ask) -> int:
             continue
         rules = parse(raw, path)               # never approve a broken file
         text = f"Use this route policy ({path}):\n" + describe(rules)
-        if len(text) > MAX_REVIEW:              # never ask about a cut-off file
+        if len(text) > POLICY_REVIEW:              # never ask about a cut-off file
             raise BrokerError(f"{path} is too long to review safely in one "
                               "window; make it shorter.", 5)
         if not ask(text):

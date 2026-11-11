@@ -26,6 +26,8 @@ runnable:
 - **A test suite that encodes its own known gaps as passing tests**, so a gap
   cannot quietly close over or widen without a test changing.
 
+- **A one-page scope for an outside reviewer**, [docs/SECURITY_REVIEW_BRIEF.md](docs/SECURITY_REVIEW_BRIEF.md). Volunteers welcome; report privately (below).
+
 An audit is a stranger's opinion you have to take on trust. The above is
 something you can run. It is not a substitute for a review, and this section
 will say so until one happens.

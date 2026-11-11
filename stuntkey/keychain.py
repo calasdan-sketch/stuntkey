@@ -664,8 +664,14 @@ def gather(recipe: dict, backend: str | None = None, read_fn=None,
     from `env_file` (`prefer="env"` looks in the file first). Raises
     KeychainError when a variable is stored nowhere. For handing to a child
     process only - callers must never print the values."""
-    from . import runner
+    from . import recipetrust, runner
     from .recipes import env_vars
+    # A recipe made on this computer needs the person's approval, and reads a .env
+    # file only for variables it names and the approval lists (recipetrust.py).
+    problem = recipetrust.use_problem(recipe, integrity_key)
+    if problem:
+        raise KeychainError(problem)
+    env_ok = recipetrust.env_allowed(recipe, integrity_key)       # None: no limit
     found: dict[str, str] = {}
     for var in env_vars(recipe):
         key = None
@@ -674,7 +680,7 @@ def gather(recipe: dict, backend: str | None = None, read_fn=None,
         for source in order:
             if key is not None:
                 break
-            if source == "env" and env_file:
+            if source == "env" and env_file and (env_ok is None or var in env_ok):
                 key = runner.env_file_value(env_file, var)
             elif source == "keychain":
                 try:

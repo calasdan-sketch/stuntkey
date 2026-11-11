@@ -164,7 +164,11 @@ class Wrap(unittest.TestCase):
     def test_unknown_service_gets_an_unverified_recipe_run_can_use(self):
         write(os.path.join(self.root, ".mcp.json"), json.dumps({"mcpServers": {
             "My Tool": {"command": "tool", "env": {"TOOL_API_KEY": GENERIC}}}}))
-        code, out = self.run_wrap(client="claude-code", server="My Tool")
+        # round 14: the person says yes at a terminal, so the new recipe is approved; this
+        # test plays that person (no real terminal here)
+        from unittest import mock
+        with mock.patch("stuntkey.recipetrust._refusal", return_value=None):
+            code, out = self.run_wrap(client="claude-code", server="My Tool")
         self.assertEqual(code, 0, out)
         catalog = recipes_mod.load_recipes()
         recipe = catalog["mcp-my-tool"]

@@ -48,7 +48,8 @@ MAX_QUERY_PART = 200    # longest query name or value shown in full
 MAX_BODY_SHOWN = 400    # longest body shown in full; bigger is refused
 TOO_LONG = ("This request is too long for you to review safely, so it was "
             "refused. Ask for something smaller.")
-MAX_REVIEW = 900     # longest request description a person can really read
+MAX_REVIEW = 1250    # longest request description a person can really read (the
+                     # request, plus the sentence on where the recipe comes from)
 
 # AWS "GET" requests can still mint new credentials (GetSessionToken,
 # AssumeRole, ...). For signed AWS services only plain look-ups are allowed.
@@ -369,7 +370,16 @@ def describe(recipe: dict, method: str, host: str, url: str, data) -> str:
         text += (f"  body: {len(data)} bytes, sha256 "
                  f"{hashlib.sha256(data).hexdigest()[:12]}, text: "
                  f"{data.decode('utf-8', 'replace')!r}")
-    return f"Using your '{recipe['service']}' key:  " + text
+    return (f"Using your '{_clean(recipe['service'], 80)}' key:  " + text
+            + "  [" + recipe_note(recipe) + "]")
+
+
+def recipe_note(recipe: dict) -> str:
+    """One sentence for every permission window: whether the recipe is built in or
+    was made on this computer (and how long ago), which stored variable it attaches
+    and how (header, bearer, query)."""
+    from .recipes import trust_summary
+    return trust_summary(recipe)
 
 
 def credentials(recipe: dict, values: dict):
@@ -391,6 +401,14 @@ def call(recipe: dict, values: dict, method: str, path: str,
     if method not in READ_METHODS | WRITE_METHODS:
         _log(audit, recipe, values, method, "?", _clean(path), 0, 0, "refused")
         raise BrokerError("method not supported", 5)
+    # A recipe made on this computer is used only after the person approved it
+    # (recipetrust.py). The same check runs where the key is fetched
+    # (remote.collect_values); this one covers a caller that already holds values.
+    from . import remote as _remote
+    unapproved = _remote.recipe_use_problem(recipe)
+    if unapproved:
+        _log(audit, recipe, values, method, "?", _clean(path), 0, 0, "refused")
+        raise BrokerError(unapproved, 5)
     policy.count()          # every attempt counts, refused ones included
     try:
         host, url = build_url(recipe, path, query)
@@ -440,9 +458,10 @@ def call(recipe: dict, values: dict, method: str, path: str,
                 raise BrokerError(NO_APPROVAL, 5)
         elif (recipe["service"], host) not in policy.approved_hosts:
             if policy.approve is not None:
-                if not policy.ask(f"First use of '{recipe['service']}' "
+                if not policy.ask(f"First use of '{_clean(recipe['service'], 80)}' "
                                   f"(talks to {host}). Read-only requests will "
-                                  "then be allowed this session."):
+                                  "then be allowed this session.  ["
+                                  + recipe_note(recipe) + "]"):
                     _log(audit, recipe, values, method, host, path, 0, 0, "denied")
                     raise BrokerError(NO_APPROVAL, 5)
             policy.approved_hosts.add((recipe["service"], host))

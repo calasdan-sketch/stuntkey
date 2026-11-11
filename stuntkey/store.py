@@ -575,22 +575,8 @@ def migrate_document(data: dict, current: int, migrations: dict, what: str,
     `migrations` maps {old_version: fn(data) -> data in old_version + 1}. A
     NEWER format, or one with a missing step, raises OSError with plain words
     (never overwrite what this version cannot read)."""
-    raw = data.get("schema_version", data.get("version", 1))
-    version = raw if isinstance(raw, int) and not isinstance(raw, bool) and raw >= 1 else 1
-    if version > current:
-        raise OSError(22, f"{what} was made by a newer StuntKey. Update StuntKey "
-                          f"({update_hint}) and try again", path)
-    while version < current:
-        step = migrations.get(version)
-        if step is None:
-            raise OSError(22, f"{what} is in an old format this StuntKey cannot "
-                              f"read. Update StuntKey ({update_hint})", path)
-        data = step(data)
-        version += 1
-        data["version"] = version
-        if "schema_version" in data:
-            data["schema_version"] = version
-    return data
+    from . import schema            # a leaf module: no import cycle
+    return schema.load_versioned(data, current, migrations, what, path, update_hint)
 
 
 def private_path_problem(path: str) -> str | None:

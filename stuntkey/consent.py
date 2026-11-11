@@ -35,8 +35,26 @@ import threading
 import time
 
 from . import safeexec
+from . import schema
 
 VERSION = 3
+# {old_version: fn(doc) -> doc in old_version + 1}. A file in an older format is read
+# through these steps (schema.load_versioned); with no step on hand it is reported
+# as "old" in plain words and never overwritten. Add a step here when VERSION moves.
+MIGRATIONS: dict = {}
+PROBLEM_WORDS = {
+    "newer": "The agent permission list was made by a newer StuntKey. Update StuntKey "
+             "(pipx upgrade stuntkey); until then no agent permission counts.",
+    "old": "The agent permission list is in an older format this StuntKey cannot bring "
+           "forward. Run `stuntkey allow-agent` again for the projects you want to allow.",
+    "corrupt": "The agent permission list is damaged, so no agent permission counts.",
+    "forged": "The agent permission list does not match its signature, so no agent "
+              "permission counts.",
+    "stale": "The agent permission list is an older copy than the one StuntKey last "
+             "saved, so no agent permission counts.",
+    "no secret": "The key that signs the agent permission list is missing, so no agent "
+                 "permission counts.",
+}
 DIR_NAME = ".stuntkey"
 FILE_NAME = "agent-consent.json"
 SECRET_FILE = "consent.key"
@@ -445,13 +463,18 @@ def pack(key: bytes, counter: int) -> bytes:
     return key[:32].ljust(32, b"\0") + counter.to_bytes(8, "big")
 
 
-def _canonical(grants: list, counter: int) -> bytes:
-    return json.dumps({"version": VERSION, "counter": counter, "grants": grants},
+def _canonical(grants: list, counter: int, version: int = VERSION) -> bytes:
+    return json.dumps({"version": version, "counter": counter, "grants": grants},
                       sort_keys=True, separators=(",", ":")).encode("utf-8")
 
 
-def _mac(grants: list, counter: int, key: bytes) -> str:
-    return hmac.new(key, _canonical(grants, counter), hashlib.sha256).hexdigest()
+def _mac(grants: list, counter: int, key: bytes, version: int = VERSION) -> str:
+    return hmac.new(key, _canonical(grants, counter, version), hashlib.sha256).hexdigest()
+
+
+def problem_words(problem: str) -> str:
+    """Plain words for a read_grants problem ("" for none)."""
+    return PROBLEM_WORDS.get(problem, "")
 
 
 def read_grants(path: str | None = None, store=None) -> tuple[list[dict], str]:
@@ -466,15 +489,21 @@ def read_grants(path: str | None = None, store=None) -> tuple[list[dict], str]:
         return [], "missing"
     except (OSError, ValueError, RecursionError):
         return [], "corrupt"
-    if not isinstance(data, dict) or data.get("version") != VERSION \
+    if not isinstance(data, dict) \
             or not isinstance(data.get("grants"), list) or not isinstance(data.get("mac"), str) \
             or not isinstance(data.get("counter"), int) or isinstance(data.get("counter"), bool):
         return [], "corrupt"
+    signed_version = schema.version_of(data)       # the signature covers the file's OWN version
+    try:
+        data = schema.load_versioned(data, VERSION, MIGRATIONS, "The agent permission list",
+                                     path or consent_path())
+    except schema.SchemaError as e:
+        return [], e.kind                          # "newer" or "old": never read, never overwritten
     blob = store.load()
     if not blob:
         return [], "no secret"
     key, counter = split(blob)
-    if not hmac.compare_digest(_mac(data["grants"], data["counter"], key), data["mac"]):
+    if not hmac.compare_digest(_mac(data["grants"], data["counter"], key, signed_version), data["mac"]):
         return [], "forged"
     if data["counter"] != counter:
         return [], "stale"                      # an older (or newer) copy of the file
@@ -690,6 +719,7 @@ def grant(project: str, service: str, history_ok: bool = False, path: str | None
     store = store or secret_store()
     with _FolderLock(os.path.dirname(path)):
         grants, _problem = read_grants(path, store)     # a file that does not verify starts clean
+        _keep_unreadable_format(_problem, path)
         grants = [g for g in grants if not (g["service"] == service and _same(g["project"], project))]
         stamp = (now or datetime.datetime.now(datetime.timezone.utc)).replace(microsecond=0)
         entry = {"project": os.path.realpath(project), "service": service,
@@ -702,11 +732,20 @@ def grant(project: str, service: str, history_ok: bool = False, path: str | None
         _commit(grants, path, store)
 
 
+def _keep_unreadable_format(problem: str, path: str) -> None:
+    """A file in a NEWER (or an old, unmigratable) format is not "a file that does not
+    verify": it is a real list this StuntKey cannot read, and saving over it would destroy
+    it. Say so in plain words instead."""
+    if problem in ("newer", "old"):
+        raise schema.SchemaError(PROBLEM_WORDS[problem] + " Nothing was changed.", path, problem)
+
+
 def revoke(project: str, service: str | None = None, path: str | None = None, store=None) -> int:
     path = path or consent_path()
     store = store or secret_store()
     with _FolderLock(os.path.dirname(path)):
-        grants, _ = read_grants(path, store)
+        grants, _problem = read_grants(path, store)
+        _keep_unreadable_format(_problem, path)
         keep = [g for g in grants if not (_same(g["project"], project)
                                           and (service is None or g["service"] == service))]
         if len(keep) != len(grants):

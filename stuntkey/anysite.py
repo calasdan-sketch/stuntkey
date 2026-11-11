@@ -119,8 +119,17 @@ def search_url(domain: str) -> str:
     return "https://duckduckgo.com/?q=" + urllib.parse.quote(f"!ducky {domain} API key")
 
 
+def _save_approved(data: dict, directory: str | None = None) -> str:
+    """Save a recipe the person just made with `stuntkey get <site>`, and approve it
+    (they are at a terminal and asked for it); an AI tool or script gets it saved
+    but not approved."""
+    from . import remote
+    path, _approved = remote.recipe_save_and_approve(data, directory)
+    return path
+
+
 def cmd_get(name: str, catalog: dict, connect_one, ask=input, out=None,
-            lookup=_catalog_domain, save=recipes_mod.save_recipe) -> int:
+            lookup=_catalog_domain, save=_save_approved) -> int:
     """`connect_one(recipe, open_url)` runs the normal copy-and-go connect."""
     out = out or sys.stdout
     try:

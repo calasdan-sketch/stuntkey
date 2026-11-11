@@ -74,6 +74,13 @@ Verdicts beyond "works" / "rejected" (under "validate"):
   "body_rules": [{"status": 401, "body_contains": "restricted_api_key",
                   "result": "limited", "meaning": "..."}]    # valid|limited|invalid
 
+A recipe in ~/.stuntkey/recipes (made on this computer, by a person or a program)
+is not used until the person approves it: `stuntkey recipe approve <service>`
+(recipetrust.py). It then reads only the keychain entries stored under its own
+service name; a .env file only for variables listed in
+  "allow_env": ["VAR", ...]    # a subset of the recipe's own variables, AND
+                               # listed again in the person's approval
+
 Other optional top-level fields:
 
   "least_privilege": {"summary": "...", "url": "https://..."}  # what to pick
@@ -322,6 +329,79 @@ def fields(recipe: dict) -> list[dict]:
 def env_vars(recipe: dict) -> list[str]:
     """Every variable the recipe stores, in field order."""
     return [f["env_var"] for f in fields(recipe)]
+
+
+def attachments(recipe: dict) -> list[tuple[str, str]]:
+    """[(variable name, how it is attached)] for every stored value the check
+    sends or uses: plain words, for the pop-ups and for `recipe approve`. The
+    variable NAMES are shown, never a value."""
+    v = recipe.get("validate") or {}
+    auth = v.get("auth") or {}
+    names = {f["name"]: f["env_var"] for f in fields(recipe)}
+    kind = auth.get("type")
+
+    def var(key: str, default: str = DEFAULT_FIELD) -> str:
+        return names.get(auth.get(key, default), "?")
+    if kind == "bearer":
+        scheme = printable(auth.get("scheme") or "Bearer")
+        return [(var("field"), f"as a {scheme} token in the Authorization header")]
+    if kind == "header":
+        return [(var("field"), f"in the {printable(auth.get('header'))} header")]
+    if kind == "headers":
+        out = []
+        for header, template in (auth.get("headers") or {}).items():
+            for ref in PLACEHOLDER_RE.findall(template):
+                out.append((names.get(ref, "?"), f"in the {printable(header)} header"))
+        return out
+    if kind == "basic":
+        out = []
+        if "username_field" in auth:
+            out.append((var("username_field"), "as the user name in a Basic sign-in header"))
+        out.append((var("password_field"), "as the password in a Basic sign-in header"))
+        return out
+    if kind == "query":
+        return [(var("field"), f"in the web address, as ?{printable(auth.get('param'))}=")]
+    if kind == "oauth2_client_credentials":
+        host = urllib.parse.urlsplit(str(auth.get("token_url", ""))).hostname or "its token address"
+        return [(var("client_id_field", "client_id"), f"sent to {printable(host)} to get a sign-in token"),
+                (var("client_secret_field", "client_secret"), f"sent to {printable(host)} to get a sign-in token")]
+    if kind == "aws_sigv4":
+        return [(var("access_key_field", "access_key_id"), "used to sign requests (not sent as it is)"),
+                (var("secret_key_field", "secret_access_key"), "used to sign requests (not sent as it is)")]
+    return [(name, "in a way this recipe does not say") for name in env_vars(recipe)]
+
+
+def ago(seconds: float) -> str:
+    """'3 days ago' for a number of seconds (never negative)."""
+    s = max(0, int(seconds))
+    for size, unit in ((86400 * 365, "year"), (86400 * 30, "month"), (86400, "day"),
+                       (3600, "hour"), (60, "minute")):
+        if s >= size:
+            n = s // size
+            return f"{n} {unit}{'' if n == 1 else 's'} ago"
+    return "just now"
+
+
+def origin_words(recipe: dict, now: float | None = None) -> str:
+    """Where a recipe comes from, in a few words: 'built-in recipe', or 'recipe
+    made by a person or program on this computer (not built in), changed 3
+    days ago'. A recipe that is not built in is NEVER described as built in."""
+    if recipe.get("_builtin") is True:
+        return "built-in recipe that comes with stuntkey"
+    import time
+    when = recipe.get("_modified")
+    age = (f", created or last changed {ago((time.time() if now is None else now) - when)}"
+           if isinstance(when, (int, float)) else "")
+    return f"recipe made by a person or program on this computer (not built in){age}"
+
+
+def trust_summary(recipe: dict, now: float | None = None) -> str:
+    """One sentence for a permission window: what the recipe is, which stored
+    value it attaches and how. e.g. "Recipe: built-in recipe that comes with
+    stuntkey. It attaches GITHUB_TOKEN as a Bearer token in the Authorization
+    header."""
+    parts = "; ".join(f"{printable(name)} {how}" for name, how in attachments(recipe))
+    return f"Recipe: {origin_words(recipe, now)}. It attaches {parts or 'no stored value'}."
 
 
 try:                                        # Python 3.11+
@@ -629,6 +709,21 @@ def _check_extras(data: dict) -> None:
         raise RecipeError("untested must be true or false")
 
 
+def _check_allow_env(data: dict) -> None:
+    """"allow_env": a recipe made on this computer may read a key from a .env
+    file ONLY for the variables named here AND approved by the person
+    (`stuntkey recipe approve`). Without it such a recipe reads only the
+    keychain entries stored under its own service name. (Run after
+    _check_fields, so env_vars() can be trusted.)"""
+    allow = data.get("allow_env")
+    if allow is not None:
+        if not (isinstance(allow, list) and allow and all(
+                isinstance(x, str) and ENV_VAR_RE.match(x) for x in allow)):
+            raise RecipeError("allow_env must be a list of variable names")
+        if not set(allow) <= set(env_vars(data)):
+            raise RecipeError("allow_env may only name variables the recipe itself stores")
+
+
 def validate_recipe(data: dict) -> dict:
     problem = _invisible_problem(data)
     if problem:
@@ -696,6 +791,7 @@ def validate_recipe(data: dict) -> dict:
     _check_verdict_rules(v)
     _check_extras(data)
     _check_fields(data)
+    _check_allow_env(data)
     _check_auth(auth, {f["name"] for f in fields(data)})
     _check_cli_token(data)
     _check_revoke(data)
@@ -751,39 +847,109 @@ def load_warnings() -> list:
     return list(_LOAD_WARNINGS)
 
 
+def _read_one(directory: str, fname: str, builtin: bool = False,
+              user: bool = False, previous: dict | None = None) -> dict | None:
+    """One recipe file as a recipe dict, or None (with a warning) when it is
+    bad. `user` is the person's own recipe folder (~/.stuntkey/recipes): what
+    is in there was made on this computer, by a person or by a program, so the
+    recipe is marked "_needs_approval" and carries the fingerprint (sha256) of
+    the very bytes that were read, which is what an approval is tied to."""
+    import hashlib
+    path = os.path.join(directory, fname)
+    try:
+        with open(path, "rb") as f:
+            raw = f.read()
+        modified = os.path.getmtime(path)
+        # utf-8-sig: Windows PowerShell 5.1 and older Notepad start a UTF-8
+        # file with a byte-order mark, which json.load refuses ("Unexpected
+        # UTF-8 BOM"). This drops one at the very start and nothing else.
+        data = json.loads(raw.decode("utf-8-sig"))
+        validate_recipe(data)
+    except (json.JSONDecodeError, RecipeError, OSError, UnicodeDecodeError,
+            AttributeError, TypeError, RecursionError) as e:
+        _warn(f"[stuntkey] skipping bad recipe "
+              f"{printable(fname)}: {printable(e)}")
+        return None
+    # Names starting with "_" are StuntKey's own marks (_builtin, _needs_approval,
+    # _sha256 ...). A file can never bring its own: "_needs_approval": false in a
+    # planted recipe must not switch the check off.
+    data = {k: v for k, v in data.items() if not str(k).startswith("_")}
+    if user and fname[:-5] != data["service"]:
+        # The approval is kept per service and the file is found by that
+        # name: a file whose name says something else is not one StuntKey wrote.
+        _warn(f"[stuntkey] skipping recipe {printable(fname)}: its file name must "
+              f"be {printable(data['service'])}.json, the service it describes")
+        return None
+    # Only recipes shipped INSIDE the package may vouch for a
+    # validation host under another domain (trusted_hosts): they were
+    # reviewed with the code. A user-dir recipe never gets that.
+    data["_builtin"] = builtin
+    data["_file"] = path
+    data["_sha256"] = hashlib.sha256(raw).hexdigest()
+    data["_modified"] = modified
+    if user:
+        data["_needs_approval"] = True
+    data["_overrides_builtin"] = bool(previous and previous.get("_builtin")
+                                      and not builtin)
+    return data
+
+
 def _load_dir(directory: str, recipes: dict[str, dict],
-              builtin: bool = False) -> None:
-    import sys
+              builtin: bool = False, user: bool = False) -> None:
+    """Read every recipe file in `directory` into `recipes` (see _read_one)."""
     if not os.path.isdir(directory):
         return
     for fname in sorted(os.listdir(directory)):
         if not fname.endswith(".json"):
             continue
-        path = os.path.join(directory, fname)
-        try:
-            # utf-8-sig: Windows PowerShell 5.1 and older Notepad start a UTF-8
-            # file with a byte-order mark, which json.load refuses ("Unexpected
-            # UTF-8 BOM"). This drops one at the very start and nothing else.
-            with open(path, encoding="utf-8-sig") as f:
-                data = json.load(f)
-            validate_recipe(data)
-        except (json.JSONDecodeError, RecipeError, OSError, UnicodeDecodeError,
-                AttributeError, TypeError) as e:
-            _warn(f"[stuntkey] skipping bad recipe "
-                  f"{printable(fname)}: {printable(e)}")
+        data = _read_one(directory, fname, builtin, user,
+                         recipes.get(fname[:-5]))
+        if data is None:
             continue
-        # Only recipes shipped INSIDE the package may vouch for a
-        # validation host under another domain (trusted_hosts): they were
-        # reviewed with the code. A user-dir recipe never gets that.
-        data["_builtin"] = builtin
         previous = recipes.get(data["service"])
         data["_overrides_builtin"] = bool(previous and previous.get("_builtin")
                                           and not builtin)
         recipes[data["service"]] = data
 
 
+def load_user_recipe(service: str):
+    """(recipe, problem) for the one file ~/.stuntkey/recipes/<service>.json,
+    read as a user recipe (marked "_needs_approval", fingerprinted), and
+    checked like load_recipes() checks it against the built-in ones. The
+    problem is a plain sentence, or None."""
+    if not isinstance(service, str) or not SLUG_RE.match(service):
+        return None, "that is not a service name (lowercase letters, digits, - and _)"
+    directory = user_recipes_dir()
+    fname = f"{service}.json"
+    if not os.path.isfile(os.path.join(directory, fname)):
+        return None, f"there is no recipe of yours called '{service}' ({os.path.join(directory, fname)})"
+    _LOAD_WARNINGS.clear()
+    recipe = _read_one(directory, fname, user=True)
+    if recipe is None:
+        return None, "; ".join(_LOAD_WARNINGS) or f"the recipe '{service}' cannot be read"
+    builtins: dict = {}
+    _load_dir(RECIPES_DIR, builtins, builtin=True)
+    problem = merge_problem(service, recipe, builtins)
+    if problem:
+        return None, problem
+    if service in builtins:
+        recipe["_builtin_env_vars"] = env_vars(builtins[service])
+        recipe["_overrides_builtin"] = True
+    return recipe, None
+
+
 def _is_builtin_dir(directory: str) -> bool:
     return os.path.realpath(directory) == os.path.realpath(RECIPES_DIR)
+
+
+def _is_user_dir(directory: str) -> bool:
+    return os.path.normcase(os.path.realpath(directory)) == os.path.normcase(
+        os.path.realpath(user_recipes_dir()))
+
+
+def hosts_of(recipe: dict) -> frozenset:
+    """Every server a recipe can send its key to (public name of _hosts)."""
+    return _hosts(recipe)
 
 
 def _hosts(recipe: dict) -> frozenset:
@@ -807,27 +973,40 @@ def _merge_user_recipes(recipes: dict, user: dict) -> None:
     a built-in service's key to a different server. A planted
     ~/.stuntkey/recipes/github.json (or a new recipe that reuses the
     OPENAI_API_KEY variable name) could otherwise steal the key."""
-    builtin_hosts = {s: _hosts(r) for s, r in recipes.items() if r.get("_builtin")}
-    builtin_vars: dict = {}
-    for s, r in recipes.items():
-        if r.get("_builtin"):
-            for var in env_vars(r):
-                builtin_vars.setdefault(var, builtin_hosts[s])
     for slug, r in user.items():
-        if slug in builtin_hosts and _hosts(r) != builtin_hosts[slug]:
-            _warn(f"stuntkey: ignored your recipe '{slug}': it would send the "
-                  f"built-in {slug} key to a different server. Use another "
-                  "name for it.")
+        problem = merge_problem(slug, r, recipes)
+        if problem:
+            _warn(problem)
             continue
-        clash = [v for v in env_vars(r) if v in builtin_vars and builtin_vars[v] != _hosts(r)
-                 and slug not in builtin_hosts]
-        if clash:
-            _warn(f"stuntkey: ignored your recipe '{slug}': it reuses the key "
-                  f"name {clash[0]} of a built-in service but talks to a "
-                  "different server.")
-            continue
-        r["_overrides_builtin"] = slug in builtin_hosts
+        if slug in recipes and recipes[slug].get("_builtin"):
+            # the one variable list a same-name override may still read from a
+            # .env file: what the built-in recipe already reads there
+            r["_builtin_env_vars"] = env_vars(recipes[slug])
+        r["_overrides_builtin"] = slug in recipes and bool(recipes[slug].get("_builtin"))
         recipes[slug] = r
+
+
+def merge_problem(slug: str, r: dict, recipes: dict) -> str | None:
+    """Why a user recipe `r` may not sit beside the built-in ones in `recipes`
+    (it would send a built-in key to another server), as a plain sentence, or
+    None when it may."""
+    builtin_hosts = {s: _hosts(b) for s, b in recipes.items() if b.get("_builtin")}
+    builtin_vars: dict = {}
+    for s, b in recipes.items():
+        if b.get("_builtin"):
+            for var in env_vars(b):
+                builtin_vars.setdefault(var, builtin_hosts[s])
+    if slug in builtin_hosts and _hosts(r) != builtin_hosts[slug]:
+        return (f"stuntkey: ignored your recipe '{slug}': it would send the "
+                f"built-in {slug} key to a different server. Use another "
+                "name for it.")
+    clash = [v for v in env_vars(r) if v in builtin_vars and builtin_vars[v] != _hosts(r)
+             and slug not in builtin_hosts]
+    if clash:
+        return (f"stuntkey: ignored your recipe '{slug}': it reuses the key "
+                f"name {clash[0]} of a built-in service but talks to a "
+                "different server.")
+    return None
 
 
 def load_recipes(directory: str | None = None) -> dict[str, dict]:
@@ -841,11 +1020,12 @@ def load_recipes(directory: str | None = None) -> dict[str, dict]:
     recipes: dict[str, dict] = {}
     _LOAD_WARNINGS.clear()
     if directory is not None:
-        _load_dir(directory, recipes, builtin=_is_builtin_dir(directory))
+        _load_dir(directory, recipes, builtin=_is_builtin_dir(directory),
+                  user=_is_user_dir(directory))
         return recipes
     _load_dir(RECIPES_DIR, recipes, builtin=True)
     user: dict[str, dict] = {}
-    _load_dir(user_recipes_dir(), user)
+    _load_dir(user_recipes_dir(), user, user=True)
     _merge_user_recipes(recipes, user)
     return recipes
 

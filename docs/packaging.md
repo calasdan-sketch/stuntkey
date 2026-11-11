@@ -31,15 +31,19 @@ first. `ArchiveBinariesDependOnPath: true` puts the folder on PATH; a
 ([winget-cli #3807](https://github.com/microsoft/winget-cli/issues/3807)).
 
 The manifests (schema 1.10.0) are in
-`packaging/winget/manifests/c/Calas/StuntKey/0.9.3/`.
+`packaging/winget/manifests/c/Calas/StuntKey/0.9.4/`.
 
 To submit a release:
 
 1. Push the tag and wait for the GitHub release.
-2. In `Calas.StuntKey.installer.yaml`, replace
+2. Fill the hash. Easiest: `python packaging/make_release.py --out <temp folder>`
+   builds the files and writes a filled COPY of the manifest (the committed one keeps
+   its placeholder). By hand: replace
    `REPLACE_WITH_THE_SHA256_OF_THE_ZIP_FROM_SHA256SUMS` with the line for
    `stuntkey-<version>-windows.zip` in the release's `SHA256SUMS`. For a new
-   version, also change `0.9.3` in all three files, the folder name and the URL.
+   version, also change `0.9.4` in all three files, the folder name and the URL.
+   Before submitting, run the gate on the filled copy:
+   `SK_RELEASE_CHECK=1 SK_MANIFEST_DIR=<filled folder> python -m pytest tests/test_r14_release.py`.
 3. Check it on a Windows PC:
    `winget validate --manifest <folder>`, then
    `winget install --manifest <folder>` (turn on local manifests first:
@@ -51,6 +55,17 @@ To submit a release:
 
 Without winget, `packaging/winget/install-stuntkey.cmd` installs from PyPI
 with pipx if it is there, else `py -m pip install --user stuntkey`.
+
+## One-script install for someone with no Python (Windows)
+
+`packaging/windows/install.ps1` checks for Python 3.10+, offers to install Python 3.12 with
+winget (asks once, no admin), installs pipx, runs `pipx install stuntkey` (or `-Wheel <file>`),
+then starts the guided first run. `-WhatIf` prints the plan and changes nothing; `-Yes` skips the
+one question; `-NoStart` skips the first run. It only talks to PyPI, winget and python.org.
+
+A single-file `.exe` (PyInstaller) was tried in round 14 and is not shipped
+(about 9 MB, starts in about 0.7 s, runs `--version` and `doctor`, but it is unsigned and
+likely to be flagged by antivirus; a code-signing certificate costs money every year).
 
 ## npx (Node.js)
 

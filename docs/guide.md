@@ -4,6 +4,7 @@
 
 ## The plain-words path (for people who do not write code)
 
+0. **The shortest version:** `stuntkey setup` (finds loose keys, moves them to the keychain, switches everything on; one yes), then `stuntkey test` (proves it works with a fake service), and `stuntkey undo` takes the last change back. `stuntkey get` with no name shows a menu; `stuntkey help --all` lists every command; the Compare page says where 1Password, Infisical and Doppler are better.
 0. **The short version:** `stuntkey get github`, then `stuntkey fix` (switches everything on after listing what it will change and asking once), restart your AI app, then ask it "Who am I on GitHub?". If anything is not working, `stuntkey status` shows green, yellow or red for each part with one next step, and `stuntkey fix` repairs what it can. `stuntkey help` groups the commands by task, `stuntkey limits` says what stuntkey does not protect, and `stuntkey uninstall` undoes the setup (saved keys stay).
 1. **Practice first:** `stuntkey try`. It walks you through adding a pretend key, using it and forgetting it. It runs in a throwaway store and a temporary folder (your keychain, your keys, your project and your activity log are not opened) and deletes everything when it ends. `--auto` goes through it without pausing.
 2. **Add a real key:** `stuntkey get github`, or `stuntkey get example.com` for a site stuntkey has no recipe for (the key is then saved untested). Every command says in one line what it is about to do before it does it. The key goes in your computer's keychain unless you ask for `--store env`.
@@ -483,6 +484,9 @@ stuntkey find <query> --category <name>   # only that category (part of its name
 stuntkey find <query> --refresh      # download the directory again now
 stuntkey mcp                         # stdio MCP server (for Claude Code)
 stuntkey proxy -- <command>          # run a program whose SDK talks to a local stuntkey address (OPENAI/ANTHROPIC/GROQ/TOGETHER_BASE_URL); its *_API_KEY is a throwaway password
+stuntkey proxy --ttl 30m --max-calls 200 -- <command>   # end the session after 30 minutes or 200 calls (default 8 hours; --ttl 0 = no time limit)
+stuntkey sessions                    # list live proxy sessions
+stuntkey revoke --all                # end every live session now (or: stuntkey revoke <service>)
 stuntkey proxy --print-env           # print those variables for a tool you start yourself
 stuntkey proxy --keep-env NAME -- <command>   # also pass this one environment variable on (the program gets only a short safe list otherwise; or set STUNTKEY_KEEP_ENV=NAME,NAME)
 stuntkey proxy --generic -- <command> # give the program a stand-in key and a proxy address (STUNTKEY_URL_<SERVICE>) for every service stuntkey can carry

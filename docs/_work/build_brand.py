@@ -48,7 +48,7 @@ css = rd(os.path.join(SRC, "styles.src.css")).replace("@@CREST@@", CREST)
 wr(os.path.join(SITE, "styles.css"), css)
 
 NAV = [("index.html", "Home"), ("how-it-works.html", "How it works"), ("add-your-first-key.html", "Add your first key"),
-       ("what-it-does-not-protect.html", "What it does not protect")]
+       ("compare.html", "Compare"), ("what-it-does-not-protect.html", "What it does not protect")]
 
 
 def page(fname, title, desc, body, hero=False):
@@ -106,9 +106,9 @@ INDEX = """<section class="hero"><div class="wrap">
 </div></section>
 <section class="sunk"><div class="wrap">
   <h2>Start in one minute</h2>
-  <div class="cmd"><code>pip install stuntkey</code></div>
-  <div class="cmd"><code>stuntkey start</code></div>
-  <p class="say">The second command checks your computer, looks for keys lying around, and tells you what to do next. <a href="add-your-first-key.html">Full walk-through</a>.</p>
+  <div class="cmd"><code>pipx install stuntkey</code></div>
+  <div class="cmd"><code>stuntkey setup</code></div>
+  <p class="say">The second command does it all after one yes: it looks for keys lying around, moves the ones it knows into your keychain, switches on the protection and tests it. Then close and reopen your AI app. Changed your mind? <code>stuntkey undo</code> puts it back. <a href="add-your-first-key.html">Full walk-through</a>.</p>
 </div></section>
 <section><div class="wrap">
   <h2>Honest about the limits</h2>
@@ -148,17 +148,17 @@ FIRST = """<div class="page"><div class="wrap">
   <p class="lede">About a minute. You never type a key into a web page, and you never paste it into your AI chat.</p>
   <ol class="steps">
     <li><b>Install StuntKey.</b><p>You need Python 3.10 or newer. In a terminal:</p>
-      <div class="cmd"><code>pip install stuntkey</code></div></li>
-    <li><b>Check your computer.</b><p>This looks for keys lying around and says what to do next. It changes nothing.</p>
-      <div class="cmd"><code>stuntkey start</code></div></li>
-    <li><b>Add the key.</b><p>Swap <code>openai</code> for your service. StuntKey opens that service's key page. Click the site's own Copy button. StuntKey takes the key from your copy, tests it, and locks it in your keychain.</p>
-      <div class="cmd"><code>stuntkey get openai</code></div></li>
-    <li><b>Switch it on.</b><p>One command plugs StuntKey into your AI apps and turns on the Claude Code safety check. It lists what it will change and asks first. Then restart your AI app.</p>
-      <div class="cmd"><code>stuntkey fix</code></div></li>
-    <li><b>Check it worked.</b><p>Shows green, yellow or red for each part, and the keys you have saved (names only, never the key). If something is not green, <code>stuntkey fix</code> repairs what it can.</p>
-      <div class="cmd"><code>stuntkey status</code></div></li>
+      <div class="cmd"><code>pipx install stuntkey</code></div></li>
+    <li><b>Do it all in one go.</b><p>This looks for keys lying around, moves the ones it knows into your keychain, switches on the Claude Code safety check, plugs StuntKey into your AI apps (Claude Code for every folder) and tests it. It lists the plan and asks <b>once</b>. Every change keeps a backup.</p>
+      <div class="cmd"><code>stuntkey setup</code></div></li>
+    <li><b>Close and reopen your AI app.</b><p>Close every window of Claude, then open it again, so it picks up the change.</p></li>
+    <li><b>Add another key later.</b><p>Copy the key on the service's own page, then run this. StuntKey names the service from the key, tests it and locks it in your keychain. Or type a name like <code>open ai</code>.</p>
+      <div class="cmd"><code>stuntkey get</code></div></li>
+    <li><b>Check it worked.</b><p>One line, PASS or FAIL, and what to do next. For the full picture in green, yellow and red, run <code>stuntkey status</code>. If something is not green, <code>stuntkey fix</code> repairs what it can.</p>
+      <div class="cmd"><code>stuntkey test</code></div></li>
   </ol>
   <div class="note"><p><b>Want to see it work first?</b> <code>stuntkey try</code> saves a pretend key, uses it, then forgets it, in a throwaway place. No real key is used.</p>
+  <p><b>Changed your mind?</b> <code>stuntkey undo</code> puts back what <code>setup</code>, <code>fix</code> or <code>get</code> changed last.</p>
   <p><b>Leaked a key?</b> <code>stuntkey panic openai</code> walks you through cancelling it and making a new one.</p></div>
   <p class="say">Want to know the limits first? <a href="what-it-does-not-protect.html">What StuntKey does not protect</a>.</p>
   <p class="say">Stuck? Email <a href="mailto:office@calasautomations.com">office@calasautomations.com</a>.</p>
@@ -190,6 +190,47 @@ wr(os.path.join(SITE, "what-it-does-not-protect.html"), page("what-it-does-not-p
    "The honest list of what StuntKey cannot protect you from, in plain words.", LIMITS_BODY))
 wr(os.path.join(SITE, "add-your-first-key.html"), page("add-your-first-key.html", "Add your first key - StuntKey by Calas Automations",
    "Add your first API key to StuntKey in about a minute: install, check, add, connect.", FIRST))
+
+COMPARE = """<div class="page"><div class="wrap">
+  <p class="crumbs"><a href="index.html">StuntKey</a> / Compare</p>
+  <h1>StuntKey vs 1Password, Doppler, Infisical, <em>dotenvx</em></h1>
+  <p class="lede">These are good tools. They overlap with StuntKey, but they are made for different people. Below we say only what we checked, with a link. Anything else says &ldquo;check their site&rdquo;, because their products change.</p>
+  <h2>1Password</h2>
+  <ul class="tick">
+    <li>Its <a href="https://www.1password.dev/environments/claude-plugin">Claude plugin</a> needs a paid 1Password subscription, the 1Password desktop app, and Claude Code 2.1.273 or newer.</li>
+    <li>Its mounted .env file and its MCP connection work on Mac and Linux, not on Windows (as of November 2026).</li>
+    <li>The agent sees the names of your secrets only.</li>
+    <li>Everything else (prices, plans, what it does for a team): check their site.</li>
+  </ul>
+  <h2>Infisical Agent Vault</h2>
+  <ul class="tick">
+    <li><a href="https://infisical.com/blog/agent-vault-the-open-source-credential-proxy-and-vault-for-agents">Agent Vault</a> is an open-source credential proxy and vault for agents.</li>
+    <li>Everything else (setup, hosting, platforms): check their site.</li>
+  </ul>
+  <h2>Doppler</h2>
+  <ul class="tick">
+    <li><a href="https://www.doppler.com/agents">Doppler for agents</a> gives scoped, read-only service tokens that expire, and <code>doppler run</code> puts secrets into a program's environment.</li>
+    <li>Everything else (prices, limits, how it fits your tools): check their site.</li>
+  </ul>
+  <h2>dotenvx</h2>
+  <ul class="tick">
+    <li>We have not checked what dotenvx does for AI agents, so we will not guess: check their site.</li>
+  </ul>
+  <h2>Where they are better</h2>
+  <div class="note"><p>If you work with a team, need to share secrets between people, sync them between computers, keep audit records for a company, or run in the cloud, the tools above are made for that and StuntKey is not. StuntKey keeps your keys on one computer, for one person.</p></div>
+  <h2>Where StuntKey fits</h2>
+  <ul class="tick">
+    <li>Free and open source, MIT licence. Python standard library only.</li>
+    <li>Works on Windows, Mac and Linux, using your computer's own keychain. No account, no subscription.</li>
+    <li>One command, <code>stuntkey setup</code>, and one yes.</li>
+    <li>Your AI works with a stand-in. StuntKey adds the real key on the way out and hides it in the answer.</li>
+  </ul>
+  <div class="note"><p>StuntKey lowers the risk. It does not remove it, it is beta, and it has not had an independent security review. <a href="what-it-does-not-protect.html">What it does not protect</a>.</p></div>
+  <div class="ctas"><a class="btn" href="add-your-first-key.html">Add your first key</a></div>
+</div></div>"""
+
+wr(os.path.join(SITE, "compare.html"), page("compare.html", "StuntKey compared - Calas Automations",
+   "A fair look at StuntKey next to 1Password, Doppler, Infisical and dotenvx, with only facts we checked and where each is better.", COMPARE))
 
 tpl = rd(os.path.join(SRC, "web.tpl.html"))
 wr(os.path.join(ROOT, "stuntkey", "web", "index.html"), tpl.replace("/*@@CSS@@*/", css))

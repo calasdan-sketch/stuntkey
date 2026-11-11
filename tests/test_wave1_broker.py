@@ -332,7 +332,7 @@ class ChildEnv(unittest.TestCase):
         with open(out, encoding="utf-8") as f:
             child = json.load(f)
         self.assertNotIn(KEY, json.dumps(child))
-        self.assertTrue(child["OPENAI_API_KEY"].startswith("ok-"))
+        self.assertTrue(child["OPENAI_API_KEY"].startswith("sk_ph_openai_"))   # round 14: one placeholder per service
         port = int(child["OPENAI_BASE_URL"].split(":")[2].split("/")[0])
         with self.assertRaises(OSError):                      # closed after the child
             http.client.HTTPConnection("127.0.0.1", port, timeout=2).request("GET", "/")

@@ -31,6 +31,7 @@ import sys
 from . import dialog as dialog_mod
 from . import keychain as keychain_mod
 from . import recipes as recipes_mod
+from . import recipetrust as recipetrust_mod
 from . import store as store_mod
 
 # user@host, host, [v6]: letters, digits and . _ - @ : [ ] only. fullmatch, not
@@ -59,6 +60,52 @@ class RemoteError(Exception):
     def __init__(self, message: str, code: int = 1):
         super().__init__(message)
         self.code = code
+
+
+class RecipeNotApproved(RemoteError):
+    """A recipe made on this computer that the person has not approved (or that
+    changed since). str() says so in plain words with the one command to run."""
+
+
+# ---- recipe approvals (stuntkey/recipetrust.py) bound to this machine's keychain ----
+# These are the names other modules call; they sign with keychain.integrity_key.
+
+def _trust_key(directory: str, create: bool = False, purpose: str = "recipes"):
+    return keychain_mod.integrity_key(directory, create, purpose)
+
+
+def recipe_use_problem(recipe: dict) -> str | None:
+    """None when the recipe may be used; else plain words (with the command to
+    run). Built-in recipes are always fine."""
+    return recipetrust_mod.use_problem(recipe, _trust_key)
+
+
+def recipe_flag(recipe: dict) -> str:
+    """"" or a short label for listings: "not approved yet" / "changed since approved"."""
+    return recipetrust_mod.flag(recipe, _trust_key)
+
+
+def recipe_approve(service: str, ask=None, out=print, interactive: bool | None = None) -> int:
+    """`stuntkey recipe approve <service>`: shows what the recipe would do, asks once
+    (a person at a terminal only). 0 = approved."""
+    return recipetrust_mod.approve(service, _trust_key, ask=ask, out=out, interactive=interactive)
+
+
+def recipe_approve_saved(service: str, interactive: bool | None = None) -> bool:
+    """After a recipe the PERSON just saved at a terminal: approve it without asking
+    again. False (and nothing done) for an AI tool or a script."""
+    return recipetrust_mod.approve_saved(service, _trust_key, interactive)
+
+
+def recipe_save_and_approve(data: dict, directory: str | None = None,
+                            interactive: bool | None = None):
+    """recipes.save_recipe + recipe_approve_saved. (path, approved)."""
+    return recipetrust_mod.save_and_approve(data, _trust_key, directory, interactive)
+
+
+def recipe_revoke(service: str) -> bool:
+    """`stuntkey recipe revoke <service>`. True when an approval was taken back."""
+    return recipetrust_mod.revoke(service, _trust_key)
 
 
 def user_home() -> str:
@@ -240,6 +287,14 @@ def confirm_host(host: str, service: str, ask=input, isatty=None, window=None,
 def collect_values(recipe: dict, env_file: str, backend=None) -> dict:
     """The stored value for every variable of the recipe. Never printed."""
     values: dict = {}
+    # A recipe made on this computer is used only once the person approved it
+    # (see recipetrust.py), and it reads only the keychain entries stored under
+    # its own service name - a .env file only for a variable it names AND the
+    # approval lists. Built-in recipes are unchanged.
+    problem = recipe_use_problem(recipe)
+    if problem:
+        raise RecipeNotApproved(problem, 1)
+    env_ok = recipetrust_mod.env_allowed(recipe, _trust_key)     # None: no limit
     if backend is None:
         backend = keychain_mod.detect_backend()
     env_values: dict = {}
@@ -254,7 +309,7 @@ def collect_values(recipe: dict, env_file: str, backend=None) -> dict:
                                   "it and try again.", 1)
             except keychain_mod.KeychainError:
                 value = None            # simply not stored there
-        if not value:
+        if not value and (env_ok is None or var in env_ok):
             if not env_values and os.path.exists(env_file):
                 try:
                     store_mod.refuse_link(env_file)

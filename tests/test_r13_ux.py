@@ -247,8 +247,9 @@ class TestHealthScreen(Home):
             item = fixcmd._port_item(s.getsockname()[1])
         finally:
             s.close()
-        self.assertEqual(item.level, fixcmd.YELLOW)
-        self.assertIn("stuntkey serve --port", item.step)
+        # round 14: only a calm note about the web page, never a warning
+        self.assertEqual(item.level, fixcmd.GREEN)
+        self.assertIn("stuntkey serve --port", item.text)
 
     def test_locked_keychain_is_red_with_a_next_step(self):
         from stuntkey import keychain
@@ -278,7 +279,7 @@ class TestHealthScreen(Home):
 
 class TestHelpAndCompletion(Home):
     def test_every_command_is_in_the_grouped_help(self):
-        code, out, _ = self.run_cli("help")
+        code, out, _ = self.run_cli("help", "--all")      # plain `help` is the short list (round 14)
         parser = cli._build_parser()
         for name in fixcmd._help_texts(parser):
             self.assertIn(f"stuntkey {name} ", out + " ", name)
@@ -286,7 +287,7 @@ class TestHelpAndCompletion(Home):
             self.assertIn(title, out)
 
     def test_help_lines_are_not_cut_mid_word(self):
-        code, out, _ = self.run_cli("help")
+        code, out, _ = self.run_cli("help", "--all")
         for line in out.splitlines():
             self.assertLessEqual(len(line), 110, line)
         self.assertNotRegex(out, r"\w\.\.\.\s*$")

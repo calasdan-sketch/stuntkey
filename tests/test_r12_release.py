@@ -35,7 +35,7 @@ class GeneratedPagesAreCurrent(unittest.TestCase):
     def test_every_generated_file_matches_the_tracked_copy(self):
         expected = {"docs/site/styles.css", "docs/site/index.html",
                     "docs/site/how-it-works.html", "docs/site/add-your-first-key.html",
-                    "docs/site/what-it-does-not-protect.html",
+                    "docs/site/what-it-does-not-protect.html", "docs/site/compare.html",
                     "stuntkey/web/index.html"}
         self.assertEqual(set(self.mod.OUT), expected)
         stale = []

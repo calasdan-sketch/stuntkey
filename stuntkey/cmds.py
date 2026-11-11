@@ -210,14 +210,32 @@ def cmd_start(catalog: dict, env_file: str) -> int:
     print("\nstuntkey - through the broker the key never enters your AI's environment.\n")
     d = scan_mod.doctor()
     print(scan_mod.format_doctor(d))
-    res = scan_mod.scan(["."], include_home=True)
-    n = len(res["findings"])
+    # The same look `stuntkey scan` takes, so the two always agree. A value
+    # that looks like a key but is an example is said out loud, not skipped
+    # in silence.
+    from . import findkeys
+    loose = findkeys.find_loose(".", catalog)
+    n = len(loose["findings"])
+    home_hits = scan_mod.scan([], include_home=True)["findings"]
     if n:
         print(f"\nHeads up: {n} place(s) where a key is lying around in plain "
               "text. Run `stuntkey scan` to see where (it never shows the "
               "key).")
     else:
         print("\nNo loose keys found nearby. Good.")
+    if loose["incomplete"]:
+        print("  (The look was cut short, so a clean result cannot be trusted. "
+              "Run `stuntkey scan` for details.)")
+    if home_hits:
+        files = sorted({h["file"] for h in home_hits})
+        print(f"  Also {len(home_hits)} key-looking value(s) in your own history or "
+              "settings files. Look at: "
+              + ", ".join(recipes_mod.printable(f) for f in files[:4])
+              + ("..." if len(files) > 4 else "")
+              + ". `stuntkey scan <file>` shows where in each.")
+    text = findkeys.examples_text(loose["examples"])
+    if text:
+        print("\n" + text.rstrip("\n"))
     have = [s for s, r in catalog.items() if _have_key(r, env_file)]
     if have:
         print(f"\nConnected already: {', '.join(sorted(have))}.")

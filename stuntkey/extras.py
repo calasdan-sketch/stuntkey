@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import difflib
+import os
 import sys
 
 from . import fixcmd
@@ -14,7 +15,11 @@ from . import recipes as recipes_mod
 
 COMMANDS = {"remote", "trust-server", "deploy", "install", "uninstall", "start",
             "overview", "audit", "call", "serve", "selftest", "scan-git", "doctor",
-            "try", "import", "fix", "update-check", "limits"}
+            "try", "import", "fix", "update-check", "limits", "test", "check", "try-it",
+            "undo", "recipe"}
+
+NEEDS_NEWER = ("This needs a newer stuntkey than the one that is installed. "
+               "Run `pipx upgrade stuntkey`, then try again.")
 
 
 PER_FOLDER_NOTE = ("Run this in your project folder. claude-code and vscode are set up for "
@@ -116,9 +121,40 @@ def add_parsers(sub) -> None:
     fx.add_argument("--json", action="store_true",
                     help="Only list what could be repaired, as JSON (changes nothing "
                          "unless --yes is also given).")
-    hp = sub.add_parser("help", help="The commands, grouped by what you want to do.")
+    hp = sub.add_parser("help", help="The commands you use every day; --all lists "
+                                     "every command.")
     hp.add_argument("topic", nargs="?", default=None,
                     help="A command name, for more about that one.")
+    hp.add_argument("--all", action="store_true",
+                    help="List every command, grouped by what you want to do.")
+    for tname in ("test", "check", "try-it"):       # check and try-it are the same command
+        kw = {"help": "Check that it all works: one line, PASS or FAIL, and the "
+                      "next step."} if tname == "test" else {}
+        tp = sub.add_parser(tname, **kw,
+                            description="Sends a pretend AI call through stuntkey to a "
+                                        "tiny pretend server on this computer, and "
+                                        "checks your safe store, Claude Code's safety "
+                                        "check and that your AI app is plugged in. "
+                                        "Prints ONE line: PASS or FAIL, and the one "
+                                        "next step. Nothing real is used.")
+        tp.add_argument("--verbose", action="store_true",
+                        help="Also list every problem, not just the first.")
+    ud = sub.add_parser("undo", help="Put back what setup, fix or get changed last.",
+                        description="Reverses the last change made by `stuntkey setup`, "
+                                    "`fix` or `get`, using the copies it made first: "
+                                    "settings files go back as they were, and keys that "
+                                    "change added are removed from the keychain. A key "
+                                    "that `rotate` replaced cannot come back (its old "
+                                    "value is not kept). Asks first.")
+    ud.add_argument("--yes", action="store_true", help="Do not ask first (for scripts).")
+    rc = sub.add_parser("recipe", help="Look at, or approve, recipes you made yourself.")
+    rcs = rc.add_subparsers(dest="recipe_cmd", required=True)
+    rcs.add_parser("list", help="Your own recipes and whether each is approved.")
+    ra = rcs.add_parser("approve", help="Approve one of your own recipes, so it may "
+                                        "be used with real keys (asks first).")
+    ra.add_argument("service", help="The recipe's service name.")
+    rr = rcs.add_parser("revoke", help="Take back the approval of one of your own recipes.")
+    rr.add_argument("service", help="The recipe's service name.")
     uc = sub.add_parser("update-check", help="Say which version you have, and (only if you "
                                               "ask) whether a newer one exists.")
     uc.add_argument("--online", action="store_true",
@@ -345,6 +381,39 @@ def _uninstall_hook(yes: bool, ask=None) -> int:
     return hook.cmd_hook(_ap.Namespace(hook_cmd="uninstall", project=False, settings=None))
 
 
+def _recipe_command(args) -> int:
+    """`recipe list` / `recipe approve <service>` / `recipe revoke <service>`."""
+    from . import remote
+    cmd = args.recipe_cmd
+    try:
+        if cmd == "approve":
+            return remote.recipe_approve(args.service)
+        if cmd == "revoke":
+            took = remote.recipe_revoke(args.service)
+            print("Approval taken back." if took else "That recipe had no approval.")
+            return 0
+        # list
+        folder = recipes_mod.user_recipes_dir()
+        names = sorted(n[:-5] for n in os.listdir(folder) if n.endswith(".json")) \
+            if os.path.isdir(folder) else []
+        if not names:
+            print("You have no recipes of your own yet. `stuntkey add` makes one.")
+            return 0
+        for name in names:
+            recipe, problem = recipes_mod.load_user_recipe(name)
+            if recipe is None:
+                print(f"  {recipes_mod.printable(name):20} cannot be used: {recipes_mod.printable(problem)}")
+                continue
+            label = remote.recipe_flag(recipe) or "approved"
+            print(f"  {recipes_mod.printable(name):20} {label}")
+            if label != "approved":
+                print(f"  {'':20} -> run `stuntkey recipe approve {recipes_mod.printable(name)}` "
+                      "if you made it yourself")
+        return 0
+    except (recipes_mod.RecipeError, OSError) as e:
+        print(f"error: {recipes_mod.printable(e)}", file=sys.stderr)
+        return 1
+
 def _tail(args) -> list:
     command = list(getattr(args, "command", []) or [])
     return command[1:] if command[:1] == ["--"] else command
@@ -375,6 +444,14 @@ def dispatch(args, catalog: dict):
     if cmd == "update-check":
         from . import fixcmd
         return fixcmd.cmd_update_check(args)
+    if cmd in ("test", "check", "try-it"):
+        from . import setupcmd
+        return setupcmd.cmd_test(args, catalog)
+    if cmd == "undo":
+        from . import undo
+        return undo.cmd_undo(args)
+    if cmd == "recipe":
+        return _recipe_command(args)
     if cmd == "try":
         from . import connect_try
         return connect_try.cmd_try(auto=args.auto)

@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en-CA">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>StuntKey compared - Calas Automations</title>
+<meta name="description" content="A fair look at StuntKey next to 1Password, Doppler, Infisical and dotenvx, with only facts we checked and where each is better.">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#0B2E45">
+<link rel="canonical" href="https://calasautomations.com/devtools/stuntkey/compare.html">
+<link rel="icon" type="image/png" href="favicon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Libre+Baskerville:ital,wght@0,400;0,700;1,400&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="bar"><div class="in">
+  <a class="lock" href="index.html" aria-label="StuntKey by Calas Automations, home"><span class="crest" aria-hidden="true"></span><span><span class="name">StuntKey</span><span class="sub">BY CALAS AUTOMATIONS</span></span></a>
+  <nav aria-label="Primary"><a href="index.html">Home</a><a href="how-it-works.html">How it works</a><a href="add-your-first-key.html">Add your first key</a><a href="compare.html" aria-current="page">Compare</a><a href="what-it-does-not-protect.html">What it does not protect</a><a href="https://github.com/calasdan-sketch/stuntkey">GitHub</a></nav>
+</div></header>
+<main id="main">
+<div class="page"><div class="wrap">
+  <p class="crumbs"><a href="index.html">StuntKey</a> / Compare</p>
+  <h1>StuntKey vs 1Password, Doppler, Infisical, <em>dotenvx</em></h1>
+  <p class="lede">These are good tools. They overlap with StuntKey, but they are made for different people. Below we say only what we checked, with a link. Anything else says &ldquo;check their site&rdquo;, because their products change.</p>
+  <h2>1Password</h2>
+  <ul class="tick">
+    <li>Its <a href="https://www.1password.dev/environments/claude-plugin">Claude plugin</a> needs a paid 1Password subscription, the 1Password desktop app, and Claude Code 2.1.273 or newer.</li>
+    <li>Its mounted .env file and its MCP connection work on Mac and Linux, not on Windows (as of November 2026).</li>
+    <li>The agent sees the names of your secrets only.</li>
+    <li>Everything else (prices, plans, what it does for a team): check their site.</li>
+  </ul>
+  <h2>Infisical Agent Vault</h2>
+  <ul class="tick">
+    <li><a href="https://infisical.com/blog/agent-vault-the-open-source-credential-proxy-and-vault-for-agents">Agent Vault</a> is an open-source credential proxy and vault for agents.</li>
+    <li>Everything else (setup, hosting, platforms): check their site.</li>
+  </ul>
+  <h2>Doppler</h2>
+  <ul class="tick">
+    <li><a href="https://www.doppler.com/agents">Doppler for agents</a> gives scoped, read-only service tokens that expire, and <code>doppler run</code> puts secrets into a program's environment.</li>
+    <li>Everything else (prices, limits, how it fits your tools): check their site.</li>
+  </ul>
+  <h2>dotenvx</h2>
+  <ul class="tick">
+    <li>We have not checked what dotenvx does for AI agents, so we will not guess: check their site.</li>
+  </ul>
+  <h2>Where they are better</h2>
+  <div class="note"><p>If you work with a team, need to share secrets between people, sync them between computers, keep audit records for a company, or run in the cloud, the tools above are made for that and StuntKey is not. StuntKey keeps your keys on one computer, for one person.</p></div>
+  <h2>Where StuntKey fits</h2>
+  <ul class="tick">
+    <li>Free and open source, MIT licence. Python standard library only.</li>
+    <li>Works on Windows, Mac and Linux, using your computer's own keychain. No account, no subscription.</li>
+    <li>One command, <code>stuntkey setup</code>, and one yes.</li>
+    <li>Your AI works with a stand-in. StuntKey adds the real key on the way out and hides it in the answer.</li>
+  </ul>
+  <div class="note"><p>StuntKey lowers the risk. It does not remove it, it is beta, and it has not had an independent security review. <a href="what-it-does-not-protect.html">What it does not protect</a>.</p></div>
+  <div class="ctas"><a class="btn" href="add-your-first-key.html">Add your first key</a></div>
+</div></div>
+</main>
+<footer class="foot"><div class="in">
+  <a class="lock" href="index.html" aria-label="StuntKey home"><span class="crest" aria-hidden="true"></span><span><span class="name">StuntKey</span><span class="sub">BY CALAS AUTOMATIONS</span></span></a>
+  <nav aria-label="Footer"><a href="index.html">Home</a><a href="how-it-works.html">How it works</a><a href="add-your-first-key.html">Add your first key</a><a href="compare.html" aria-current="page">Compare</a><a href="what-it-does-not-protect.html">What it does not protect</a><a href="https://github.com/calasdan-sketch/stuntkey">GitHub</a><a href="https://pypi.org/project/stuntkey/">PyPI</a><a href="https://github.com/calasdan-sketch/stuntkey/blob/main/docs/THREAT_MODEL.md">Threat model</a><a href="https://calasautomations.com/devtools/">All dev tools</a></nav>
+  <p class="fine">Free and open source, MIT licence. Python standard library only. Formerly OathKey and SafeEasyAPI.<br>
+  &copy; Calas Automations Inc., Winnipeg, Manitoba. Questions: <a href="mailto:office@calasautomations.com">office@calasautomations.com</a>. Security problem? <a href="mailto:security@calasautomations.com">security@calasautomations.com</a></p>
+</div></footer>
+</body>
+</html>

@@ -222,7 +222,7 @@ STEAL_RULES = (
     (re.compile(r"(?:(?:^|[\s;&|`(\"'/\\])(?:stuntkey|oathkey)(?:\.exe)?[\"']?|\s-\w*m\s+(?:stuntkey|oathkey)(?:\.\w+){0,3})"
                 r"(?:\s+--project-dir(?:\s+|=)\S+)*\s+"
                 r"(?:remote|deploy|trust-server|export|run|serve|call|forget|stop|resume|rotate|"
-                r"proxy|mint|panic|setup-agent|skill\s+install|"
+                r"proxy|mint|panic|setup-agent|skill\s+install|revoke|undo|recipe\s+(?:approve|revoke)|"
                 r"caps\s+(?:set|--clear)|policy\s+approve|(?:hook\s+)?uninstall|"
                 r"hook\s+install\b[^\n;&|]{0,200}--fail-open|"
                 r"install\s+(?:[^\n;&|]*\s)?--uninstall)(?![\w-])", re.I),

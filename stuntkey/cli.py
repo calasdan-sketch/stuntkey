@@ -12,14 +12,44 @@ import subprocess
 import sys
 
 from . import __version__
-from . import connect as connect_mod
 from . import extras
-from . import keychain as keychain_mod
-from . import mcp as mcp_mod
-from . import publicapis as pa_mod
 from . import recipes as recipes_mod
-from . import safeprompt
-from . import store as store_mod
+
+
+class _Lazy:
+    """A module that is imported the first time something in it is used.
+
+    Starting `stuntkey --version`, `help` or `status` used to load ~30
+    modules (connect, mcp, the hook, the scanner...) it never needs. Each
+    command now loads only what it runs. Reading, setting and patching an
+    attribute all act on the real module, so code and tests that do
+    `cli.keychain_mod.detect_backend` or patch it see the same thing as before.
+    """
+
+    def __init__(self, name: str):
+        object.__setattr__(self, "_name", name)
+
+    def _mod(self):
+        import importlib
+        return importlib.import_module("." + object.__getattribute__(self, "_name"),
+                                       __package__)
+
+    def __getattr__(self, attr):
+        return getattr(self._mod(), attr)
+
+    def __setattr__(self, attr, value):
+        setattr(self._mod(), attr, value)
+
+    def __delattr__(self, attr):
+        delattr(self._mod(), attr)
+
+
+connect_mod = _Lazy("connect")
+keychain_mod = _Lazy("keychain")
+mcp_mod = _Lazy("mcp")
+pa_mod = _Lazy("publicapis")
+safeprompt = _Lazy("safeprompt")
+store_mod = _Lazy("store")
 
 
 def _harden_streams() -> None:
@@ -42,15 +72,17 @@ def _harden_streams() -> None:
 
 NEXT_STEPS = """stuntkey: let your AI use your API keys without holding them.
 
-Three steps:
-  1. stuntkey get github     opens the key page; you click Copy; stuntkey tests and saves the key
-  2. stuntkey fix            switches everything on: Claude Code's safety check, Claude Desktop, Cursor
-  3. Restart the AI app, then ask it: "Who am I on GitHub?"
+Two steps:
+  1. stuntkey setup     does it all after one yes: finds loose keys, moves them to
+                        your keychain, switches on the protection, tests it
+  2. Close and reopen your AI app, then ask it: "Who am I on GitHub?"
 
+Add one key later:  stuntkey get   (a short menu; or copy the key first, then run it)
+Check it works:     stuntkey test  (one line: PASS or FAIL)
+Changed your mind?  stuntkey undo  puts back the last change.
 New here? `stuntkey try` is a practice run with a pretend key.
-Have keys in a .env file already? `stuntkey import .env` moves them.
 Is something not working? `stuntkey status` shows green, yellow or red; `stuntkey fix` repairs it.
-`stuntkey help` lists the commands by what you want to do."""
+`stuntkey help` lists the everyday commands; `stuntkey help --all` lists all of them."""
 
 
 def _show_banner(cmd: str) -> None:
@@ -214,7 +246,10 @@ def _build_parser() -> argparse.ArgumentParser:
         c = sub.add_parser(name, help=help_text)
         c.add_argument("service", help="Service slug (see `stuntkey list`). `get` also "
                                        "takes any site: a name or an address such as "
-                                       "example.com (saved untested).")
+                                       "example.com (saved untested). Leave it out with "
+                                       "`get` to pick from a short menu (or to use a key "
+                                       "you just copied).",
+                       **({"nargs": "?", "default": None} if name == "get" else {}))
         c.add_argument("--env-file", default=None,
                        help="Where to store the key with --store env "
                             "(default: the manifest's env_file, else .env).")
@@ -324,12 +359,24 @@ def _build_parser() -> argparse.ArgumentParser:
     ini.add_argument("--add", action="store_true", help="Add newly found services to an existing file.")
     ini.add_argument("--force", action="store_true", help="Start the file over.")
 
-    su = sub.add_parser("setup", help="Connect every service the project needs.",
-                        description="Connect each service in stuntkey.json that "
-                                    "has no key yet, in order. Services that "
-                                    "already have one are skipped, so it is safe to "
-                                    "run again after a stop.")
-    su.add_argument("service", nargs="*", help="Only these services.")
+    su = sub.add_parser("setup", help="Do it all in one go: find keys, protect them, "
+                                      "switch it on, test it.",
+                        description="One command, one yes. It looks for keys lying "
+                                    "around in this folder, moves the ones it "
+                                    "knows into your computer's safe store, switches "
+                                    "on the protection (Claude Code's safety check, "
+                                    "Claude Desktop, Cursor, Claude Code for all "
+                                    "folders) and tests that it works. Every change "
+                                    "keeps a backup: `stuntkey undo` puts it back. "
+                                    "To connect the services listed in this project's "
+                                    "stuntkey.json one by one instead, name them or "
+                                    "add --project.")
+    su.add_argument("service", nargs="*", help="Only these services (project mode).")
+    su.add_argument("--yes", action="store_true",
+                    help="Do not ask first (for scripts).")
+    su.add_argument("--project", action="store_true",
+                    help="Connect the services in this project's stuntkey.json, "
+                         "one by one (the old behaviour of this command).")
     su.add_argument("--env-file", default=None, help="Override the .env file.")
     su.add_argument("--dry-run", action="store_true", help="Say what would be done.")
     su.add_argument("--no-browser", action="store_true", help="Don't auto-open key pages.")
@@ -508,7 +555,8 @@ def _cmd_add(recipes_dir: str | None) -> int:
     if recipe["validate"]["auth"]["type"] == "header":
         recipe["validate"]["auth"]["header"] = _prompt("header name")
     try:
-        path = recipes_mod.save_recipe(recipe, recipes_dir)
+        from . import remote as _remote     # the person made it at a terminal: approved too
+        path, _approved = _remote.recipe_save_and_approve(recipe, recipes_dir)
     except recipes_mod.RecipeError as e:
         print(f"  recipe incomplete: {e}")
         return 1
@@ -635,11 +683,12 @@ def _confirm_forget(recipe: dict, yes: bool, out=None, reader=None,
 
 
 def _cmd_forget(recipe: dict, env_file: str, out=None,
-                keychain=keychain_mod, remove_env=store_mod.remove_key) -> int:
+                keychain=keychain_mod, remove_env=None) -> int:
     """Remove the service's key everywhere it may have been stored: the OS
     keychain entry (when this platform has one) and every ENV_VAR= line in
     the .env file. Says what was removed; never shows the key."""
     out = out or sys.stdout
+    remove_env = remove_env or store_mod.remove_key
     service, env_var = recipe["service"], recipe["env_var"]
     removed = []
     keychain_problem = None
@@ -882,6 +931,24 @@ def split_remote(argv: list[str]) -> tuple[list[str], list]:
     return argv, []
 
 
+def _say_examples_skipped(args, catalog: dict) -> None:
+    """After a text scan of a folder: values that look like a key but were
+    skipped as examples are named here, so nothing is skipped in silence."""
+    if getattr(args, "json", False) or getattr(args, "sarif", False) \
+            or getattr(args, "bundle", None):
+        return
+    path = getattr(args, "path", ".") or "."
+    try:
+        if not os.path.isdir(path):
+            return
+        from . import findkeys
+        text = findkeys.examples_text(findkeys.examples_skipped(path, catalog))
+    except Exception:           # noqa: BLE001 - an extra note must never break a scan
+        return
+    if text:
+        sys.stdout.write("\n" + text)
+
+
 def _keychain_available() -> bool:
     try:
         return keychain_mod.detect_backend() is not None
@@ -926,7 +993,10 @@ def _main(argv: list[str] | None = None) -> int:
                 parser.parse_args([args.topic, "--help"])
             except SystemExit as e:
                 return int(e.code or 0)
-        sys.stdout.write(fixcmd.render_help(parser))
+        if getattr(args, "all", False):
+            sys.stdout.write(fixcmd.render_help(parser))
+        else:
+            sys.stdout.write(fixcmd.render_everyday())
         return 0
     if args.cmd == "remote":
         args.command = tail
@@ -947,7 +1017,10 @@ def _main(argv: list[str] | None = None) -> int:
                   file=sys.stderr)
             return 2
     _show_banner(args.cmd)
-    if args.cmd in ("status", "setup"):
+    if args.cmd in ("check", "try-it"):
+        args.cmd = "test"           # the same command under two easier names
+    project_setup = args.cmd == "setup" and (args.project or bool(args.service))
+    if args.cmd == "status" or project_setup:
         from . import manifest as manifest_mod
         if not manifest_mod.find():
             if args.cmd == "status" and getattr(args, "json", False):
@@ -972,7 +1045,9 @@ def _main(argv: list[str] | None = None) -> int:
         # of your own names the hosts keys are sent to and brings its own regex
         catalog = (recipes_mod.load_recipes() if args.my_recipes
                    else recipes_mod.load_recipes(recipes_mod.RECIPES_DIR))
-        return scan_mod.cmd_scan(args, catalog)
+        code = scan_mod.cmd_scan(args, catalog)
+        _say_examples_skipped(args, catalog)
+        return code
     if args.cmd == "skill":
         from . import skillcmd
         return skillcmd.cmd_skill(args)
@@ -983,6 +1058,9 @@ def _main(argv: list[str] | None = None) -> int:
         return doctor_mod.cmd_doctor(args, catalog)
     catalog = recipes_mod.load_recipes()
 
+    if args.cmd == "setup" and not project_setup:
+        from . import setupcmd
+        return setupcmd.cmd_setup_all(args, catalog)
     if args.cmd == "wrap":
         from . import mcpwrap
         return mcpwrap.cmd_wrap(args, catalog)
@@ -1041,10 +1119,24 @@ def _main(argv: list[str] | None = None) -> int:
     any_site = args.cmd == "get"          # get also takes a site stuntkey does not know
     stdin_key = False
     key_lines = None
+    menu_key = None                       # a key picked up from the clipboard by the menu
+    menu_clip = None
+    if args.cmd == "get" and not args.service:
+        # `stuntkey get` on its own: a short menu, or the key just copied
+        from . import getmenu
+        picked = getmenu.choose(catalog)
+        if picked is None:
+            return 1
+        if picked[0] == "key":
+            _kind, args.service, menu_key, menu_clip = picked
+        else:
+            args.service = picked[1]
     if args.cmd == "get":                 # one command: keychain + copy-and-go
         args.cmd = "connect"
         stdin_key = getattr(args, "key_from_stdin", False)
-        if stdin_key:
+        if menu_key is not None:
+            stdin_key, key_lines = True, [menu_key]
+        elif stdin_key:
             key_lines = _lines_from_stdin()
             if key_lines is None:
                 return 2
@@ -1099,6 +1191,15 @@ def _main(argv: list[str] | None = None) -> int:
         return _cmd_run(chosen, [args.service] + list(args.command), env_file, args.redact, prefer)
     if args.cmd in ("connect", "rotate", "run", "forget"):
         recipe = catalog.get(args.service)
+        if not recipe:
+            # "open ai", "git hub", "chatgpt": same service, other spelling
+            from . import getmenu
+            slug = getmenu.best(args.service, catalog)
+            if slug:
+                print(f"  (I took '{recipes_mod.printable(args.service)}' to mean "
+                      f"{recipes_mod.printable(catalog[slug]['display'], words=True)}.)",
+                      file=sys.stderr)
+                args.service, recipe = slug, catalog[slug]
         from . import anysite
         if not recipe and any_site and anysite.looks_like_site(args.service, catalog):
             return anysite.cmd_get(
@@ -1157,13 +1258,28 @@ def _main(argv: list[str] | None = None) -> int:
             print(f"\n  rotating "
                   f"{recipes_mod.printable(recipe['display'], words=True)} - "
                   f"the stored key will be replaced.\n")
-        return connect_service(recipe, env_file=args.env_file, store=args.store,
-                               no_browser=args.no_browser or stdin_key,
-                               clipboard=args.clipboard,
-                               via_cli=args.via_cli, rotate=args.cmd == "rotate",
-                               allow_history=args.allow_clipboard_history,
-                               **({"key_lines": key_lines} if stdin_key else {}))
+        try:
+            return connect_service(recipe, env_file=args.env_file, store=args.store,
+                                   no_browser=args.no_browser or stdin_key,
+                                   clipboard=args.clipboard,
+                                   via_cli=args.via_cli, rotate=args.cmd == "rotate",
+                                   allow_history=args.allow_clipboard_history,
+                                   **({"key_lines": key_lines} if stdin_key else {}))
+        finally:
+            if menu_clip is not None:       # the key was used: do not leave it copied
+                _empty_clipboard(menu_clip)
+                menu_key = key_lines = None
     return 0
+
+
+def _empty_clipboard(clip) -> None:
+    try:
+        from . import clipboard as clipboard_mod
+        if not clipboard_mod.clear_verified(clip[0], clip[1]):
+            print("  I could not empty the clipboard: copy something else (a word) "
+                  "so the key is not left there.")
+    except Exception:           # noqa: BLE001 - never let this hide the real result
+        pass
 
 
 def _lines_from_stdin() -> list[str] | None:
@@ -1256,13 +1372,35 @@ def connect_service(recipe: dict, env_file: str = ".env", store: str = "env",
         extra["prompt"] = _next_line
     if no_browser:
         extra["opens_browser"] = False
+    had_key = store == "keychain" and not rotate and _keychain_has(recipe)
     code = connect_mod.connect(recipe, env_file=env_file, browser_open=opener,
                                store_fn=store_fn, clipboard=clip, via_cli=via_cli,
                                **extra)
     if code == 0:
         from . import ledger as ledger_mod
         ledger_mod.record(_project_root(), recipe["service"], store, rotated=rotate)
+        if store == "keychain" and not rotate and not had_key:
+            _note_for_undo(recipe)          # `stuntkey undo` can take this key out again
     return code
+
+
+def _keychain_has(recipe: dict) -> bool:
+    try:
+        backend = keychain_mod.detect_backend()
+        return bool(backend) and any(keychain_mod.read(recipe["service"], v, backend)
+                                     for v in recipes_mod.env_vars(recipe))
+    except Exception:           # noqa: BLE001 - not knowing means: do not offer to undo
+        return True
+
+
+def _note_for_undo(recipe: dict) -> None:
+    try:
+        from . import undo
+        change = undo.begin("get")
+        change.note_key(recipe["service"], list(recipes_mod.env_vars(recipe)))
+        change.commit()
+    except Exception:           # noqa: BLE001 - the key is saved; the note is a bonus
+        pass
 
 
 def _project_env_file() -> str | None:

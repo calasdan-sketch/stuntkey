@@ -24,8 +24,8 @@ import time
 from . import safeexec
 
 TIMEOUT = 120
-MAX_SHOWN = 900      # broker refuses requests whose description is longer
-SHOW_LIMIT = 1800    # the longest text a window shows once look-alike characters are spelled out
+MAX_SHOWN = 1250     # broker refuses requests whose description is longer
+SHOW_LIMIT = 2500    # the longest text a window shows once look-alike characters are spelled out
 
 
 def _tool(*paths):
