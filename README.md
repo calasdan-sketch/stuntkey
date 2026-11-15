@@ -13,7 +13,7 @@ that have already leaked into the files your agent reads.
 
 `leakbench` is a vendor-neutral benchmark of 64 ways an AI coding agent leaks a
 credential - reading `.env`, dumping the environment, printing a traceback,
-following an injected instruction. Run it yourself: `python -m leakbench --profile stuntkey-hook` (the default profile, `none`, is the unprotected baseline).
+following an injected instruction. Run it yourself from a clone of this repository (it is not part of the `pip install` package): `git clone https://github.com/calasdan-sketch/stuntkey && cd stuntkey && python -m leakbench --profile stuntkey-hook` (the default profile, `none`, is the unprotected baseline).
 
 | Protection | blocked | masked | leaked |
 |---|---|---|---|
