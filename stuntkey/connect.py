@@ -7,7 +7,6 @@ and the destination file.
 
 from __future__ import annotations
 
-import getpass
 import ipaddress
 import os
 import shutil
@@ -392,7 +391,7 @@ def store_in_env_file(env_file: str):
 
 
 def _ask_one(field: dict, single: bool, prompt, out, clip, taken: set,
-             confirm=None) -> str | None:
+             confirm=None, generic: bool = False, where: str = "") -> str | None:
     """One value: from the clipboard when copy-and-go is on, else the hidden
     prompt. Returns None when the person cancelled. Never shows the value.
     Ctrl-C while waiting for a Copy cancels; it does not fall through to the
@@ -408,20 +407,37 @@ def _ask_one(field: dict, single: bool, prompt, out, clip, taken: set,
                   f"nothing is shown; Ctrl-C stops)\n")
         out.flush()
         value = None
+        live = _is_live_terminal(out)       # a countdown only where it can redraw
+        if not live:
+            # An AI shell, a pipe or a log: nothing can be redrawn, so a
+            # silent wait looks like a hang. Say so, then one line a minute.
+            out.write("  (This window cannot show a live countdown, so I will print "
+                      "one short line every minute.)\n")
+            out.flush()
         try:
             for turn in range(1, rounds + 1):
-                value = clipboard_mod.wait_for_key(field.get("accept"), taken,
-                                                   get, clear)
+                tick = (_countdown(out, turn, rounds) if live
+                        else _heartbeat(out, turn, rounds))
+                try:
+                    value = clipboard_mod.wait_for_key(field.get("accept"), taken,
+                                                       get, clear, on_tick=tick)
+                finally:
+                    if live:
+                        _wipe_line(out)     # wipe the countdown line
                 if value or turn == rounds:
                     break
                 # The window ran out before anything was copied. Not a
                 # failure: say so in plain words and keep waiting. Only
                 # key-shaped text is ever taken, and Ctrl-C stops it.
-                out.write(f"  Still waiting for you to copy the {label} "
-                          f"(try {turn + 1} of {rounds}). Ctrl-C stops.\n")
+                out.write(f"  Nothing copied yet - that was round {turn} of {rounds}. "
+                          f"Still waiting for you to copy the {label} "
+                          f"(starting round {turn + 1}; you do not need to run "
+                          f"the command again). Ctrl-C stops.\n")
                 out.flush()
         except KeyboardInterrupt:
             _safe_clear(clear)
+            if live:
+                _wipe_line(out)
             out.write("\ncancelled.\n")
             return None
         if value:
@@ -429,20 +445,97 @@ def _ask_one(field: dict, single: bool, prompt, out, clip, taken: set,
             # people). A wrong copy is caught by the check that follows: it
             # goes only to the vendor's own address, and nothing is saved
             # unless the vendor accepts it.
+            emptied = clipboard_mod.clear_verified(get, clear)
+            if emptied:
+                tail = "clipboard emptied."
+            else:
+                tail = ("WARNING: I could NOT empty the clipboard - the key is still "
+                        "on it.\n    Copy something harmless (any word) over it now, "
+                        "and check Windows clipboard history (Win+V).")
             out.write(f"  ✓ Got your {label} from the clipboard "
-                      f"({clipboard_mod.describe(value)}; hidden) - clipboard emptied.\n")
+                      f"({clipboard_mod.describe(value)}; hidden) - {tail}\n")
             out.flush()
+            if generic and field.get("accept") is None:
+                # A site stuntkey has no recipe for: any key-shaped text on the
+                # clipboard is taken, so a poisoned clipboard could slip in a
+                # look-alike. Say what was captured (3 characters, never more)
+                # and where it goes, and wait for a yes. Known recipes keep the
+                # zero-prompt flow (Dan, 2026-11-08).
+                from . import safeprompt as _sp
+                if confirm is None and not (sys.stdin and sys.stdin.isatty()):
+                    out.write("  This site is new to me and I cannot ask you in this window, "
+                              "so the key was NOT kept.\n  Nothing was saved or sent. Run "
+                              "this in a normal terminal window.\n")
+                    return None
+                want = value[:3]
+                out.write(f"  This site is new to me, so I cannot tell whether that is the "
+                          f"right text.\n    It starts with \"{printable(want)}\" and is "
+                          f"{len(value)} characters long. If you saved it,\n    it goes "
+                          f"{printable(where or 'in your keychain', words=True)}.\n")
+                try:
+                    typed = (confirm or _sp.read_quiet)(
+                        f"  To save it, type those first 3 characters exactly "
+                        f"(capitals count); just press Enter to throw it away: ")
+                except (EOFError, KeyboardInterrupt):
+                    typed = ""
+                ok_to_save = bool(typed) and typed.strip() == want
+                typed = None                        # not kept
+                if not ok_to_save:
+                    out.write("  Thrown away. Nothing was saved or sent.\n")
+                    return None
             return value
-        out.write("  Nothing was copied in time. Paste the key here instead "
-                  "(nothing is shown):\n")
+        out.write(f"  Nothing was copied in {rounds * clipboard_mod.WAIT_SECONDS // 60} "
+                  f"minutes. Paste the key here instead (nothing is shown), or press "
+                  f"Ctrl-C to stop and run `stuntkey get` again when you have the key:\n")
     text = "  Paste your API key (hidden): " if single else f"  Paste the {label} (hidden): "
     try:
         return safeprompt.strip_paste_marks(prompt(text)).strip()
-    except (EOFError, KeyboardInterrupt):
+    except EOFError:
+        out.write("\n  I cannot take typing in this window. Run this in a normal "
+                  "terminal window (Command Prompt, PowerShell or Terminal) and "
+                  "try again. Nothing was saved.\n")
+        return None
+    except KeyboardInterrupt:
         return None
     finally:
         if clip is not None:
             _safe_clear(clip[1])
+
+
+def _is_live_terminal(out) -> bool:
+    try:
+        return bool(out.isatty())
+    except Exception:           # noqa: BLE001 - a StringIO, a closed stream
+        return False
+
+
+def _wipe_line(out) -> None:
+    """Blank the current line using the real width of this window."""
+    try:
+        width = shutil.get_terminal_size((80, 24)).columns
+    except (OSError, ValueError):
+        width = 80
+    out.write("\r" + " " * max(20, width - 1) + "\r")
+
+
+def _heartbeat(out, turn: int, rounds: int):
+    """For a window that cannot redraw: one short line per full minute."""
+    def tick(left: int) -> None:
+        if left > 0 and left % 60 == 0 and left != clipboard_mod.WAIT_SECONDS:
+            mins = left // 60
+            out.write(f"  Still waiting for your copy... {mins} minute"
+                      f"{'' if mins == 1 else 's'} left (round {turn} of {rounds}).\n")
+            out.flush()
+    return tick
+
+
+def _countdown(out, turn: int, rounds: int):
+    """A callback for wait_for_key that redraws one line: how long is left."""
+    def tick(left: int) -> None:
+        out.write(f"\r  Waiting for your copy... {left // 60}:{left % 60:02d} left "
+                  f"(round {turn} of {rounds})   ")
+        out.flush()
+    return tick
 
 
 def _safe_clear(clear) -> None:
@@ -555,7 +648,10 @@ def connect(
                 if value is None:
                     return 1
             else:
-                value = _ask_one(field, single, prompt, out, clipboard, taken, key_confirm)
+                value = _ask_one(field, single, prompt, out, clipboard, taken, key_confirm,
+                                 generic=bool(recipe.get("untested")),
+                                 where=(f"into {env_file}" if store_fn is None
+                                        else "in your keychain"))
             if value is None:
                 cancelled = True
                 break

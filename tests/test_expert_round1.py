@@ -161,7 +161,8 @@ class InstallPerFolder(unittest.TestCase):
         rc = clients.run(["claude-code"], False, ask=eof, out=out.append,
                          home=d, cwd=d, env={"APPDATA": d})
         self.assertEqual(rc, 1)
-        self.assertIn("no terminal to answer on; re-run with --yes", out)
+        self.assertIn(clients.NO_TERMINAL, out)       # plain words, says --yes
+        self.assertIn("--yes", clients.NO_TERMINAL)
         self.assertEqual(os.listdir(d), [])
         rc = clients.remove(["cursor"], False, ask=eof, out=out.append, home=d, cwd=d)
         self.assertEqual(rc, 0)          # nothing installed, nothing to ask

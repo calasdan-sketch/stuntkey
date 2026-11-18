@@ -138,6 +138,11 @@ def ok(text: str, file=None) -> str:
     return _out("%s %s" % (_tag("[ok]", BLUE, "✓", file), text), file)
 
 
+def note(text: str, file=None) -> str:
+    """A line that is only information: nothing is right or wrong (no [ok])."""
+    return _out("%s %s" % (_tag("[i]", BLUE, "i", file), text), file)
+
+
 def warn(text: str, file=None) -> str:
     """A friendly heads-up line."""
     return _out("%s %s" % (_tag("[!]", GOLD, "!", file), text), file)

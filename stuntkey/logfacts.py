@@ -3,10 +3,61 @@
 nothing from stuntkey, so it adds no import cycle."""
 from __future__ import annotations
 
+import json
 import os
+
+# The words the PreToolUse / PostToolUse hook writes in the activity log's
+# "result" field. They live here (a leaf module) so `doctor` can count them
+# without importing the hook, which would tie it into the hook import cycle.
+SHAPE_UNVERIFIED = "HOOK-POST-SHAPE-UNVERIFIED"   # a Read / Grep result in a shape we could not mask
+POST_FAILED_RESULT = "HOOK-POST-FAILED"           # the output check itself failed
+UNMASKABLE = "HOOK-POST-UNMASKABLE"               # a result with no text to mask (pdf, image ...)
+PROBE_SKIPPED = "HOOK-PROBE-SKIPPED"              # a big content search let through unchecked
+TAIL_BYTES = 1 << 20                              # only the last megabyte of the log is read
 
 
 BIG_LOG_ENTRIES = 50_000
+
+
+def default_audit_path() -> str:
+    """Where the activity log normally is (no stuntkey import: a leaf)."""
+    return os.path.join(os.path.expanduser("~"), ".stuntkey", "audit.log")
+
+
+def count_results(path, word: str) -> int:
+    """How many of the last TAIL_BYTES of the activity log at `path` are lines
+    whose "result" is `word`. Parsed line by line (a cut-off first line is
+    dropped); 0 when there is no log. Never raises."""
+    if not path:
+        return 0
+    needle = word.encode()
+    n = 0
+    try:
+        size = os.path.getsize(path)
+        with open(path, "rb") as f:
+            if size > TAIL_BYTES:
+                f.seek(size - TAIL_BYTES)
+                f.readline()
+            for line in f:
+                if needle not in line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(rec, dict) and rec.get("result") == word:
+                    n += 1
+    except OSError:
+        return 0
+    return n
+
+
+def shape_unverified_count(path=None) -> int:
+    return count_results(path or default_audit_path(), SHAPE_UNVERIFIED)
+
+
+def post_failures(path=None) -> int:
+    return count_results(path or default_audit_path(), POST_FAILED_RESULT)
 
 
 def log_facts(alog) -> dict:

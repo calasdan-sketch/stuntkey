@@ -164,10 +164,12 @@ def cmd_panic(args, catalog: dict, connect_fn, env_file: str, root: str,
     rv = dict(recipe.get("revoke") or {})
     rv.setdefault("page", recipe["key_url"])
     rv.setdefault("steps", ["Find the old key in the list and delete (revoke) it"])
+    locked = False
     try:
         old = (read_values or (lambda r: keychain_mod.gather(r, None, None, env_file)))(recipe)
     except keychain_mod.KeychainError:
         old = {}
+        locked = True               # the vault would not answer: that is NOT "no key stored"
     fps = [fingerprint(v) for v in old.values() if isinstance(v, str) and len(v) >= MIN_LEN]
     key = old.get(recipe["env_var"]) if len(env_vars(recipe)) == 1 else None
     old = None                                  # only the fingerprints are kept
@@ -176,7 +178,13 @@ def cmd_panic(args, catalog: dict, connect_fn, env_file: str, root: str,
         ledger.event(root, service, step, result)
 
     out.write(f"\n  panic: {printable(recipe['display'], words=True)}\n")
-    if key is None:
+    if locked:
+        out.write("  The keychain was locked or could not be reached, so stuntkey cannot tell "
+                  "whether a key is stored, and cannot revoke it by API or search for it.\n"
+                  "  To revoke by hand: unlock the keychain (sign in to this computer again) and "
+                  "run this again; or open the vendor's key page (step 1 below), delete the old "
+                  "key there, then run `stuntkey rotate " + service + "` once the keychain is back.\n")
+    elif key is None:
         out.write("  (no stored key found here, so it cannot be revoked by API "
                   "or searched for)\n")
     for i, line in enumerate(_plan(recipe, rv, key is not None), 1):

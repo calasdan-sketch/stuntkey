@@ -15,7 +15,6 @@ import hmac
 import os
 import random
 import re
-import shutil
 import subprocess
 import sys
 import threading
@@ -23,7 +22,19 @@ import time
 
 from . import safeexec
 
-TIMEOUT = 120
+TIMEOUT = 120               # seconds a person has to answer (default)
+TIMEOUT_VAR = "STUNTKEY_APPROVE_TIMEOUT"
+TIMEOUT_MIN, TIMEOUT_MAX = 10, 900
+
+
+def timeout_seconds(environ=None) -> int:
+    """How long the approval window waits: STUNTKEY_APPROVE_TIMEOUT seconds,
+    kept between 10 and 900; anything that is not a number means the default."""
+    raw = (environ if environ is not None else os.environ).get(TIMEOUT_VAR, "").strip()
+    try:
+        return max(TIMEOUT_MIN, min(TIMEOUT_MAX, int(float(raw))))
+    except (ValueError, OverflowError):
+        return TIMEOUT
 MAX_SHOWN = 1250     # broker refuses requests whose description is longer
 SHOW_LIMIT = 2500    # the longest text a window shows once look-alike characters are spelled out
 
@@ -182,7 +193,7 @@ def dialog(summary: str) -> bool | None:
             if not ps:
                 return None
             cmd = [ps, "-NoProfile", "-NonInteractive", "-Command", WIN_SCRIPT]
-            return subprocess.run(cmd, env=env, timeout=TIMEOUT,
+            return subprocess.run(cmd, env=env, timeout=timeout_seconds(),
                                   capture_output=True).returncode == 0
         if sys.platform == "darwin":
             osa = _tool("/usr/bin/osascript")
@@ -193,14 +204,14 @@ def dialog(summary: str) -> bool | None:
                  'display dialog (system attribute "SEA_MSG") with title '
                  '"stuntkey - permission needed" buttons {"No","Yes"} '
                  'default button "No" with icon caution'],
-                env=env, timeout=TIMEOUT, capture_output=True, text=True)
+                env=env, timeout=timeout_seconds(), capture_output=True, text=True)
             return r.returncode == 0 and "button returned:Yes" in r.stdout
         for names, argv in ((("zenity",), ["--question", "--no-markup",
                                            "--title=stuntkey", "--text=" + msg]),
                             (("kdialog",), ["--yesno", "<qt>" + _no_markup(msg) + "</qt>", "--title", "stuntkey"])):
             exe = _tool(*[d + "/" + n for n in names for d in ("/usr/bin", "/bin")])
             if exe:
-                return subprocess.run([exe] + argv, env=env, timeout=TIMEOUT,
+                return subprocess.run([exe] + argv, env=env, timeout=timeout_seconds(),
                                       capture_output=True).returncode == 0
     except subprocess.TimeoutExpired:
         return False                 # no answer in time means no

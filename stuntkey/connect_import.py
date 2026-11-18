@@ -350,10 +350,8 @@ def cmd_import(args, catalog: dict, out=None, reader=None, keychain=keychain_mod
 
 def _cmd_import(args, catalog, out, reader, keychain, interactive) -> int:
     if interactive is None:
-        try:
-            interactive = bool(sys.stdin and sys.stdin.isatty())
-        except (OSError, ValueError):
-            interactive = False
+        # On Windows a closed input (NUL) calls itself a terminal; this asks the console too.
+        interactive = safeprompt.stdin_is_terminal()
     if bool(args.file) == bool(args.paste):
         out.write("  Say where the keys are: `stuntkey import FILE`, or "
                   "`stuntkey import --paste`.\n")
@@ -372,7 +370,6 @@ def _cmd_import(args, catalog, out, reader, keychain, interactive) -> int:
         return 1
     finally:
         text = ""
-    names_in_file = len(pairs)
     matched, unknown, info = match_services_ex(pairs, catalog)
     pairs = None
     skipped = []                      # (name, why): right name, wrong-looking value

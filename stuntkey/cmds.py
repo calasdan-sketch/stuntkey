@@ -39,24 +39,66 @@ from .logfacts import BIG_LOG_ENTRIES, log_facts, log_lines  # noqa: E402,F401  
 
 # ---- status ---------------------------------------------------------------------
 
+def _next_step() -> str:
+    """The same advice `status` and `fix` give. Where `fix` cannot plug stuntkey
+    into Claude Code (no `claude` program), the exact command is shown here, not
+    "run fix" (which would only print it)."""
+    try:
+        from . import claudecode
+        if claudecode.detected() and claudecode.state() != "ok" and claudecode.cli_path() is None:
+            return ("  Next: for Claude Code, type this one command: "
+                    + claudecode.one_command()
+                    + "\n        (`stuntkey setup` does the rest.)")
+    except Exception:           # noqa: BLE001 - advice only
+        pass
+    return "  Next: `stuntkey setup` to switch it on in your AI app, or `stuntkey status` to check."
+
+
 def cmd_status(catalog: dict, env_file: str, as_json: bool) -> int:
-    rows = [{"service": s, "key_stored": _have_key(r, env_file)}
-            for s, r in sorted(catalog.items())]
+    from . import fixcmd
+    # Only keys really in the keychain count as stored. A key found only in a
+    # .env file (not protected) is said separately; an example value there
+    # (sk-xxxx, your_key_here) is not a key at all.
+    safe, loose = fixcmd.key_places(catalog, env_file)
     alog = broker.AuditLog(os.path.join(_home(), "audit.log"))
     ok, n = alog.verify()
     warn = alog.describe()
     facts = log_facts(alog)
-    info = {"python": sys.version.split()[0], "services": len(rows),
-            "with_keys": sum(r["key_stored"] for r in rows),
+    info = {"python": sys.version.split()[0], "services": len(catalog),
+            "with_keys": len(safe),
             "audit_log_ok": ok, "audit_entries": n,
-            "connected": [r["service"] for r in rows if r["key_stored"]],
+            "connected": safe, "env_file_only": loose,
             "audit_bytes": facts["bytes"], "audit_last_write": facts["last_write"]}
-    head = ("stuntkey is ready." if info["with_keys"]
-            else "Not ready yet: no key is saved. Run `stuntkey start`.")
+    # ONE state for status, overview, doctor and test (fixcmd.state): the same
+    # checks, so the words here can never disagree with `stuntkey status`.
+    try:
+        items = fixcmd.collect(catalog, env_file=env_file)
+        state_name, state_words = fixcmd.state(items)
+        first_open = next((i for i in sorted(items, key=lambda i: i.level != fixcmd.RED)
+                           if i.level != fixcmd.GREEN), None)
+    except Exception:           # noqa: BLE001 - the overview must still answer
+        state_name, state_words, first_open = (fixcmd.ATTENTION if not info["with_keys"]
+                                               else fixcmd.READY), "", None
+    info["state"] = state_name
+    if state_name == fixcmd.READY:
+        head = "stuntkey is ready."
+    elif not info["with_keys"] and state_name == fixcmd.ALMOST:
+        head = "Not ready yet: no key is saved in your keychain."
+    elif state_name == fixcmd.ALMOST:
+        head = f"Almost ready: {state_words}."
+    else:
+        head = f"Not ready yet: needs attention ({state_words or 'run `stuntkey status`'})."
+    if first_open is not None and state_name != fixcmd.READY \
+            and not (not info["with_keys"] and first_open.key == "keys"):
+        info["first_open"] = first_open.text
+        head += f"\n  First: {recipes_mod.printable(first_open.text)}"
     text = (f"{head}\n"
-            f"  services known: {info['services']}   with a key stored: "
+            f"  services known: {info['services']}   with a key stored in the keychain: "
             f"{info['with_keys']}\n"
             f"  connected: {', '.join(info['connected']) or 'none yet'}\n"
+            + (f"  found only in a .env file, not protected: {', '.join(loose)}"
+               " (`stuntkey setup` moves them into the keychain)\n" if loose else "")
+            +
             f"  activity log: {'intact' if ok else 'check FAILED - run `stuntkey audit show`'} "
             f"({n} entries)")
     extra = log_lines(facts)
@@ -65,11 +107,81 @@ def cmd_status(catalog: dict, env_file: str, as_json: bool) -> int:
     if warn:
         text += f"\n  {warn}"
         info["audit_note"] = warn
-    text += "\n" + ("  Next: `stuntkey get <service>` to connect a key, or `stuntkey try` to practise."
-                    if not info["with_keys"] else
-                    "  Next: `stuntkey fix` to switch it on in your AI app, or `stuntkey status` to check.")
+    if not info["with_keys"]:
+        nxt = "  Next: `stuntkey get <service>` to connect a key, or `stuntkey try` to practise."
+    elif state_name != fixcmd.READY and first_open is not None and first_open.step:
+        nxt = "  Next: " + recipes_mod.printable(first_open.step)
+    else:
+        nxt = _next_step()
+    text += "\n" + nxt
+    stale = fixcmd.stale_program_warning()
+    if stale and not as_json:
+        text += "\n  Note: " + stale
     _emit(info, as_json, text)
     return OK if ok else PROBLEM
+
+
+# ---- asking the person (call, resume) ----------------------------------------------
+
+WINDOW_NOTICE = "A permission window has opened - look for it (or type the code here)."
+
+
+def _say(text: str) -> None:
+    try:
+        print(text, file=sys.stderr, flush=True)
+    except (OSError, ValueError):
+        pass
+
+
+def ask_with_notice(summary: str, ask=None, say=None, wait=None, grace: int = 5) -> bool:
+    """Ask the person, but never in silence and never forever: first say that a
+    window has opened, then wait at most the time the approval window itself
+    allows (STUNTKEY_APPROVE_TIMEOUT, read by approve.py) and treat no answer
+    as no. `ask`, `say` and `wait` are for tests."""
+    import threading
+    ask = ask or approve_mod.ask_person
+    say = say or _say
+    limit = approve_mod.timeout_seconds() if wait is None else wait
+    say(WINDOW_NOTICE)
+    box: dict = {}
+
+    def run():
+        try:
+            box["answer"] = bool(ask(summary))
+        except BaseException:       # noqa: BLE001 - any failure to ask means no
+            box["answer"] = False
+
+    t = threading.Thread(target=run, daemon=True)
+    t.start()
+    t.join(limit + grace)           # approve.py's own wait ends first; this is the backstop
+    if t.is_alive():
+        say(f"No answer in {limit} seconds, so the answer is no. Nothing was done.")
+        return False
+    return bool(box.get("answer"))
+
+
+def cmd_resume(args=None, home: str | None = None, ask=None, interactive=None) -> int:
+    """`stuntkey resume`: allow calls again after `stuntkey stop`. A window asks
+    first. --yes skips that question ONLY when you typed the command in a real
+    terminal; from a script or an AI's shell a window still decides, so an AI
+    cannot switch the kill switch off on its own."""
+    from . import caps
+    home = home or _home()
+    chooser = ask
+    if getattr(args, "yes", False) and ask is None:
+        if interactive is None:
+            from . import safeprompt
+            interactive = safeprompt.stdin_is_terminal()
+        if interactive:
+            chooser = lambda _summary: True      # noqa: E731
+        else:
+            _say("--yes only works when you type this in a terminal window yourself; "
+                 "here a permission window decides instead.")
+    try:
+        return caps.cmd_resume(home, chooser or ask_with_notice)
+    except broker.BrokerError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return e.code
 
 
 # ---- call -----------------------------------------------------------------------
@@ -96,7 +208,7 @@ def cmd_call(recipe: dict, args) -> int:
         except ValueError:
             print("error: --data is not valid JSON (a typing mistake in the braces or quotes). Example: --data '{\"name\": \"x\"}'", file=sys.stderr)
             return USAGE
-    policy = broker.Policy(allow_write=False, approve=approve_mod.ask_person)
+    policy = broker.Policy(allow_write=False, approve=ask_with_notice)
     audit = broker.AuditLog(os.path.join(_home(), "audit.log"))
     try:
         values = remote.collect_values(recipe, args.env_file)
@@ -110,17 +222,40 @@ def cmd_call(recipe: dict, args) -> int:
         print(f"error: {e}", file=sys.stderr)
         return e.code if e.code in (POLICY, NETWORK) else PROBLEM
     if args.json:
-        print(json.dumps(out))
+        print(json.dumps(out, separators=(",", ":")))
     else:
         print(f"[{out['status']}]")
-        print(out["body"])
+        print(str(out["body"]).strip("\r\n"))
+    if out["status"] in (401, 403):
+        # one plain next step (to stderr, so a script reading the output is not disturbed)
+        print(f"The key was rejected. Run `stuntkey rotate {recipe['service']}`.", file=sys.stderr)
     return OK if out["status"] < 400 else PROBLEM
 
 
 # ---- audit ----------------------------------------------------------------------
 
-def cmd_audit(action: str, as_json: bool, last: int = 20) -> int:
+def cmd_audit(action: str, as_json: bool, last: int = 20, warden: bool = False,
+              since: str | None = None, out_path: str | None = None) -> int:
     log = broker.AuditLog(os.path.join(_home(), "audit.log"))
+    if action == "export":
+        from . import wardenfeed
+        if not warden:
+            print("error: say which format: `stuntkey audit export --warden`.", file=sys.stderr)
+            return USAGE
+        target = out_path or os.path.join(_home(), wardenfeed.FEED_NAME)
+        try:
+            n = wardenfeed.export(log.path, target, since)
+        except wardenfeed.FeedError as e:
+            print(f"error: {e}", file=sys.stderr)
+            return USAGE if "--since" in str(e) else PROBLEM
+        intact, _n = log.verify()
+        _emit({"written": target, "events": n, "log_intact": intact}, as_json,
+              f"wrote {n} lines to {target} and {wardenfeed.planok_path(target)} (shaped for "
+              "warden's `report --from mcp-jail|planok --file`; not tried against a live "
+              "warden). The activity log was only read, not changed."
+              + ("" if intact else "\nWARNING: the activity log does not check out "
+                 "(run `stuntkey audit`); this copy may be false."))
+        return OK
     if action == "reset":
         try:
             kept = log.reset()
@@ -209,7 +344,9 @@ def cmd_start(catalog: dict, env_file: str) -> int:
     from . import gitscan as scan_mod
     print("\nstuntkey - through the broker the key never enters your AI's environment.\n")
     d = scan_mod.doctor()
-    print(scan_mod.format_doctor(d))
+    shown = scan_mod.format_doctor(d)
+    # "Start here" comes once, at the end: not also as the doctor's own "Next:" line
+    print(shown.replace("  Ready. Next: stuntkey setup (then stuntkey get github)", "  Ready."))
     # The same look `stuntkey scan` takes, so the two always agree. A value
     # that looks like a key but is an example is said out loud, not skipped
     # in silence.
@@ -236,16 +373,19 @@ def cmd_start(catalog: dict, env_file: str) -> int:
     text = findkeys.examples_text(loose["examples"])
     if text:
         print("\n" + text.rstrip("\n"))
-    have = [s for s, r in catalog.items() if _have_key(r, env_file)]
+    from . import fixcmd
+    # Only keys really in the keychain are "connected". A key that sits only
+    # in a .env file is said apart (it is not protected); an example is neither.
+    have, loose_env = fixcmd.key_places(catalog, env_file)
     if have:
-        print(f"\nConnected already: {', '.join(sorted(have))}.")
-        print("Next: run `stuntkey fix` to switch everything on (Claude Code's "
-              "safety check, Claude Desktop, Cursor). Then fully quit and "
-              "reopen that app. For other AI tools, `stuntkey serve`.")
-    else:
-        print("\nNext: connect your first service, for example:\n"
-              "  stuntkey get github\n"
-              "Then run `stuntkey fix` to switch everything on.")
+        print(f"\nConnected already (in your keychain): {', '.join(sorted(have))}.")
+    if loose_env:
+        print(f"\nFound only in a .env file, not protected: {', '.join(sorted(loose_env))}. "
+              "`stuntkey setup` moves them into the keychain.")
+    stale = fixcmd.stale_program_warning()
+    if stale:
+        print("\n  Note: " + stale)
+    print("\n" + fixcmd.render_start_here().rstrip("\n"))
     return OK if d["ok"] else PROBLEM
 
 

@@ -239,8 +239,12 @@ def describe(value: str) -> str:
 
 def wait_for_key(pattern: str | None, taken: set[str], get, clear,
                  wait: float = WAIT_SECONDS, poll: float = POLL_SECONDS,
-                 now=time.monotonic, sleep=time.sleep) -> str | None:
+                 now=time.monotonic, sleep=time.sleep, on_tick=None) -> str | None:
     """The next key-shaped value copied, or None after `wait` seconds.
+
+    `on_tick(seconds_left)` (optional) is called when the whole number of
+    seconds left changes, so a caller can show a countdown. It never gets
+    clipboard text. A failing callback is ignored.
 
     What is on the clipboard when waiting starts is taken only when the
     recipe's pattern recognises it (the person copied the key a moment
@@ -266,7 +270,16 @@ def wait_for_key(pattern: str | None, taken: set[str], get, clear,
         start = ""
     seen = start
     deadline = now() + wait
+    last_shown = None
     while now() < deadline:
+        if on_tick is not None:
+            left = max(0, int(deadline - now() + 0.999))
+            if left != last_shown:
+                last_shown = left
+                try:
+                    on_tick(left)
+                except Exception:       # noqa: BLE001 - a display problem must not stop the wait
+                    on_tick = None
         sleep(poll)
         current = (get() or "").strip()
         if current == seen:

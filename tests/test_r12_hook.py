@@ -269,7 +269,9 @@ class PartialRunCost(unittest.TestCase):
         keys = ["".join(rnd.choice(alphabet) for _ in range(rnd.choice((24, 32, 40, 48))))
                 for _ in range(60)]
         keys += ["sk-" + "".join(rnd.choice(alphabet + "-_") for _ in range(44)) for _ in range(20)]
-        self.assertFalse(scrub.loosely_contains(text, keys),
+        # This is about false matches, not speed: it takes ~7 s here, the library's own 8 s limit
+        # answers True on a slow or busy machine, so give it a generous limit of its own.
+        self.assertFalse(scrub.loosely_contains(text, keys, deadline=time.monotonic() + 120),
                          "a random key must never match ordinary text")
 
     def test_a_key_that_is_a_plain_phrase_does_trip_and_that_is_documented(self):
@@ -559,9 +561,10 @@ class PostFailureIsRecorded(unittest.TestCase):
         self.assertIn("withheld", got["updatedToolOutput"]["stdout"])
 
     def test_the_post_matcher_claim_is_the_documented_one(self):
-        # Read / Grep / Glob / WebFetch / WebSearch / Task have no documented output shape: guarded
-        # BEFORE the call, not masked after; the matcher says exactly what is masked
-        self.assertEqual(hook_mod.POST_MATCHER, "^(Bash|PowerShell|mcp__.*)$")
+        # Glob / WebFetch / WebSearch / Task have no known output shape: guarded BEFORE the call,
+        # not masked after. Read / Grep are in the matcher (round 2) but only in a strictly checked,
+        # third-party-reported shape (unverified live): a plain string answer is left alone.
+        self.assertEqual(hook_mod.POST_MATCHER, "^(Bash|PowerShell|Read|Grep|mcp__.*)$")
         for tool in ("Read", "Grep", "Glob", "WebFetch", "Task"):
             self.assertEqual(hook_mod.post_check({"tool_name": tool, "tool_response": "x " + K40}), "")
 

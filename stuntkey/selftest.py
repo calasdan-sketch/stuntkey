@@ -584,6 +584,85 @@ def _run_all() -> list[dict]:
     return results
 
 
+CACHE_NAME = "selftest-cache.json"
+CACHE_SECONDS = 600         # a clean result is reused for ten minutes, no longer
+
+
+def attack_count() -> int:
+    try:
+        return len(attacks())
+    except Exception:           # noqa: BLE001 - only a number for a message
+        return 0
+
+
+def _code_stamp() -> str:
+    """Changes when stuntkey's own files change, so an edit is never hidden
+    behind an old clean result."""
+    import hashlib
+    from . import __version__
+    here = os.path.dirname(os.path.abspath(__file__))
+    h = hashlib.sha256()
+    h.update(__version__.encode("utf-8"))
+    try:
+        for root, dirs, files in os.walk(here):
+            dirs[:] = sorted(d for d in dirs if d != "__pycache__")
+            for name in sorted(files):
+                if name.endswith((".pyc", ".pyo")):
+                    continue
+                full = os.path.join(root, name)
+                h.update(os.path.relpath(full, here).replace("\\", "/").encode("utf-8"))
+                h.update(b"\0")
+                try:
+                    with open(full, "rb") as f:
+                        h.update(f.read())
+                except OSError:
+                    h.update(b"unreadable")
+                h.update(b"\0")
+    except OSError:
+        h.update(b"walk-failed")
+    return f"{__version__}|{h.hexdigest()}"
+
+
+def _cache_path() -> str:
+    from . import remote
+    return os.path.join(remote.home_dir(), CACHE_NAME)
+
+
+def checked(say=None, use_cache: bool = True, now=None) -> tuple:
+    """(passed, total, from_cache). Runs the attack tests, saying one line
+    first (`say(text)`), unless a clean result from the last few minutes is
+    still good: same stuntkey files, and only a full pass is ever kept. A
+    replaced run_all (a test) is never cached."""
+    import time
+    now = now or time.time
+    real = getattr(run_all, "__module__", "") == __name__
+    path = _cache_path() if (use_cache and real) else None
+    if path:
+        try:
+            with open(path, encoding="utf-8") as f:
+                c = json.load(f)
+            if (c.get("stamp") == _code_stamp() and c.get("passed") == c.get("total")
+                    and 0 <= now() - float(c.get("at", 0)) < CACHE_SECONDS):
+                return int(c["passed"]), int(c["total"]), True
+        except (OSError, ValueError, TypeError, KeyError):
+            pass
+    if say is not None:
+        n = attack_count()
+        say(f"Checking {n} attack tests (about 6 seconds)..." if n
+            else "Checking the attack tests (about 6 seconds)...")
+    results = run_all()
+    passed = sum(1 for r in results if r["pass"])
+    if path and passed == len(results):
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump({"stamp": _code_stamp(), "at": now(), "passed": passed,
+                           "total": len(results)}, f)
+        except OSError:
+            pass
+    return passed, len(results), False
+
+
 BETA_NOTICE = ("Beta: not independently security-reviewed yet. "
                "Use at your own risk; MIT, no warranty.")
 

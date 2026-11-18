@@ -86,7 +86,7 @@ class Flow(unittest.TestCase):
             return True
         code = connect.connect(recipe, browser_open=opened.append, out=out,
                                prompt=mock.Mock(side_effect=AssertionError("prompted")),
-                               validate_fn=sent, confirm_in=lambda q: "",
+                               validate_fn=sent, confirm_in=lambda q: FAKE_KEY[:3],
                                store_fn=lambda var, key: stored.setdefault(var, key) and
                                f"saved {var}", clipboard=(get, clear))
         return code, out.getvalue(), opened, stored

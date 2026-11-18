@@ -22,6 +22,8 @@ from . import recipes as recipes_mod
 
 GREEN, YELLOW, RED = "green", "yellow", "red"
 DEFAULT_PORT = 8787
+CLEAN_ENV_STEP = ("Run `stuntkey clean-env` to remove the plaintext copy "
+                  "(a backup is kept, and `stuntkey undo` puts it back).")
 
 # Filled in by extras.py when it loads (it owns these two helpers). They are handed
 # over instead of imported so this module never imports extras/cmds/cli (that would
@@ -92,10 +94,12 @@ def fix_hook(path: str) -> str:
     handler = hook.hook_handler(shell_form=shell_form, fail_closed=True)
     # Test BEFORE writing: a safety check that cannot run, set to block on failure,
     # would stop every Claude Code action.
-    if not hook.self_test(handler):
+    # A busy computer can make the first try time out: try once more before failing.
+    if not (hook.self_test(handler) or hook.self_test(handler)):
         raise RuntimeError("a test run of the safety check did not answer as expected, "
                            "so I did not switch it on (Claude Code would have been "
-                           "blocked). Try `pipx reinstall stuntkey`, then `stuntkey fix`")
+                           "blocked). Run `stuntkey doctor` and read the first red line, "
+                           "then run `stuntkey fix` again")
     result = hook.merge_install(data, handler)
     if result != "unchanged":
         hook.save_settings(path, data, had)
@@ -352,7 +356,7 @@ def _home_items() -> list:
                             "The activity log has no signature key yet, so it cannot "
                             "prove nobody edited it.",
                             "Run `stuntkey fix`.", fix_home,
-                            "create the activity log's signature key"))
+                            "set up the activity log so any edit to it can be noticed"))
         elif d.get("key") == "unavailable" and d["n"]:
             out.append(Item("log", YELLOW,
                             "The activity log cannot be signed on this computer, so edits "
@@ -380,9 +384,11 @@ def _port_item(port: int) -> Item:
         s.close()
     if busy:
         it = Item("port", GREEN,
-                  f"Port {port} is in use by something else. This only matters if you "
-                  f"use the stuntkey web page; then run `stuntkey serve --port {port + 1}`.")
+                  f"Note, not a problem: another program is using port {port}. This "
+                  f"only matters if you use the stuntkey web page; then run "
+                  f"`stuntkey serve --port {port + 1}`. Nothing to fix.")
         it.quiet = False
+        it.note_only = True         # information, not a check that passed: shown as [i], not [ok]
         return it
     it = Item("port", GREEN, f"The web page's port ({port}) is free.")
     it.quiet = True             # nothing to say: left out of the screen
@@ -405,29 +411,96 @@ def _files_item() -> Item | None:
     return None
 
 
-def _keys_item(catalog: dict | None) -> Item:
+def key_places_full(catalog: dict | None = None, env_file: str = ".env") -> dict:
+    """Where each service's key is: {"safe": [in the keychain], "loose": [ONLY in
+    the .env file], "both": [in the keychain AND a plaintext copy in .env],
+    "unavailable": [the keychain did not answer, so nothing could be said]}.
+    An example value in a .env file (sk-xxxx, your_key_here) is not a key and
+    counts for nothing. Never returns a value."""
     from . import remote
-
-    def has(recipe):
+    from . import scan as scan_mod
+    if catalog is None:
+        catalog = recipes_mod.load_recipes()
+    res = {"safe": [], "loose": [], "both": [], "unavailable": []}
+    for service, recipe in sorted(catalog.items()):
+        in_keychain = False
         try:
-            remote.collect_values(recipe, ".env")
-            return True
+            remote.collect_values(recipe, "")           # no .env: the keychain only
+            in_keychain = True
+        except remote.RemoteError as e:
+            if "did not answer" in str(e):
+                res["unavailable"].append(service)
+                continue
+        in_env = False
+        try:
+            # round 3: the .env file is looked at even when the keychain has the key
+            values = remote.collect_values(recipe, env_file, backend=False)
+            in_env = all(not scan_mod.is_placeholder(str(v)) for v in values.values())
         except remote.RemoteError:
-            return False
+            pass
+        if in_keychain and in_env:
+            res["both"].append(service)
+        if in_keychain:
+            res["safe"].append(service)
+        elif in_env:
+            res["loose"].append(service)
+    return res
+
+
+def key_places(catalog: dict | None = None, env_file: str = ".env") -> tuple:
+    """([services with a key in the keychain], [services whose key is ONLY in
+    the .env file]). See key_places_full for the rest."""
+    r = key_places_full(catalog, env_file)
+    return r["safe"], r["loose"]
+
+
+def _keys_item(catalog: dict | None, env_file: str = ".env") -> Item:
     try:
-        if catalog is None:
-            catalog = recipes_mod.load_recipes()
-        have = [s for s, r in sorted(catalog.items()) if has(r)]
+        r = key_places_full(catalog, env_file)
     except Exception:           # noqa: BLE001
         return Item("keys", YELLOW, "Could not look up which keys are saved.", "")
+    have, loose, both, down = r["safe"], r["loose"], r["both"], r["unavailable"]
+    if down and not have and not loose:
+        return Item("keys", YELLOW,
+                    "Keychain unavailable: I could not check which keys are saved "
+                    "(it may be locked or busy).",
+                    "Unlock your computer (sign out and in if needed), then run "
+                    "`stuntkey status` again.")
+    note = ""
+    if loose:
+        note = (f"{len(loose)} more only in a .env file, not protected: "
+                + ", ".join(loose[:8]) + ("..." if len(loose) > 8 else "") + ".")
+    if both:
+        note = (note + " " if note else "") + (
+            f"{len(both)} also have a plaintext copy in a .env file: "
+            + ", ".join(both[:8]) + ("..." if len(both) > 8 else "")
+            + " (remove that copy: it is a second, unprotected place for the key).")
+    if down:
+        note = (note + " " if note else "") + "Keychain unavailable for some: " \
+            + ", ".join(down[:4]) + "."
     if have:
-        return Item("keys", GREEN, f"{len(have)} key(s) saved: " + ", ".join(have[:8])
-                    + ("..." if len(have) > 8 else "") + ".")
+        text = (f"{len(have)} key(s) saved in your keychain: " + ", ".join(have[:8])
+                + ("..." if len(have) > 8 else "") + ".")
+        if note:
+            # a key ONLY in a .env file still has to be moved; a key that is already
+            # in the keychain just needs its plaintext copy taken out
+            step = ("Run `stuntkey setup` to move them into the keychain." if loose
+                    else CLEAN_ENV_STEP if both else "")
+            return Item("keys", YELLOW, text + " " + note, step)
+        return Item("keys", GREEN, text)
+    if loose:
+        return Item("keys", YELLOW,
+                    "No key is in your keychain. " + note,
+                    "Run `stuntkey setup` to move them into the keychain.")
     return Item("keys", YELLOW, "No key is saved yet.",
                 "Run `stuntkey get github` (or `stuntkey try` for a practice run).")
 
 
-def collect(catalog: dict | None = None, port: int = DEFAULT_PORT) -> list:
+def collect(catalog: dict | None = None, port: int = DEFAULT_PORT,
+            env_file: str = ".env", include_port: bool = False) -> list:
+    """Every check, as Items. `include_port`: also the web-page port note; it
+    is only of use to a person who runs `stuntkey serve`, so it is left out
+    unless asked for."""
     from . import hook
     items = []
     items.append(_keychain_item())
@@ -437,10 +510,11 @@ def collect(catalog: dict | None = None, port: int = DEFAULT_PORT) -> list:
         items += _hook_items(proj, "project", required=False)
     items += _client_items()
     items += _home_items()
-    items.append(_keys_item(catalog))
-    port_item = _port_item(port)
-    if not getattr(port_item, "quiet", False):
-        items.append(port_item)
+    items.append(_keys_item(catalog, env_file))
+    if include_port:
+        port_item = _port_item(port)
+        if not getattr(port_item, "quiet", False):
+            items.append(port_item)
     f = _files_item()
     if f:
         items.append(f)
@@ -452,6 +526,8 @@ def collect(catalog: dict | None = None, port: int = DEFAULT_PORT) -> list:
 def _line(it: Item) -> str:
     from . import brand
     fn = {GREEN: brand.ok, YELLOW: brand.warn, RED: brand.fail}[it.level]
+    if getattr(it, "note_only", False):
+        fn = brand.note
     text = fn(_p(it.text))
     if it.step and it.level != GREEN:
         text += f"\n      Next: {_p(it.step)}"
@@ -470,6 +546,63 @@ def verdict(items: list) -> tuple:
     return GREEN, "everything is fine"
 
 
+READY, ALMOST, ATTENTION = "ready", "almost", "attention"
+STATE_WORDS = {READY: "ready", ALMOST: "almost ready", ATTENTION: "needs attention"}
+
+
+def state(items: list) -> tuple:
+    """THE one answer to "how is it going?": (ready | almost | attention, plain
+    words). `status`, `overview`, `doctor` and `test` all use this, so they can
+    never disagree."""
+    lvl, words = verdict(items)
+    return {GREEN: READY, YELLOW: ALMOST, RED: ATTENTION}[lvl], words
+
+
+def state_sentence(items: list) -> str:
+    name, words = state(items)
+    return f"Overall: {STATE_WORDS[name]} ({words})."
+
+
+def stale_program_warning(which=None, run=None, version=None, practice=None) -> str:
+    """One plain line when the `stuntkey` found on PATH is OLDER than the
+    package being run now (for example after `python -m stuntkey` from a newer
+    folder while the installed program is old); "" when fine or unknown. It
+    asks that program only for its version number. Never raises."""
+    import re
+    import shutil
+    import subprocess
+    from . import __version__
+    version = version or __version__
+    if practice is None:
+        practice = bool(os.environ.get("STUNTKEY_KEYCHAIN"))
+    if practice and which is None and run is None:
+        return ""                   # a practice or test run never starts the real program
+    try:
+        exe = (which or shutil.which)("stuntkey")
+        if not exe:
+            return ""
+        me = os.path.abspath(sys.argv[0]) if sys.argv and sys.argv[0] else ""
+        if me and os.path.normcase(os.path.abspath(exe)) == os.path.normcase(me):
+            return ""
+        if run is None:
+            done = subprocess.run([exe, "--version"], capture_output=True, timeout=8,
+                                  stdin=subprocess.DEVNULL)
+            text = (done.stdout or b"").decode("utf-8", "replace")
+        else:
+            text = run(exe)
+        m = re.search(r"(\d+(?:\.\d+)+)", text or "")
+        if not m:
+            return ""
+        theirs = m.group(1)
+        if _version_tuple(theirs) < _version_tuple(version):
+            return (f"The `stuntkey` program your computer finds first is the older "
+                    f"version {theirs}, but this is {version}. Run `pipx upgrade "
+                    "stuntkey` so everything uses the new one.")
+    except Exception:               # noqa: BLE001 - advice only
+        pass
+    return ""
+
+
 def render(items: list) -> str:
     from . import __version__
     lvl, words = verdict(items)
@@ -480,8 +613,14 @@ def render(items: list) -> str:
     fixable = [i for i in items if i.fixer]
     tail = ""
     if fixable:
-        tail = ("\n\n  I can repair " + str(len(fixable)) + " of these for you: run "
-                "`stuntkey fix`.")
+        # the same things the headline counts: only the ones that are not green
+        need = sum(i.level != GREEN for i in items)
+        mine = sum(i.level != GREEN for i in fixable)
+        if need and mine:
+            tail = (f"\n\n  I can repair {mine} of the {need} item"
+                    f"{'' if need == 1 else 's'} marked above: run `stuntkey fix`.")
+        else:
+            tail = "\n\n  I can repair some of these for you: run `stuntkey fix`."
     return head + "\n" + body + tail + "\n"
 
 
@@ -497,6 +636,21 @@ def cmd_health(args=None, catalog=None, out=None) -> int:
     return 1 if any(i.level == RED for i in items) else 0
 
 
+def manual_steps(items: list) -> str:
+    """What `fix` cannot do by itself and a person must type: with no `claude`
+    program, the exact `claude mcp add` line, and the Claude Desktop route in
+    plain words. Empty when there is nothing of the kind."""
+    if not any(i.key == "claude-code:user" and not i.fixer for i in items):
+        return ""
+    from . import claudecode
+    return ("\n  By hand (I cannot find the `claude` program):\n"
+            "    Claude Code: type this one command in any terminal:\n"
+            f"      {_p(claudecode.one_command())}\n"
+            "    Claude Desktop: no command needed. `stuntkey fix` adds stuntkey to its "
+            "settings file itself\n    (Claude Desktop > Settings > Developer > Edit Config "
+            "shows that file); then close and reopen it.\n")
+
+
 def cmd_fix(args, catalog=None, out=None, ask=None, collector=None) -> int:
     out = out or sys.stdout
     items = (collector or collect)(catalog)
@@ -507,11 +661,13 @@ def cmd_fix(args, catalog=None, out=None, ask=None, collector=None) -> int:
     if not fixable:
         out.write(render(items))
         out.write("  Nothing I can repair by myself.\n")
+        out.write(manual_steps(items))
         return 1 if any(i.level == RED for i in items) else 0
     out.write("\n  I can do this for you:\n")
     for i in fixable:
         out.write(f"    - {_p(i.fix_text or i.text)}\n")
     out.write("  Each change keeps a backup copy of the old file. Your keys are not touched.\n")
+    out.write(manual_steps(items))
     if not getattr(args, "yes", False):
         if not sys.stdin or not sys.stdin.isatty():
             out.write("  Run it again in a terminal to answer, or add --yes.\n")
@@ -554,8 +710,10 @@ def snapshot_files(change) -> None:
         pass
 
 
-def apply_fixes(fixable: list, out) -> int:
-    """Run each repair once (several items may share one). Returns how many failed."""
+def apply_fixes(fixable: list, out, succeeded: list | None = None) -> int:
+    """Run each repair once (several items may share one). Returns how many
+    failed. `succeeded`, when given, receives the items whose repair worked
+    (and ONLY those: a failed step is never reported as done)."""
     failed = 0
     done_fixers = []
     for i in fixable:
@@ -565,6 +723,8 @@ def apply_fixes(fixable: list, out) -> int:
         try:
             i.fixer()
             out.write(f"  Done: {_p(i.fix_text or i.key)}\n")
+            if succeeded is not None:
+                succeeded.append(i)
         except Exception as e:      # noqa: BLE001
             failed += 1
             out.write(f"  Could not do this one ({_p(i.fix_text or i.key)}): "
@@ -630,12 +790,40 @@ def cmd_limits(args=None, out=None) -> int:
 
 # ----------------------------------------------------------------- help
 
+# ONE way in, said the same everywhere: `stuntkey` on its own, `--help`,
+# `help`, `start`, the README and docs/guide.md. A test keeps them equal.
+START_HERE_STEPS = [
+    ("stuntkey setup", "Does it all after one yes: finds loose keys, moves them into "
+                       "your keychain, switches the protection on, tests it."),
+    ("stuntkey get github", "Adds a key. Use any service name; `stuntkey get` on its "
+                            "own shows a short menu."),
+    ("Close and reopen your AI app", "then ask it: \"Who am I on GitHub?\""),
+]
+START_HERE_EXTRA = [
+    "Want to practise first? `stuntkey try` uses a pretend key and touches nothing real.",
+    "Check it any time: `stuntkey test`. Changed your mind? `stuntkey undo`.",
+]
+
+
+def render_start_here() -> str:
+    import textwrap
+    lines = ["  Start here (three steps):"]
+    for i, (what, text) in enumerate(START_HERE_STEPS, 1):
+        lines.append(f"    {i}. {what}")
+        lines += textwrap.wrap(text, 76, initial_indent="       ", subsequent_indent="       ")
+    for t in START_HERE_EXTRA:
+        lines += [""] if t is START_HERE_EXTRA[0] else []
+        lines += textwrap.wrap(t, 76, initial_indent="  ", subsequent_indent="    ")
+    return "\n".join(lines) + "\n"
+
+
 GROUPS = [
     ("Get started", ["setup", "start", "try", "get", "import", "fix", "test"]),
     ("Use a key", ["run", "call", "serve", "list", "rotate", "recipe"]),
-    ("Keep keys out of your AI's sight", ["install", "hook", "scan", "scan-git",
+    ("Keep keys out of your AI's sight", ["install", "hook", "scan", "scan-git", "clean-env",
                                            "skill", "setup-agent", "mcp", "wrap"]),
-    ("Check that it is working", ["status", "doctor", "overview", "audit", "selftest",
+    ("Check that it is working", ["status", "doctor", "overview", "audit", "verify",
+                                   "explain", "age", "selftest",
                                    "limits", "about", "update-check", "sessions"]),
     ("Undo, stop, or recover", ["undo", "uninstall", "forget", "stop", "resume", "panic",
                                  "revoke", "migrate"]),
@@ -667,8 +855,9 @@ def _help_texts(parser) -> dict:
 
 def render_everyday() -> str:
     """The short help: eight commands, in plain words."""
-    lines = ["", "  stuntkey: let your AI use your API keys without holding them.", "",
-             "  The commands you use every day", ""]
+    lines = ["", "  stuntkey: let your AI use your API keys without holding them.", ""]
+    lines += render_start_here().rstrip("\n").split("\n")
+    lines += ["", "  The commands you use every day", ""]
     for name, text in EVERYDAY:
         lines.append(_row(name, text))
     lines += ["", "  Undo, stop, or recover",
@@ -676,8 +865,7 @@ def render_everyday() -> str:
               "    Remove one key: stuntkey forget <service>. Take it all out: stuntkey uninstall (your keys stay).",
               "    Switch everything off: stuntkey stop (stuntkey resume turns it back on).",
               "    Leaked a key: stuntkey panic <service>."]
-    lines += ["", "  First time? Run `stuntkey setup`. It does everything.",
-              "  `stuntkey help --all` lists every command (about 50).",
+    lines += ["", "  `stuntkey help --all` lists every command (more than 50).",
               "  `stuntkey help <command>` says more about one.",
               "  What stuntkey does NOT protect against: `stuntkey limits`."]
     return "\n".join(lines) + "\n"
@@ -687,6 +875,7 @@ def render_help(parser) -> str:
     texts = _help_texts(parser)
     shown = set()
     lines = ["", "  stuntkey: let your AI use your API keys without holding them.", ""]
+    lines += render_start_here().rstrip("\n").split("\n") + [""]
     for title, names in GROUPS:
         lines.append(f"  {title}")
         for n in names:
@@ -700,6 +889,7 @@ def render_help(parser) -> str:
         for n in sorted(rest):
             lines.append(_row(n, texts[n]))
         lines.append("")
+    lines.append(f"  That is {len(shown) + len(rest)} commands in all.")
     lines.append("  `stuntkey <command> --help` says more about one command.")
     lines.append("  Something wrong? `stuntkey fix` repairs the common problems.")
     lines.append("  What stuntkey does NOT protect against: `stuntkey limits`.")
@@ -783,12 +973,24 @@ def render_completion(shell: str, names: list) -> str:
 
 def cmd_completion(args, parser, out=None) -> int:
     out = out or sys.stdout
+    if not getattr(args, "shell", None):
+        out.write("  Say which shell you use:\n"
+                  "    Install: stuntkey completion powershell >> $PROFILE     (Windows PowerShell)\n"
+                  "    Install: stuntkey completion bash >> ~/.bashrc          (bash)\n"
+                  "  Then open a new window. (Nothing is changed until you run one of those.)\n")
+        return 2
     names = []
     for a in parser._actions:
         if hasattr(a, "choices") and isinstance(a.choices, dict) and "fix" in a.choices:
             names = list(a.choices)
     out.write(render_completion(args.shell, names))
+    # Said as comments, so pasting the whole output into the file is harmless.
     if args.shell == "powershell":
-        out.write("# To keep it: add the lines above to your PowerShell profile "
-                  "(run `notepad $PROFILE`).\n")
+        out.write("# Where to paste this: your PowerShell profile. Open it with\n"
+                  "#   notepad $PROFILE\n"
+                  "# (if it says the file does not exist: New-Item -Force $PROFILE, then try again).\n"
+                  "# Paste the lines above at the end, save, and open a new PowerShell window.\n")
+    else:
+        out.write("# Where to paste this: the end of ~/.bashrc (on a Mac: ~/.bash_profile).\n"
+                  "# Paste the lines above there, save, and open a new terminal window.\n")
     return 0

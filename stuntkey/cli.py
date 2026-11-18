@@ -70,19 +70,13 @@ def _harden_streams() -> None:
             pass
 
 
-NEXT_STEPS = """stuntkey: let your AI use your API keys without holding them.
+from . import fixcmd as _fixcmd  # noqa: E402  (the one "Start here" text)
 
-Two steps:
-  1. stuntkey setup     does it all after one yes: finds loose keys, moves them to
-                        your keychain, switches on the protection, tests it
-  2. Close and reopen your AI app, then ask it: "Who am I on GitHub?"
-
-Add one key later:  stuntkey get   (a short menu; or copy the key first, then run it)
-Check it works:     stuntkey test  (one line: PASS or FAIL)
-Changed your mind?  stuntkey undo  puts back the last change.
-New here? `stuntkey try` is a practice run with a pretend key.
-Is something not working? `stuntkey status` shows green, yellow or red; `stuntkey fix` repairs it.
-`stuntkey help` lists the everyday commands; `stuntkey help --all` lists all of them."""
+NEXT_STEPS = ("stuntkey: let your AI use your API keys without holding them.\n\n"
+              + _fixcmd.render_start_here().rstrip("\n") + "\n\n"
+              "Is something not working? `stuntkey status` shows green, yellow or red; "
+              "`stuntkey fix` repairs it.\n"
+              "`stuntkey help` lists the everyday commands; `stuntkey help --all` lists all of them.")
 
 
 def _show_banner(cmd: str) -> None:
@@ -112,6 +106,12 @@ class _Parser(argparse.ArgumentParser):
             if near:
                 text += f" Did you mean: stuntkey {near[0]}?"
             self.exit(2, text + " Type `stuntkey help` for the list.\n")
+        example = getattr(self, "example", None)
+        if example:
+            # a missing piece: show a working example, not only the usage line
+            self.print_usage(sys.stderr)
+            self.exit(2, f"{self.prog}: error: {message}\n"
+                         f"Example: {example}\n")
         super().error(message)
 
     def _subparsers_choices(self):
@@ -122,14 +122,17 @@ class _Parser(argparse.ArgumentParser):
 
 
 def _build_parser() -> argparse.ArgumentParser:
+    from . import fixcmd
     p = _Parser(
         prog="stuntkey",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
         description="Let your AI use your API keys without holding them: guided "
                     "setup, tested, kept in your computer's safe store (on Windows, "
-                    "Credential Manager). The key is never shown or written to a log.",
-        epilog="Start here: `stuntkey scan` finds keys that leaked into "
-               "files an AI agent can read. `stuntkey connect <service>` "
-               "sets a key up safely.")
+                    "Credential Manager). The key is never shown or written to a log.\n\n"
+                    + fixcmd.render_start_here().rstrip("\n") + "\n\n"
+                    "All the commands (`stuntkey help` shows the short list):",
+        epilog="Find keys lying around in your files: `stuntkey scan`. "
+               "What stuntkey does not protect: `stuntkey limits`.")
     p.add_argument("--version", action="version",
                    version=f"%(prog)s {__version__}")
     p.add_argument("--project-dir", default=None, metavar="DIR",
@@ -180,6 +183,13 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="Check a built web app (dist/, build/, out/, "
                          ".next/static) or your own public https:// site for "
                          "secret keys sent to every visitor's browser.")
+
+    sc.add_argument("--agent-configs", dest="agent_configs", action="store_true",
+                    help="Also look in the settings files of AI coding tools (Claude "
+                         "Code's settings.local.json and .claude folder, .mcp.json, "
+                         ".cursor, Codex) in this project and your home folder, for "
+                         "text shaped like a key. Shows the file and a masked form, "
+                         "never the key. With --json, only this result is printed.")
 
     wr = sub.add_parser(
         "wrap", help="Move keys out of an AI plug-in's settings file into your safe store.",
@@ -394,6 +404,11 @@ def _build_parser() -> argparse.ArgumentParser:
                      help="Suggest rotating keys older than this (default 90, or "
                           "the manifest's max_age_days).")
     stt.add_argument("--json", action="store_true", help="Print the result as JSON.")
+    stt.add_argument("--fix", action="store_true",
+                     help="After the check, offer to repair what stuntkey can repair "
+                          "by itself (the same as running `stuntkey fix`).")
+    stt.add_argument("--yes", action="store_true",
+                     help="With --fix: do not ask first (for scripts).")
 
     ex = sub.add_parser("export", help="Send a stored key to GitHub or Vercel.",
                         description="Hand a stored key to the vendor's own tool "
@@ -457,6 +472,12 @@ def _build_parser() -> argparse.ArgumentParser:
     mint_mod.add_parser(sub)
     from . import proxy as proxy_mod
     proxy_mod.add_parsers(sub)
+    rs = sub.choices.get("resume")
+    if rs is not None:
+        rs.add_argument("--yes", action="store_true",
+                        help="Skip the permission window, but only when you type this "
+                             "yourself in a terminal (from a script or an AI's shell a "
+                             "window still asks).")
     return p
 
 
@@ -911,6 +932,18 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         # Any command, the MCP loop and `run` end up here.
         return _interrupted()
+    except EOFError:
+        # Typing was needed but this window cannot take any (closed input, a
+        # script, an AI tool's shell): a plain line, not a traceback.
+        try:
+            sys.stderr.write("\nI could not read your answer: this window cannot take "
+                             "typing. Run the command in a normal terminal window "
+                             "(Command Prompt, PowerShell or Terminal). Nothing was "
+                             "saved.\n")
+            sys.stderr.flush()
+        except (OSError, ValueError):
+            pass
+        return 1
 
 
 def split_remote(argv: list[str]) -> tuple[list[str], list]:
@@ -947,6 +980,64 @@ def _say_examples_skipped(args, catalog: dict) -> None:
         return
     if text:
         sys.stdout.write("\n" + text)
+
+
+def _computer_is_set_up(items) -> bool:
+    """`stuntkey setup` (which works for the whole computer) has been done: the
+    Claude Code safety check is on, or an AI app is plugged in."""
+    return any(i.level == "green" and i.key in ("hook:user", "client:ok", "claude-code:user")
+               for i in items)
+
+
+def _status_extras(args, catalog: dict) -> str:
+    """The lines `status` adds at the end: keys that are getting old, and a
+    stuntkey on PATH that is older than the one running."""
+    from . import age as age_mod, fixcmd
+    lines = []
+    old = age_mod.status_line(catalog)
+    if old:
+        lines.append("  " + old)
+    stale = fixcmd.stale_program_warning()
+    if stale:
+        lines.append("  Note: " + stale)
+    return ("\n".join(lines) + "\n") if lines else ""
+
+
+def _status_without_project(args) -> int:
+    """`status` in a folder with no stuntkey.json. When `setup` has been done
+    for the computer, say what is true (the computer is set up; this folder just
+    has no project file) and show the same state `overview`, `doctor` and
+    `test` show. Only an untouched computer is told to run setup."""
+    from . import fixcmd
+    catalog = recipes_mod.load_recipes()
+    items = fixcmd.collect(catalog)
+    state, words = fixcmd.state(items)
+    done = _computer_is_set_up(items)
+    if done:
+        note = ("This folder has no stuntkey.json, which is fine: stuntkey is set up for "
+                "your whole computer. A project file is only needed to list one "
+                "project's keys.")
+    else:
+        note = "This folder has no stuntkey setup. Run `stuntkey setup` to set it up."
+    if getattr(args, "json", False):
+        print(json.dumps({"setup": done, "state": state, "services": [], "note": note}))
+        return 0
+    if not done:
+        print(note + "\n(To see keys saved anywhere on this computer, run "
+              "`stuntkey overview`.)")
+    else:
+        print(note)
+    sys.stdout.write(fixcmd.render(items))
+    sys.stdout.write(_status_extras(args, catalog))
+    return _maybe_fix(args, catalog, 0)
+
+
+def _maybe_fix(args, catalog: dict, code: int) -> int:
+    """`status --fix`: after the check, the same as `stuntkey fix`."""
+    if getattr(args, "fix", False) and not getattr(args, "json", False):
+        from . import fixcmd
+        return max(code, fixcmd.cmd_fix(args, catalog))
+    return code
 
 
 def _keychain_available() -> bool:
@@ -1023,18 +1114,12 @@ def _main(argv: list[str] | None = None) -> int:
     if args.cmd == "status" or project_setup:
         from . import manifest as manifest_mod
         if not manifest_mod.find():
-            if args.cmd == "status" and getattr(args, "json", False):
-                print(json.dumps({"setup": False, "services": [],
-                                  "note": "This folder has no stuntkey setup. "
-                                          "Run `stuntkey init` to create one."}))
-                return 0
-            print("This folder has no stuntkey setup. Run `stuntkey init` to "
-                  "create one.\n(To see keys saved anywhere on this computer, "
+            if args.cmd == "status":
+                return _status_without_project(args)
+            print("This folder has no stuntkey setup. Run `stuntkey setup` to "
+                  "set it up.\n(To see keys saved anywhere on this computer, "
                   "run `stuntkey overview`.)")
-            if args.cmd == "status":          # still show the computer's health
-                from . import fixcmd
-                sys.stdout.write(fixcmd.render(fixcmd.collect()))
-            return 0 if args.cmd == "status" else 1
+            return 1
     if args.cmd == "hook":
         # before the recipes load: the hook's stdout must hold only its answer
         from . import hook as hook_mod
@@ -1045,6 +1130,19 @@ def _main(argv: list[str] | None = None) -> int:
         # of your own names the hosts keys are sent to and brings its own regex
         catalog = (recipes_mod.load_recipes() if args.my_recipes
                    else recipes_mod.load_recipes(recipes_mod.RECIPES_DIR))
+        if getattr(args, "agent_configs", False):
+            from . import agentscan
+            project = args.path if os.path.isdir(args.path) else "."
+            if args.sarif:
+                print("error: --agent-configs cannot be combined with --sarif. Use --json "
+                      "or plain text.", file=sys.stderr)
+                return 2
+            if args.json:
+                # one document on stdout: only the agent-config result
+                return agentscan.cmd(args, catalog, project=project)
+            code = scan_mod.cmd_scan(args, catalog)
+            _say_examples_skipped(args, catalog)
+            return max(code, agentscan.cmd(args, catalog, project=project))
         code = scan_mod.cmd_scan(args, catalog)
         _say_examples_skipped(args, catalog)
         return code
@@ -1078,6 +1176,10 @@ def _main(argv: list[str] | None = None) -> int:
     handled = extras.dispatch(args, catalog)
     if handled is not None:
         return handled
+    if args.cmd == "resume":
+        # says a window has opened and never waits for ever (cmds.ask_with_notice)
+        from . import cmds
+        return cmds.cmd_resume(args)
     from . import proxy as proxy_mod
     handled = proxy_mod.dispatch(args, catalog)
     if handled is not None:
@@ -1106,7 +1208,8 @@ def _main(argv: list[str] | None = None) -> int:
         if not args.json:
             from . import fixcmd
             sys.stdout.write(fixcmd.render(fixcmd.collect(catalog)))
-        return code
+            sys.stdout.write(_status_extras(args, catalog))
+        return _maybe_fix(args, catalog, code)
     if args.cmd == "setup":
         from . import projectcmds
 

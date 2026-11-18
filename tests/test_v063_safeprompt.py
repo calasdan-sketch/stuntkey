@@ -177,6 +177,7 @@ class TestQuietReader(unittest.TestCase):
         tty = types.SimpleNamespace(isatty=lambda: True)
         drained = []
         with mock.patch.object(sys, "stdin", tty), \
+                mock.patch.object(safeprompt, "stdin_is_terminal", lambda: True), \
                 mock.patch.object(safeprompt.getpass, "getpass", lambda p: "n"), \
                 mock.patch.object(safeprompt, "_drain_input", lambda: drained.append(1)):
             self.assertEqual(safeprompt.read_quiet("  q: "), "n")
@@ -184,7 +185,10 @@ class TestQuietReader(unittest.TestCase):
 
     def test_the_hidden_paste_prompt_also_drains(self):
         drained = []
-        with mock.patch.object(safeprompt.getpass, "getpass", lambda p: "x"), \
+        tty = types.SimpleNamespace(isatty=lambda: True)
+        with mock.patch.object(sys, "stdin", tty), \
+                mock.patch.object(safeprompt, "stdin_is_terminal", lambda: True), \
+                mock.patch.object(safeprompt, "_read_masked", lambda p: "x"), \
                 mock.patch.object(safeprompt, "_drain_input", lambda: drained.append(1)):
             self.assertEqual(safeprompt.read_hidden("p: "), "x")
         self.assertEqual(drained, [1])

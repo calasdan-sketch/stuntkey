@@ -403,7 +403,7 @@ class CopyAndGo(unittest.TestCase):
         rec = recipe({"type": "basic", "username_field": "app_id", "password_field": "secret"})
         out, stored = io.StringIO(), {}
         with mock.patch.object(clip_mod, "wait_for_key",
-                               lambda p, t, g, c: self.wait(clip, p, t)):
+                               lambda p, t, g, c, **k: self.wait(clip, p, t)):
             code = connect_mod.connect(dict(rec, _builtin=False), browser_open=lambda u: None,
                                        prompt=lambda p: self.fail("prompted"), out=out,
                                        validate_fn=lambda s, c: c == CREDS, clipboard=(clip.get, clip.clear),

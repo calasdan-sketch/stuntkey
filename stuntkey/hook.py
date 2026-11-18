@@ -46,7 +46,9 @@ import sys
 import sysconfig
 import tempfile
 import time
+import urllib.parse
 
+from . import logfacts
 from . import recipes as recipes_mod
 
 # Tools that can show a file's contents or run a command that does:
@@ -222,15 +224,21 @@ STEAL_RULES = (
     (re.compile(r"(?:(?:^|[\s;&|`(\"'/\\])(?:stuntkey|oathkey)(?:\.exe)?[\"']?|\s-\w*m\s+(?:stuntkey|oathkey)(?:\.\w+){0,3})"
                 r"(?:\s+--project-dir(?:\s+|=)\S+)*\s+"
                 r"(?:remote|deploy|trust-server|export|run|serve|call|forget|stop|resume|rotate|"
-                r"proxy|mint|panic|setup-agent|skill\s+install|revoke|undo|recipe\s+(?:approve|revoke)|"
+                r"proxy|mint|panic|setup-agent|skill\s+install|revoke|undo|recipe\s+(?:approve|revoke)|audit\s+reset|"
                 r"caps\s+(?:set|--clear)|policy\s+approve|(?:hook\s+)?uninstall|"
                 r"hook\s+install\b[^\n;&|]{0,200}--fail-open|"
                 r"install\s+(?:[^\n;&|]*\s)?--uninstall)(?![\w-])", re.I),
      "run a stuntkey command that uses, sends or removes a stored key, or switches "
      "its protection off (remote, deploy, trust-server, export, run, serve, call, "
      "proxy (also --print-env, --tunnel, --generic), mint, panic, setup-agent, "
-     "forget, stop, resume, rotate, caps set/--clear, policy approve, uninstall, hook uninstall: "
+     "forget, stop, resume, rotate, caps set/--clear, policy approve, audit reset, uninstall, hook uninstall: "
      "only the person runs those)"),
+    # round 4: the "answer yes to everything" forms are the person's to type, in their own terminal
+    (re.compile(r"(?:(?:^|[\s;&|`(\"'/\\])(?:stuntkey|oathkey)(?:\.exe)?[\"']?|\s-\w*m\s+(?:stuntkey|oathkey)(?:\.\w+){0,3})"
+                r"(?:\s+--project-dir(?:\s+|=)\S+)*\s+(?:hook\s+install|setup|install|fix|wrap)\b"
+                r"[^\n;&|]{0,300}?\s(?:--yes|-y)(?![\w-])", re.I),
+     "run a stuntkey setup, install, fix or wrap command with --yes (that answers every question "
+     "for the person; only the person runs it, in their own terminal)"),
     # stuntkey's own code used to reach the keys without going through the broker
     (re.compile(r"\b(?:from|import)[ \t]+(?:stuntkey|oathkey)(?:\.|[ \t]+import[ \t]+)"
                 r"(?:keychain|store|broker|scrub|proxy|consent|capture|mint|remote|runner|httpd|mcp)\b|"
@@ -282,7 +290,7 @@ STEAL_RULES = (
      "read a password store"),
     (re.compile(r"\b(?:import|from)\s+keyring\b|\bkeyring\.get_password\b", re.I), "read the keyring from code"),
     (re.compile(r"/proc/[\w$*{}/-]*/environ", re.I), "read another program's environment"),
-    (re.compile(r"(?:^|[\s/\\~=:;&|(<>])\.(?:stuntkey|oathkey)(?![\w])", re.I), "read stuntkey's own store"),
+    (re.compile(r"(?:^|[\s/\\~=:;&|(<>%])\.(?:stuntkey|oathkey)(?![\w])", re.I), "read stuntkey's own store"),
     (re.compile(r"consent\.key|agent-consent|\.safe\W*easy", re.I), "touch stuntkey's consent files"),
     (re.compile(_SAFE + r"(?:pbpaste|wl-paste|Get-Clipboard|xclip\b[^\n;&|]*\s-(?:o\b|out\b)|xsel\b[^\n;&|]*\s(?:-o\b|--output\b))", re.I),
      "read the clipboard"),
@@ -295,6 +303,26 @@ STEAL_RULES = (
 # setups put keys, or show a private key / credentials file. `env FOO=1 cmd`,
 # `set -e`, `export X=1`, `python -m venv env` and `printenv PATH` stay allowed:
 # only the dumping forms count.
+# round 4: wrappers a command can sit behind (`sudo -E env`, `env -u X env`,
+# `busybox env`, `/usr/bin/env`, `FOO=1 env`)
+_WRAPPERS = (r"(?:(?:sudo|doas|nohup|command|builtin|busybox|exec|time|nice|ionice|stdbuf|xargs|nsenter|chroot)"
+             r"(?:[ \t]+-{1,2}[\w=.:-]+(?:[ \t]+(?!env\b)\w+)?){0,8}[ \t]+|\w+=\S*[ \t]+|"
+             r"env(?:\.exe)?(?:[ \t]+(?:-{1,2}[\w=.:-]+(?:[ \t]+(?!env\b)\w+)?|\w+=\S*)){0,8}[ \t]+){0,16}")
+_ENVWORD = r"(?:[\w.:~$\\/-]*[/\\])?(?:env|printenv)(?:\.exe)?"
+_ENV_DUMP_RULE = (
+    re.compile(_CMD + _WRAPPERS + r"(?:" + _ENVWORD + r"(?:\s+-[0-9A-Za-z]+)*|set|export(?:\s+-p)?|"
+               r"(?:declare|typeset)\s+-[a-z]*[px][a-z]*)" + _END, re.I),
+    "print every environment variable (that is where keys live)")
+_ENV_DUMP_RX = _ENV_DUMP_RULE[0]
+# `env | grep ^PATH`: the one filtered form that stays allowed. A pipe to a
+# plain grep, at most -i / -w, a pattern anchored at the start naming exactly
+# one harmless variable, and then the end of the command: no second pipe, no
+# redirect, no `;`. (`env | grep PATH`, `-v ^PATH`, `-A9 ^PATH`, `^PATHEXT` stay blocked.)
+_ENV_SAFE_FILTER_RE = re.compile(
+    r"(?<![\w.:~$\\/-])(?:[\w.:~$\\/-]*[/\\])?(?:env|printenv)(?:\.exe)?(?:[ \t]+-[0-9A-Za-z]+)*[ \t]*\|[ \t]*"
+    r"(?:grep|egrep|rg|findstr|Select-String)(?:\.exe)?(?:[ \t]+[-/][iw]+)*[ \t]+[\"']?\^"
+    r"(?:PATH|HOME|USER|LOGNAME|TEMP|TMP|LANG|LC_\w+|SHELL|PWD|TERM)\b[\"']?[ \t]*(?=\r?\n|\Z)", re.I)
+
 DUMP_RULES = (
     (re.compile(r"(?:^|[\s;&|(@])(?:echo|set|type|call|for|more|print)\b[^\n;&|]{0,200}%\w*"
                 + _SECRET_WORD + r"\w*%|"
@@ -305,9 +333,7 @@ DUMP_RULES = (
     (re.compile(r"\bfor\b[^\n]{0,80}\bin\s+(?:os\.)?environ\s*\.\s*(?:items|values|copy)\s*\(\s*\)|"
                 r"\bfor\b[^\n]{0,60}\bin\s+(?:os\.)?environ\s*[:\])]", re.I),
      "loop over every environment variable (that is where keys live)"),
-    (re.compile(_CMD + r"(?:(?:env|printenv)(?:\s+-[0-9A-Za-z]+)*|set|export(?:\s+-p)?|"
-                r"(?:declare|typeset)\s+-[a-z]*[px][a-z]*)" + _END, re.I),
-     "print every environment variable (that is where keys live)"),
+    _ENV_DUMP_RULE,
     (re.compile(r"\b(?:exec|ssh|run)\b[^\n;&|]{0,300}\s(?:env|printenv)" + _END, re.I),
      "print every environment variable of a container or remote machine"),
     (re.compile(r"\bprintenv\s+\w*" + _SECRET_WORD + r"\w*|"
@@ -399,6 +425,25 @@ DUMP_RULES = (
                 r"(?:HK(?:CU|LM)|Registry::HKEY_\w+):?\\+(?:[\w\\ ]{0,100}\\)?Environment\b|"
                 r"\bWin32_Environment\b|\bwmic(?:\.exe)?[ \t]+environment\b", re.I),
      "read the environment variables saved in the Windows registry (keys live there)"),
+    # ---- round 4 (panel) ----
+    (re.compile(r"\bfrom[ \t]+os[ \t]+import[^\n;]{0,80}?\benviron[ \t]+as[ \t]+(\w{1,30})\b[\s\S]{0,400}?"
+                r"(?:\b(?:p?print|pp|repr|str|dict|list|sorted|json\.dumps)\s*\(\s*(?:\*\s*)?\1\s*[).,]|"
+                r"\b\1\s*\.\s*(?:items|values|copy|keys)\s*\(\s*\)|\bfor\b[^\n]{0,60}\bin\s+\1\b)", re.I),
+     "print every environment variable from code"),
+    (re.compile(r"\bos\s*\.\s*environ\s*\.\s*_data\b|\bos\s*\.\s*environb\b|\benvironb\b|"
+                r"\{\s*\.\.\.\s*process\s*\.\s*env\b|\.\.\.\s*process\s*\.\s*env\s*[,}]|"
+                r"\bObject\.assign\s*\(\s*\{\s*\}\s*,\s*process\.env\b", re.I),
+     "print or copy every environment variable from code"),
+    (re.compile(r"\b(?:SendKeys|AppActivate|pyautogui|keybd_event|SendInput|xdotool)\b", re.I),
+     "press keys or click in other programs' windows (that could answer a question only the person may answer)"),
+    # an agent starting Claude Code again with other settings, or with the safety questions off
+    (re.compile(_CMD + _WRAPPERS + r"(?:[\w.:~$\\/-]*[/\\])?claude(?:\.exe|\.cmd|\.ps1)?(?![\w-])[^\n;&|]{0,400}?"
+                r"(?:--settings\b|--setting-sources\b|--dangerously-skip-permissions\b|"
+                r"--allow-dangerously-skip-permissions\b|--permission-mode[ \t=]+(?:bypassPermissions|dontAsk)\b|"
+                r"(?<![\w-])mcp[ \t]+add(?:-json|-from-claude-desktop)?\b)|"
+                r"\bCLAUDE_CONFIG_DIR\b[ \t]*=", re.I),
+     "start Claude Code with other settings, other tools or its safety questions off, or point it at "
+     "another config folder (only the person may)"),
 )
 
 
@@ -415,11 +460,14 @@ CONSENT_RULES = (
 )
 
 
-def _squash(text: str) -> tuple[str, str]:
-    """`text` without quotes, carets, backticks and backslashes; and also
-    without shell variables."""
+def _squash(text: str) -> tuple[str, str, str]:
+    """`text` without quotes, carets, backticks and backslashes; also without
+    shell variables; and (round 4) without quotes, carets and backticks but
+    WITH its slashes, so a name still follows its folder (`C:\\x\\.stu^ntkey`
+    must not turn into `C:x.stuntkey`)."""
     plain = re.sub(r"[\'\"`^\\]", "", text)
-    return plain, re.sub(r"\$\{[^}]*\}|\$\w+|\$\(\)", "", plain)
+    return (plain, re.sub(r"\$\{[^}]*\}|\$\w+|\$\(\)", "", plain),
+            re.sub(r"[\'\"`^]", "", text))
 
 
 _DOT_TOKEN = re.compile(r"(?:^|[\s/\\~=:;&|(<>'\"`])(\.[^\s/\\;&|<>()'\"`=]*)")
@@ -866,6 +914,11 @@ def steals_key(text: str, shell: bool = False) -> str | None:
     its command at run time gets past it. `shell`: the text is a shell
     command, so DUMP_RULES apply too. Every rule is a step the hook's one time
     allowance is checked between (see _tick)."""
+    if shell:
+        # `env | grep ^PATH` is the one allowed filter. It is cut out HERE, before
+        # the variants are made: the variants drop carets, and the `^` is what
+        # makes the filter safe.
+        text = _ENV_SAFE_FILTER_RE.sub(" ", text)
     flat = text.replace("\\", "/") if "stuntkey" in text else text
     variants = [text, flat, *_squash(text)]
     if any(globs_to_our_folder(v) for v in variants):
@@ -878,6 +931,8 @@ def steals_key(text: str, shell: bool = False) -> str | None:
         for v in variants:
             if rx is _SETTINGS_WRITE_RULE[0] and not _SETTINGS_HINT_RE.search(v):
                 continue
+            if rx is _ENV_DUMP_RX:
+                v = _ENV_SAFE_FILTER_RE.sub(" ", v)
             if rx.search(v):
                 return what
     for variant in variants:
@@ -894,6 +949,8 @@ def steals_key(text: str, shell: bool = False) -> str | None:
             for rx, what in rules + CONSENT_RULES:
                 if rx is _SETTINGS_WRITE_RULE[0] and not _SETTINGS_HINT_RE.search(v):
                     continue
+                if rx is _ENV_DUMP_RX:
+                    v = _ENV_SAFE_FILTER_RE.sub(" ", v)
                 if rx.search(v):
                     return what
             # a .env name that only shows once the text is joined or decoded
@@ -928,6 +985,187 @@ def find_env_files(text: str) -> list[str]:
     return found
 
 
+# ---- round 4 (panel): Windows short names, inline Python, MCP path arguments ----
+#
+# Windows gives every long name a short 8.3 twin (`.stuntkey` is `STUNTK~1`,
+# `.claude.json` is `CLAUDE~1.JSO`, `.env` is `ENV~1`). The rules above read
+# the long names, so a path argument is first turned into its long spelling
+# (GetLongPathNameW, else realpath), and a shell command that names a short
+# twin is refused.
+_SHORT_NAME_RE = re.compile(
+    r"(?:^|(?<=[\\/\s\"'=:;(<>,]))(?!(?:HEAD|ORIG_HEAD|FETCH_HEAD|MERGE_HEAD|master|main)~)"
+    r"[\w$%'-]{1,6}~\d(?:\.\w{0,3})?(?=$|[\\/\s\"';&|)<>,])", re.I)
+# the home folder's own short name (`C:\Users\DANIE~1`) is how Windows spells
+# %TEMP% and the profile in many tools: that one part is not what is refused
+_USER_SHORT_RE = re.compile(r"(?<=[\\/]Users[\\/])[\w$%'-]{1,8}~\d(?=[\\/\s\"';&|)<>,]|$)", re.I)
+_SHORT_CONTEXT_RE = re.compile(
+    r"\b[A-Za-z]:[\\/]|%\w{1,30}%|\$HOME\b|\$\{HOME\}|\$env:|(?:^|[\s\"'=(])~(?=[\\/\s\"']|$)|"
+    r"(?<![\w-])\.?(?:stuntkey|oathkey|claude|envrc?|ssh|aws|npmrc)(?![\w-])|stuntk|claude|settings", re.I)
+SHORT_NAME_REASON = ("name a file or folder by its short Windows (8.3) name such as STUNTK~1 or "
+                     "CLAUDE~1.JSO, which hides which file it is")
+
+
+def _get_long_path_name(path: str) -> str | None:
+    """The long spelling of an EXISTING path (GetLongPathNameW), or None (not
+    Windows, no such path, no API). One place so a test can stand in for it."""
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+        buf = ctypes.create_unicode_buffer(32768)
+        n = ctypes.windll.kernel32.GetLongPathNameW(path, buf, 32768)
+        return buf.value if 0 < n < 32768 else None
+    except Exception:                      # noqa: BLE001 - a missing API must not stop the hook
+        return None
+
+
+def expand_short_names(path: str) -> str:
+    """`path` with its 8.3 short names spelled out. A path that has none comes
+    back as it is. Where the path (or its last parts) does not exist, the
+    longest part that does is expanded; if nothing can be, os.path.realpath."""
+    if not isinstance(path, str) or "~" not in path or not _SHORT_NAME_RE.search(path):
+        return path
+    here, tail = path, []
+    for _ in range(64):
+        got = _get_long_path_name(here)
+        if got:
+            return os.path.join(got, *reversed(tail)) if tail else got
+        head, last = os.path.split(here)
+        if not last or head == here:
+            break
+        tail.append(last)
+        here = head
+    try:
+        return os.path.realpath(path)
+    except (OSError, ValueError):
+        return path
+
+
+def _with_long_names(items: list) -> list:
+    """`items` (path arguments) plus the long spelling of each one that has a
+    short name in it."""
+    out = list(items)
+    for s in items:
+        longer = expand_short_names(s)
+        if longer != s:
+            out.append(longer)
+    return out
+
+
+def short_names_in_command(text: str) -> str | None:
+    """Windows only: a shell command that names a short twin (`STUNTK~1`) next
+    to a drive letter, a home folder or a protected name is refused. Git
+    revisions (`HEAD~1`) and the profile folder's own short name are not."""
+    if not _ON_WINDOWS or "~" not in text:
+        return None
+    for v in (text, *_squash(text)):
+        v = _USER_SHORT_RE.sub("USER", v)
+        if _SHORT_NAME_RE.search(v) and _SHORT_CONTEXT_RE.search(v):
+            return SHORT_NAME_REASON
+    return None
+
+
+# Inline Python (-c, stdin, a heredoc, runpy) that reaches stuntkey's own
+# modules gets at the stored keys without going through the broker.
+_PY_INTERNALS = r"(?:keychain|store|broker|scrub|proxy|consent|capture|mint|remote|runner|httpd|mcp|approve)"
+_PY_INLINE_RE = re.compile(
+    r"\b(?:python[\d.]*|pythonw|py|pypy\d*)(?:\.exe)?\b[^\n;&|]{0,60}?[ \t]-[A-Za-z]*c\b|"
+    r"\b(?:python[\d.]*|pythonw|py)(?:\.exe)?[ \t]+-(?=[ \t]*(?:$|[\n<|&;]))|"
+    r"<<|\|[ \t]*(?:python[\d.]*|py)(?:\.exe)?\b|\brunpy\b", re.I)
+_PY_NEAR_RE = re.compile(r"(?:stuntkey|oathkey)\b[\s\S]{0,300}?(?<![\w])" + _PY_INTERNALS + r"\b", re.I)
+_PY_STAR_RE = re.compile(r"\bfrom[ \t]+(?:stuntkey|oathkey)\b[^\n]{0,60}?[ \t]import[ \t]*\(?[ \t]*\*|"
+                         r"\b(?:stuntkey|oathkey)\b[\s\S]{0,200}?\bimport[ \t]+\*", re.I)
+_PY_RUNPY_RE = re.compile(r"\brun_(?:module|path)\b[\s\S]{0,300}?\b(?:stuntkey|oathkey)\b|"
+                          r"\b(?:stuntkey|oathkey)\b[\s\S]{0,300}?\brun_(?:module|path)\b", re.I)
+_PY_DASH_M_RE = re.compile(r"[ \t]-[A-Za-z]*m[ \t]+(?:stuntkey|oathkey)\.(?!(?:cli|__main__)(?![\w.]))\w+", re.I)
+INLINE_PY_REASON = ("run Python that loads stuntkey's own code (the keychain, store, broker or another "
+                    "internal module), which reaches the stored keys without going through it")
+
+
+def inline_python_internals(text: str) -> str | None:
+    """INLINE_PY_REASON for a shell command that is inline Python using
+    stuntkey's modules, or that starts one with `python -m stuntkey.<module>`
+    (only the command line itself, `python -m stuntkey`, is allowed)."""
+    low = text.lower()
+    if "stuntkey" not in low and "oathkey" not in low:
+        return None
+    for v in (text, *_squash(text)):
+        if _PY_DASH_M_RE.search(v):
+            return INLINE_PY_REASON
+        if _PY_INLINE_RE.search(v) and (_PY_NEAR_RE.search(v) or _PY_STAR_RE.search(v)
+                                        or _PY_RUNPY_RE.search(v)):
+            return INLINE_PY_REASON
+    return None
+
+
+# An MCP tool's arguments are data, except the ones that name a file or a
+# place: a `path`, a `uri`, a value that looks like a path. Those go through
+# the file rules (a few false positives are accepted).
+_PATHISH_RE = re.compile(r"^(?:[A-Za-z]:[\\/]|\\\\|~(?:[\\/]|$)|/(?=[\w.~$%-])|\.{1,2}[\\/]|file:)", re.I)
+_MCP_PATH_KEY_RE = re.compile(
+    r"^(?:paths?|files?|filepath|filename|uris?|urls?|sources?|src|director(?:y|ies)|dir|folder|notebookpath)$", re.I)
+MCP_PATH_REASON = "{what} through a path argument of an MCP tool"
+
+
+def _mcp_path_strings(args) -> list:
+    out: list = []
+
+    def walk(v, keyed, depth):
+        if len(out) >= MAX_STRINGS or depth > MAX_DEPTH:
+            return
+        if isinstance(v, str):
+            t = v.strip()
+            if t and len(t) <= 2048 and "\n" not in t:
+                # A value under a path-like name is always checked. Any other value is checked when
+                # it starts like a path; a Unix-style start ("~/", "/", "./") followed by spaces is
+                # taken as a sentence (a memory search for "~/.stuntkey/ .env"), a drive-letter,
+                # network or file: start is checked even with spaces in it.
+                if keyed or (_PATHISH_RE.match(t) and not (
+                        re.match(r"[~/.]", t) and re.search(r"\s", t) and not t[:5].lower() == "file:")):
+                    out.append(t)
+        elif isinstance(v, dict):
+            for k, x in v.items():
+                walk(x, isinstance(k, str) and bool(_MCP_PATH_KEY_RE.match(re.sub(r"[_\-]", "", k))), depth + 1)
+        elif isinstance(v, (list, tuple)):
+            for x in v:
+                walk(x, keyed, depth + 1)
+    walk(args, False, 0)
+    return out
+
+
+def decide_mcp_paths(payload) -> str | None:
+    """None, or what an MCP tool call's path-like argument would reach: a .env
+    file, the files that decide which hooks run, stuntkey's own folder, a
+    credentials file or folder."""
+    if not _is_mcp(payload):
+        return None
+    args = payload.get("tool_input")
+    if not isinstance(args, dict):
+        return None
+    for raw in _mcp_path_strings(args):
+        _tick()
+        if re.match(r"(?i)https?://", raw):
+            continue
+        s = raw
+        if s[:5].lower() == "file:":
+            s = re.sub(r"^//[^/]*", "", urllib.parse.unquote(s[5:]))
+            if re.match(r"^/[A-Za-z]:[/\\]", s):
+                s = s[1:]
+        for v in {s, expand_short_names(s)}:
+            for w in (v, *_squash(v)):
+                if find_env_files(w):
+                    return MCP_PATH_REASON.format(what="read or change a .env file")
+                if _protected_path(w):
+                    return MCP_PATH_REASON.format(what="reach a file that only the person may change")
+                if re.search(r"(?:^|[/\\])\.(?:stuntkey|oathkey)(?![\w])", w, re.I):
+                    return MCP_PATH_REASON.format(what="reach stuntkey's own store")
+                if _SECRET_DIR_RE.search(w.rstrip("/\\") + "/"):
+                    return MCP_PATH_REASON.format(what="reach a folder where keys are kept")
+                if _CRED_PATH_RE.search(w) and not re.search(r"\.(?:pem|crt|cer)\Z", w, re.I):
+                    return MCP_PATH_REASON.format(what="reach a private key or a credentials file")
+    return None
+
+
 def _strings(value) -> list[str]:
     return [value] if isinstance(value, str) else []
 
@@ -944,12 +1182,12 @@ def touched_text(payload: dict) -> list[str]:
         # the one place for the write tools' field names: Edit, Write and
         # MultiEdit use file_path; NotebookEdit uses notebook_path. All three
         # names are read for every one of them so a rename cannot slip past.
-        return [v for k in ("file_path", "notebook_path", "path")
-                for v in _strings(args.get(k))]
+        return _with_long_names([v for k in ("file_path", "notebook_path", "path")
+                                 for v in _strings(args.get(k))])
     if tool == "Read":
-        return _strings(args.get("file_path")) + _strings(args.get("path"))
+        return _with_long_names(_strings(args.get("file_path")) + _strings(args.get("path")))
     if tool == "Grep":
-        return _strings(args.get("path")) + _strings(args.get("glob"))
+        return _with_long_names(_strings(args.get("path")) + _strings(args.get("glob")))
     if tool in ("Bash", "PowerShell"):
         return _strings(args.get("command"))
     if tool == "Monitor":
@@ -1064,6 +1302,10 @@ def decide_steal(payload) -> str | None:
             what = steals_key(piece, shell)
             if what:
                 return what
+            if shell:
+                what = short_names_in_command(piece) or inline_python_internals(piece)
+                if what:
+                    return what
     return None
 
 
@@ -1434,8 +1676,11 @@ def _protected_path(text: str) -> str | None:
     norm = re.sub(r"/+", "/", raw.replace("\\", "/"))
     norm = re.sub(r"::\$DATA\Z", "", norm, flags=re.I).rstrip(" .")
     cands = {posixpath.normpath(norm)}
+    longer = expand_short_names(raw)
+    if longer != raw:
+        cands.add(posixpath.normpath(re.sub(r"/+", "/", longer.replace("\\", "/"))))
     try:
-        real = os.path.realpath(os.path.expanduser(raw))
+        real = os.path.realpath(os.path.expanduser(longer))
         cands.add(posixpath.normpath(real.replace("\\", "/")))
     except (OSError, ValueError):
         pass
@@ -1482,9 +1727,10 @@ def decide_outbound_key(payload) -> str | None:
     return None
 
 
-# Read's output has no documented shape for PostToolUse updatedToolOutput, so
-# a Read cannot be masked after it runs: the secret-by-nature files are refused
-# before it. A .pem/.key file counts only when it holds a private key (a
+# Read's output has no OFFICIALLY documented shape for PostToolUse
+# updatedToolOutput (a third-party-reported shape is masked best effort, see
+# post_check), so a Read is mainly guarded BEFORE it runs: the
+# secret-by-nature files are refused. A .pem/.key file counts only when it holds a private key (a
 # certificate is public). Any other Read is refused only when the file holds
 # one of YOUR stored keys (by fingerprint: no false alarms on key-like text),
 # and an MCP config also when a key in a known format is written in it.
@@ -1495,13 +1741,43 @@ _TEMP_PATH_RE = re.compile(r"(?:^|[/\\])(?:temp|tmp)[/\\]|[/\\]AppData[/\\]Local
                            r"%TE?MP%|\$env:TE?MP|^/var/tmp/", re.I)
 
 
-def _file_head(path: str) -> str | None:
-    """The first SCAN_BUDGET characters of a file, or None if unreadable."""
+READ_SCAN_CAP = 4_000_000    # characters of ONE file checked before a Read (was SCAN_BUDGET: 600k)
+# round 4: whole name PARTS (split at . _ - and spaces): `.env`, `prod.env`,
+# `my_token.txt` and `secrets.json` count; `environment.py`, `development.md`
+# and `tokenizer.py` do not
+_SECRET_NAME_RE = re.compile(
+    r"(?:(?:^|[._\-\s])(?:envrc|env|secrets?|tokens?|credentials?|passw(?:or)?ds?|apikeys?|api[_-]?keys?|"
+    r"id_rsa|id_ed25519|keystore)(?=$|[._\-\s])|\.pem\Z|\.key\Z|\.p12\Z|\.pfx\Z|"
+    r"\.npmrc\Z|\.netrc\Z|\.pypirc\Z)", re.I)
+_SECRET_DIR_RE = re.compile(r"(?:^|[/\\])(?:\.stuntkey|\.oathkey|\.aws|\.ssh|\.gnupg|\.docker|\.kube)[/\\]", re.I)
+
+
+def _secret_likely_path(path: str) -> bool:
+    """A path where a key is likely to be: by its name, its folder or its kind."""
+    base = re.split(r"[/\\]", path.rstrip("/\\"))[-1]
+    return bool(_CRED_PATH_RE.search(path) or _TEMP_PATH_RE.search(path)
+                or _MCP_CONFIG_RE.search(path) or _SECRET_NAME_RE.search(base)
+                or _SECRET_DIR_RE.search(path))
+
+
+def _file_head(path: str, cap: int | None = None) -> str | None:
+    """Up to `cap` characters of a file, or None if unreadable."""
+    return _file_scan(path, cap)[0]
+
+
+def _file_scan(path: str, cap: int | None = None) -> tuple[str | None, bool]:
+    """(the first `cap` characters of a file or None when unreadable, whether
+    the file is longer than that - so part of it was NOT checked)."""
+    cap = READ_SCAN_CAP if cap is None else cap
     try:
         with open(os.path.expanduser(path), encoding="utf-8", errors="replace") as f:
-            return f.read(SCAN_BUDGET)
+            text = f.read(cap + 1)
     except (OSError, ValueError):
-        return None
+        return None, False
+    return text[:cap], len(text) > cap
+
+
+TOO_BIG_TO_CHECK = "show a file too large to check for keys, in a place where keys are kept"
 
 
 def decide_secret_read(payload) -> str | None:
@@ -1514,8 +1790,13 @@ def decide_secret_read(payload) -> str | None:
     path = args.get(key) if isinstance(args, dict) else None
     if not isinstance(path, str) or not path.strip():
         return None
-    path = path.strip()
-    text = _file_head(path)
+    path = expand_short_names(path.strip())
+    text, truncated = _file_scan(path)
+    if truncated and _secret_likely_path(path):
+        # The check reads the whole file up to READ_SCAN_CAP. A bigger file in a
+        # place where keys live cannot be checked whole, so it is refused - not
+        # half checked (the gap between "checked the start" and "shown the end").
+        return TOO_BIG_TO_CHECK
     if _CRED_PATH_RE.search(path):
         from .scan import PRIVATE_KEY_RE
         if not (re.search(r"\.(?:pem|key)\Z", path, re.I)
@@ -1534,6 +1815,143 @@ def decide_secret_read(payload) -> str | None:
         return "show a temporary file that holds a key"
     if _MCP_CONFIG_RE.search(path) and scrub_mod.mask_secrets(text, (b"", frozenset()))[1]:
         return "show an MCP config with a key written in it"
+    return None
+
+
+# A Grep whose PATTERN is the start of a key ("sk-", "AKIA", "ghp_" ...) is a
+# probe: searched over a folder that holds a key it prints the key (content
+# mode) or tells where it is, and a few guesses spell it out. The path alone
+# looked harmless, so the pattern is checked too.
+_PROBE_PREFIXES = ("sk-", "sk_", "akia", "ghp_", "gho_", "ghs_", "ghu_", "ghr_", "github_pat_",
+                   "xox", "aiza", "pk_live", "sk_live", "rk_live", "glpat-", "npm_", "hf_",
+                   "eyj", "-----begin", "ya29.", "shpat_", "shpss_",
+                   "whsec_", "dop_v1_", "pypi-", "xapp-")
+_PROBE_QUANT_RE = re.compile(r"\{\s*(?:[2-9]\d|\d{3,})")        # [A-Za-z0-9]{32,}: key-shaped
+PROBE_SCAN_FILES = 400       # files read before giving up (then the search is refused)
+PROBE_FILE_CAP = 1_000_000   # characters read from each of them
+PROBE_BUDGET_S = 3.0         # of the hook's 10 seconds
+_PROBE_SKIP_DIRS = frozenset({".git", "node_modules", "__pycache__", ".venv", "venv", ".tox"})
+PROBE_REASON = ("search for the start of a key ({why}) in a place that holds one of your "
+                "stored keys or a key-shaped secret")
+
+
+def is_key_probe(pattern) -> bool:
+    """Is a Grep pattern the start (or the shape) of an API key?"""
+    if not isinstance(pattern, str) or not pattern.strip():
+        return False
+    flat = re.sub(r"\\[bBAZzdDwWsS]|\\(?=.)|[\^$()\[\]?*+|]", "", pattern.lower())
+    if any(p in flat for p in _PROBE_PREFIXES):
+        return True
+    if "akia" in flat.replace("\\", "") or "xox" in flat:
+        return True
+    return bool(_PROBE_QUANT_RE.search(pattern))
+
+
+def _key_location(path: str) -> bool:
+    """A place where keys are kept or that holds everything: by its name, the
+    home folder, or a drive root (round 4)."""
+    try:
+        real = os.path.normcase(os.path.realpath(path))
+        home = os.path.normcase(os.path.realpath(os.path.expanduser("~")))
+        if real == home or os.path.dirname(real) == real:
+            return True
+    except (OSError, ValueError):
+        return True
+    return _secret_likely_path(path) or bool(_SECRET_DIR_RE.search(path.rstrip("/\\") + "/"))
+
+
+def _unchecked_nonstrict(path: str, why: str) -> str | None:
+    """A plain content search that could not be checked whole (too many files,
+    or out of time): refused in a place where keys are kept, else allowed with
+    a line in the activity log (the output is still masked afterwards)."""
+    if _key_location(path):
+        return f"{why} to check first, in a place where keys are kept"
+    _audit_marker(logfacts.PROBE_SKIPPED, f"a content search of {why} was let through unchecked")
+    return None
+
+
+def _probe_hit(path: str, deadline: float, strict: bool = True) -> str | None:
+    """Does `path` (a file, or a folder searched as far as PROBE_SCAN_FILES
+    files) hold a stored key or a text in a known key format? Returns a short
+    reason, or None when everything was read and is clean. Unreadable, too
+    many files, or out of time all count as a hit: fail closed."""
+    from . import scrub as scrub_mod
+    try:
+        prints = scrub_mod.load_fingerprints()
+    except (OSError, ValueError):
+        prints = (b"", frozenset())
+    if not strict and not prints[1]:
+        return None                     # no stored key: nothing for a plain content search to leak
+    path = os.path.expanduser(path)
+    files, seen = [], 0
+    if os.path.isdir(path):
+        for root, dirs, names in os.walk(path):
+            dirs[:] = [d for d in dirs if d not in _PROBE_SKIP_DIRS]
+            for n in names:
+                seen += 1
+                if seen > PROBE_SCAN_FILES:
+                    # strict (a key-shaped pattern): refuse what cannot be checked.
+                    # Not strict (an ordinary content search): the output is still
+                    # masked afterwards, and refusing every search in a big project
+                    # would make the tool unusable.
+                    if strict:
+                        return "too many files to check first"
+                    return _unchecked_nonstrict(path, "too many files")
+                files.append(os.path.join(root, n))
+    elif os.path.exists(path):
+        files.append(path)
+    else:
+        return None                     # nothing there: nothing to leak
+    for f in files:
+        if time.monotonic() > deadline:
+            if strict:
+                return "could not finish checking in time"
+            return _unchecked_nonstrict(path, "out of time")
+        text, truncated = _file_scan(f, PROBE_FILE_CAP)
+        if text is None:
+            if os.path.isfile(f) and strict:
+                return "a file could not be read to check it"
+            continue
+        if truncated and strict:
+            return "a file is too large to check whole"
+        if scrub_mod.has_stored_key(text, prints, deadline):
+            return "it holds one of your stored keys"
+        if strict and scrub_mod.mask_secrets(text, (b"", frozenset()), deadline)[1]:
+            return "it holds a key in a known format"
+    return None
+
+
+GREP_CONTENT_REASON = ("show the lines of a search in a place that holds one of your stored keys "
+                       "(search for file names or a count there instead: `files_with_matches` or `count`)")
+
+
+def decide_grep_probe(payload) -> str | None:
+    """Two rules for a Grep.
+    1. A pattern that is the start (or shape) of an API key, over a place that
+       holds a key (checked first, whole) or that cannot be checked: refused.
+    2. Round 3: whatever the pattern looks like (`s(?:k)-`, `s[jk]-`, `s.k-`,
+       `[A-Za-z0-9_-]+`), a search that PRINTS the matching lines (output_mode
+       "content", also when it is left out) over a place that holds one of your
+       stored keys is refused. Only `files_with_matches` and `count` are allowed
+       there. The pattern's shape is no longer what decides."""
+    if not isinstance(payload, dict) or payload.get("tool_name") != "Grep":
+        return None
+    args = payload.get("tool_input")
+    if not isinstance(args, dict):
+        return None
+    path = args.get("path")
+    path = path.strip() if isinstance(path, str) and path.strip() else os.getcwd()
+    path = expand_short_names(path)
+    if is_key_probe(args.get("pattern")):
+        why = _probe_hit(path, time.monotonic() + PROBE_BUDGET_S)
+        if why:
+            return PROBE_REASON.format(why=why)
+        return None
+    mode = args.get("output_mode")
+    if mode in ("files_with_matches", "count"):
+        return None
+    if _probe_hit(path, time.monotonic() + PROBE_BUDGET_S, strict=False):
+        return GREP_CONTENT_REASON
     return None
 
 
@@ -1652,7 +2070,8 @@ def _check(stdin_text: str) -> tuple[int, str]:
                 return 0, json.dumps(decision_json(
                     CODE_ENV_REASON.format(what=f"'{what}'"))) + "\n"
             return 0, json.dumps(decision_json(CODE_REASON.format(what=what))) + "\n"
-        what = decide_steal(payload) or decide_secret_read(payload) or decide_outbound_key(payload)
+        what = (decide_steal(payload) or decide_mcp_paths(payload) or decide_secret_read(payload)
+                or decide_grep_probe(payload) or decide_outbound_key(payload))
         if what:
             return 0, json.dumps(decision_json(STEAL_REASON.format(what=what))) + "\n"
         return 0, ""
@@ -1672,15 +2091,19 @@ def _check(stdin_text: str) -> tuple[int, str]:
 # own output shape or Claude Code ignores it and uses the original. Bash has
 # a documented shape ({stdout, stderr, interrupted, isImage}); MCP tool output
 # is "passed through without schema validation", so it is masked string by
-# string in whatever shape it came. Read, Grep and every other tool are left
-# alone (https://code.claude.com/docs/en/hooks).
-# Fail-OPEN by Claude Code's design: a PostToolUse hook that breaks or times
-# out cannot hold the output back, so an error here means the model sees the
-# original output.
+# string in whatever shape it came. Read and Grep (content mode) are masked
+# only in the shape third-party reports describe, which is NOT in the official
+# docs and has NOT been tested live by us (see _READ_FILE / _GREP_KEYS): a
+# strict match, else the output is left alone. Every other tool is left alone
+# (https://code.claude.com/docs/en/hooks).
+# Fail-OPEN by Claude Code's design: a PostToolUse hook that breaks, crashes or
+# times out cannot hold the output back, so an error here (or output not
+# masked within POST_BUDGET, after which Claude Code gives up on the hook) means
+# the model sees the original output.
 
 # Claude Code reads a matcher with anything beyond letters, digits, "_" and "|"
 # as a regular expression, so this is anchored: Bash, or a tool named mcp__*.
-POST_MATCHER = "^(Bash|PowerShell|mcp__.*)$"
+POST_MATCHER = "^(Bash|PowerShell|Read|Grep|mcp__.*)$"
 POST_FIELDS = ("stdout", "stderr")
 POST_BUDGET = 4.0            # seconds to mask one call's output, of HOOK_TIMEOUT (10)
 POST_NOTE = ("stuntkey hid {n} secret value(s) in this output as [REDACTED]. "
@@ -1691,44 +2114,63 @@ POST_NOTE = ("stuntkey hid {n} secret value(s) in this output as [REDACTED]. "
 # What the PostToolUse answer can and cannot cover (checked against the Claude
 # Code hooks docs and by hand): `updatedToolOutput` replaces what the model sees
 # only in the shape the tool itself uses. Bash / PowerShell ({stdout, stderr,
-# ...}) and MCP tools (any shape, strings masked in place) are covered. Read,
-# Grep, Glob, WebFetch, WebSearch and Task have no documented output shape, so
-# they are NOT masked after the fact; they are guarded BEFORE the call instead
-# (a Read of a file that holds a stored key is refused, an outbound call that
-# carries one is refused). If Claude Code documents a shape for them, add the
-# tool to POST_MATCHER and to post_check.
-POST_FAILED_RESULT = "HOOK-POST-FAILED"      # the audit-log result word `doctor` counts
+# ...}) and MCP tools (any shape, strings masked in place) are covered by the
+# documented behaviour. Read and Grep (content mode) are covered BEST EFFORT in
+# an undocumented shape (third-party reports; unverified live; a wrong shape is
+# silently ignored by Claude Code). Glob, WebFetch, WebSearch and Task have no
+# known shape and are NOT masked after the fact; everything is also guarded
+# BEFORE the call (a Read of a file that holds a stored key is refused, an
+# outbound call that carries one is refused). Output masking is a second
+# line, never the first.
+POST_FAILED_RESULT = logfacts.POST_FAILED_RESULT   # the audit-log result word `doctor` counts
+SHAPE_UNVERIFIED = logfacts.SHAPE_UNVERIFIED       # audit-log word: Read/Grep masking is not officially documented
+UNMASKABLE = logfacts.UNMASKABLE                   # audit-log word: a result with no text to mask (pdf, image ...)
 LOCKED_NOTICE = ("[stuntkey withheld this output: the key it checks with could not be "
                  "read, so it could not tell whether a secret is in it. Run "
                  "`stuntkey doctor`, then ask again.]")
 
 
-def _audit_post_failure(kind: str) -> None:
-    """Best effort: record in the activity log that the output check failed, so
-    `stuntkey doctor` can show repeated failures. Never raises."""
+def _audit_marker(word: str, note: str) -> None:
+    """Best effort: one line in the activity log. Never raises. A test run with
+    no test keychain writes none (same rule as keychain.integrity_key)."""
     if os.environ.get("STUNTKEY_TEST_HOME") and not os.environ.get("STUNTKEY_KEYCHAIN"):
-        return          # a test run with no test keychain writes no log (same rule as keychain.integrity_key)
+        return
     try:
         from . import broker, remote
         log = broker.AuditLog(os.path.join(remote.home_dir(), "audit.log"))
-        log.write(broker.AuditLog._marker(
-            POST_FAILED_RESULT, f"the output check failed ({kind[:60]}); "
-                                "the output was shown as it was or withheld"))
+        log.write(broker.AuditLog._marker(word, note))
     except BaseException:                      # noqa: BLE001 - it must never get in the way
         pass
+
+
+def _audit_post_failure(kind: str) -> None:
+    """Record in the activity log that the output check failed, so
+    `stuntkey doctor` can show repeated failures. Never raises."""
+    _audit_marker(POST_FAILED_RESULT, f"the output check failed ({kind[:60]}); "
+                                      "the output was shown as it was or withheld")
+
+
+def _audit_log_path(path: str | None = None) -> str:
+    # (AuditLog knows where a log really lives, test runs included)
+    from . import broker, remote
+    return broker.AuditLog(path or os.path.join(remote.home_dir(), "audit.log")).path
+
+
+def shape_unverified_count(path: str | None = None) -> int:
+    """How many Read / Grep outputs the activity log says were in an unknown or
+    unverified shape (for `doctor`). The counting itself is logfacts.py's."""
+    try:
+        return logfacts.count_results(_audit_log_path(path), SHAPE_UNVERIFIED)
+    except (OSError, ImportError):
+        return 0
 
 
 def post_failures(path: str | None = None) -> int:
     """How many output-check failures the activity log holds (for `doctor`)."""
     try:
-        from . import broker, remote
-        # (AuditLog knows where a log really lives, test runs included)
-        path = broker.AuditLog(path or os.path.join(remote.home_dir(), "audit.log")).path
-        with open(path, "rb") as f:
-            data = f.read()
+        return logfacts.count_results(_audit_log_path(path), POST_FAILED_RESULT)
     except (OSError, ImportError):
         return 0
-    return data.count(b'"result": "' + POST_FAILED_RESULT.encode() + b'"')
 
 
 def _mask_text(value: str, prints, secrets, deadline: float):
@@ -1762,6 +2204,10 @@ def post_check(payload: dict, err=None) -> str:
     try:
         if _is_mcp(payload):
             return _post_mcp(payload.get("tool_response"))
+        if payload.get("tool_name") == "Read":
+            return _post_read(payload)
+        if payload.get("tool_name") == "Grep":
+            return _post_grep(payload)
         if payload.get("tool_name") not in ("Bash", "PowerShell"):
             return ""
         resp = payload.get("tool_response")
@@ -1796,9 +2242,148 @@ def post_check(payload: dict, err=None) -> str:
         return ""
 
 
+def _audit_shape(note: str) -> None:
+    """Record a TRUE shape miss: a Read / Grep text result whose text field is
+    not where it is expected, so it was left unmasked. (Not written for a
+    successful mask, nor for a result with no text such as a pdf or image.)"""
+    _audit_marker(SHAPE_UNVERIFIED, f"shape-unverified: {note[:80]}")
+
+
+# Read / Grep output shapes. NOT in Claude Code's official hooks docs: seen in
+# third-party reports of one Claude Code version and not tested live by us.
+# So the match asks only for the keys it needs (the text field and its type);
+# other keys are copied through unchanged. A shape without them is left alone
+# (answer "") and counted (`doctor` shows the count).
+_READ_FILE_TYPES = {"filePath": str, "content": str, "numLines": int, "startLine": int, "totalLines": int}
+_READ_FILE_REQUIRED = ("content",)
+_GREP_TYPES = {"mode": str, "numFiles": int, "filenames": list, "content": str, "numLines": int,
+               "appliedLimit": int, "appliedOffset": int}
+# round 4: `mode` is optional in Claude Code's own Grep types (a missing mode is
+# content); only files_with_matches and count have no text to mask
+_GREP_REQUIRED = ("content",)
+
+
+def _typed(d: dict, types: dict) -> bool:
+    """Every key we know about has its type; keys we do not know are fine (they
+    are copied through unchanged)."""
+    return all(isinstance(v, types[k]) and not isinstance(v, bool)
+               for k, v in d.items() if k in types)
+
+
+def _read_shape_ok(resp) -> bool:
+    """The text field we mask is where we expect it; anything else in the answer
+    is copied through as it is (round 3: it used to need exactly these keys, so
+    one new field in a newer Claude Code switched the masking off)."""
+    if not (isinstance(resp, dict) and resp.get("type") == "text"):
+        return False
+    f = resp.get("file")
+    if not (isinstance(f, dict) and all(k in f for k in _READ_FILE_REQUIRED)):
+        return False
+    return _typed(f, _READ_FILE_TYPES)
+
+
+def _grep_shape_ok(resp) -> bool:
+    if not (isinstance(resp, dict) and all(k in resp for k in _GREP_REQUIRED)):
+        return False
+    if resp.get("mode", "content") != "content":
+        return False
+    return _typed(resp, _GREP_TYPES)
+
+
+def _updated(new, note: int) -> str:
+    return json.dumps({"hookSpecificOutput": {
+        "hookEventName": "PostToolUse",
+        "updatedToolOutput": new,
+        "additionalContext": _post_note(note)}}) + "\n"
+
+
+def _mask_field(resp: dict, field_of) -> str:
+    """Mask the one text field of a Read / Grep result (`field_of(resp)` gives
+    (container, key)); every other field is copied unchanged. "" when nothing
+    in it needed hiding."""
+    import copy
+    from . import scrub as scrub_mod
+    deadline = time.monotonic() + POST_BUDGET
+    prints = scrub_mod.load_fingerprints()
+    secrets = scrub_mod.stored_secrets()
+    container, key = field_of(resp)
+    masked, n = _mask_text(container[key], prints, secrets, deadline)
+    if not n:
+        return ""
+    new = copy.deepcopy(resp)
+    c2, k2 = field_of(new)
+    c2[k2] = masked
+    return _updated(new, n)
+
+
+def _post_notebook(resp: dict) -> str:
+    """A notebook Read: every string in file.cells (source and outputs) is
+    masked in place; the structure stays."""
+    import copy
+    from . import scrub as scrub_mod
+    f = resp.get("file")
+    if not (isinstance(f, dict) and isinstance(f.get("cells"), list)):
+        _audit_shape("unknown notebook output shape, left alone")
+        return ""
+    deadline = time.monotonic() + POST_BUDGET
+    cells, n = _mask_all(f["cells"], scrub_mod.load_fingerprints(), deadline=deadline,
+                         secrets=scrub_mod.stored_secrets())
+    if not n:
+        return ""
+    new = copy.deepcopy(resp)
+    new["file"]["cells"] = cells
+    return _updated(new, n)
+
+
+def _post_read(payload: dict) -> str:
+    resp = payload.get("tool_response")
+    kind = resp.get("type") if isinstance(resp, dict) else None
+    if kind == "file_unchanged":
+        return ""
+    if kind == "notebook":
+        return _post_notebook(resp)
+    if kind not in (None, "text"):
+        # pdf, image, parts ...: no text field we could change. Passed on as it
+        # is, and said so in the log (a different word from a shape miss).
+        _audit_marker(UNMASKABLE, f"unmaskable type: a Read result of type {str(kind)[:30]} was shown as it was")
+        return ""
+    if _read_shape_ok(resp):
+        return _mask_field(resp, lambda r: (r["file"], "content"))
+    _audit_shape("unknown Read output shape, left alone")
+    return ""
+
+
+def _post_grep(payload: dict) -> str:
+    resp = payload.get("tool_response")
+    if _grep_shape_ok(resp):
+        return _mask_field(resp, lambda r: (r, "content"))
+    if (isinstance(resp, dict) and resp.get("mode", "content") == "content"
+            and ("content" in resp or resp.get("mode") == "content")):
+        _audit_shape("unknown Grep output shape, left alone")
+    return ""
+
+
 def _withhold(payload: dict) -> str:
     """The answer that hides a tool's whole output (the shape is kept)."""
     try:
+        if payload.get("tool_name") in ("Read", "Grep"):
+            import copy
+            resp = payload.get("tool_response")
+            if payload["tool_name"] == "Read" and _read_shape_ok(resp):
+                new = copy.deepcopy(resp)
+                new["file"]["content"] = LOCKED_NOTICE
+            elif payload["tool_name"] == "Grep" and _grep_shape_ok(resp):
+                new = copy.deepcopy(resp)
+                new["content"] = LOCKED_NOTICE
+            elif (payload["tool_name"] == "Read" and isinstance(resp, dict) and resp.get("type") == "notebook"
+                  and isinstance(resp.get("file"), dict)):
+                new = copy.deepcopy(resp)
+                new["file"]["cells"] = _replace_strings(new["file"].get("cells"))
+            else:
+                return ""
+            return json.dumps({"hookSpecificOutput": {
+                "hookEventName": "PostToolUse", "updatedToolOutput": new,
+                "additionalContext": LOCKED_NOTICE}}) + "\n"
         if _is_mcp(payload):
             new = _replace_strings(payload.get("tool_response"))
             return json.dumps({"hookSpecificOutput": {
@@ -1832,18 +2417,30 @@ def _replace_strings(value, depth: int = 0):
 
 def _mask_all(value, prints, depth: int = 0, deadline: float | None = None, secrets=()):
     """(a copy of value with every string in it masked, how many were
-    hidden). The shape stays: dicts, lists, numbers and keys as they were.
-    `deadline` (time.monotonic) is shared by every string of the call."""
+    hidden). The shape stays: dicts, lists and numbers as they were. A dict's
+    KEYS are masked too (round 4: a key can be put where a name goes).
+    Nested deeper than MAX_DEPTH counts as found: that part is withheld, never
+    shown unchecked. `deadline` (time.monotonic) is shared by every string of
+    the call."""
     if deadline is None:
         deadline = time.monotonic() + POST_BUDGET
     if isinstance(value, str):
         return _mask_text(value, prints, secrets, deadline)
-    if depth > MAX_DEPTH:
-        return value, 0
-    if isinstance(value, dict):
-        done = {k: _mask_all(v, prints, depth + 1, deadline, secrets) for k, v in value.items()}
-        return {k: v for k, (v, _n) in done.items()}, sum(n for _v, n in done.values())
-    if isinstance(value, list):
+    if isinstance(value, (dict, list)) and value:
+        if depth > MAX_DEPTH:
+            return LOCKED_NOTICE, 1
+        if isinstance(value, dict):
+            out, total = {}, 0
+            for k, v in value.items():
+                if isinstance(k, str):
+                    k, nk = _mask_text(k, prints, secrets, deadline)
+                    total += nk
+                v2, nv = _mask_all(v, prints, depth + 1, deadline, secrets)
+                total += nv
+                while k in out:                 # two keys that mask to the same text
+                    k = f"{k}#"
+                out[k] = v2
+            return out, total
         done = [_mask_all(v, prints, depth + 1, deadline, secrets) for v in value]
         return [v for v, _n in done], sum(n for _v, n in done)
     return value, 0
@@ -2328,10 +2925,12 @@ def cmd_hook(args, out=None, err=None, run=subprocess.run) -> int:
                       "use a stored key or print the environment.\n"
                       "  After a Bash, PowerShell or MCP tool call it also hides stored keys "
                       "(in any disguise) and text in a known key format in the output before "
-                      "Claude sees it (best effort; Read, Grep, WebFetch and Task results "
-                      "cannot be changed afterwards, so those are checked before the call; "
-                      "if the output check fails, the output is shown as it is and "
-                      "`stuntkey doctor` can show the failures).\n")
+                      "Claude sees it. A Read or Grep result is masked too, but only best effort "
+                      "(Claude Code does not document that answer shape); WebFetch, WebSearch, "
+                      "Task and Agent results are not changed afterwards, so those are checked "
+                      "before the call. If the output check itself fails or runs out of time, "
+                      "the output is shown as it is (Claude Code's rule for this kind of hook), "
+                      "and `stuntkey doctor` can show the failures.\n")
             out.write(_offer_agent_rules(args, out))
             if handler.get("onFailure") == "block":
                 out.write("  If the hook itself breaks or times out, the call is blocked "

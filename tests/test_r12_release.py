@@ -93,8 +93,13 @@ class VersionParity(unittest.TestCase):
                 self.assertIn(f"stuntkey-{self.version}-", url)
 
     def test_changelog_leads_with_this_version(self):
-        first = _version_in(_read("CHANGELOG.md"), r"^## (\d+\.\d+\.\d+)")
-        self.assertEqual(first, self.version)
+        text = _read("CHANGELOG.md")
+        first = _version_in(text, r"^## (\d+\.\d+\.\d+)")
+        if re.search(r"^## Unreleased\b", text, re.M):
+            # work not yet released sits above the last released version
+            self.assertLess(text.index("## Unreleased"), text.index(f"## {first}"))
+        else:
+            self.assertEqual(first, self.version)
 
     def test_shims_agree_with_themselves_and_ask_for_a_real_stuntkey(self):
         old_name = "safe" + "easy" + "api"      # the old product name; never spelled out in tests

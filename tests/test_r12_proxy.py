@@ -40,6 +40,8 @@ class _Base(unittest.TestCase):
                              # replace subprocess.run + _tool themselves
     def setUp(self):
         os.environ["STUNTKEY_KEYCHAIN"] = "memory"
+        # (under `unittest discover` there is no conftest to undo it: it must not leak into later tests)
+        self.addCleanup(os.environ.pop, "STUNTKEY_KEYCHAIN", None)
         patches = [mock.patch.object(approve, "console", _no_real_window)]
         if self.stub_dialog:
             patches.append(mock.patch.object(approve, "dialog", _no_real_window))

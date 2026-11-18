@@ -719,7 +719,11 @@ class ReleaseFiles(unittest.TestCase):
         self.assertTrue(top)
         cur = tuple(int(x) for x in __version__.split("."))
         got = tuple(int(x) for x in top.group(1).split("."))
-        self.assertIn(got, (cur, (cur[0], cur[1], cur[2] + 1)),
+        allowed = [cur, (cur[0], cur[1], cur[2] + 1)]
+        if re.search(r"^## Unreleased\b", self.read("CHANGELOG.md"), re.M):
+            # one open "Unreleased" block sits above the last released section
+            allowed.append((cur[0], cur[1], cur[2] - 1))
+        self.assertIn(got, allowed,
                       "the changelog's newest section must be this version or the next one")
 
     def test_no_scratch_or_secret_files_are_tracked_by_the_packaging_rules(self):

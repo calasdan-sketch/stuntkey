@@ -1,6 +1,188 @@
 # Changelog
 
-## 0.9.4 (unreleased)
+## Unreleased
+
+Round 4, builder B (everyday use). In plain words:
+
+**New commands**
+- `stuntkey verify` checks, with its own copy of stuntkey and a pretend server, that strangers are refused, the key is hidden and failures stay safe. Not tested against a live Claude.
+- `stuntkey explain` tells the last week (or `--since`) in plain sentences from the activity log.
+- `stuntkey age` lists keys older than 90 days (`--warn`, or `STUNTKEY_AGE_WARN`); `status` shows the count.
+- `stuntkey clean-env` removes plaintext key copies from `.env` once they are in the keychain, with a private backup and an undo; setup offers it once.
+- `scan --agent-configs` looks for keys inside AI app settings files.
+
+**Everyday use**
+- `status` is correct right after setup, and `status`, `overview`, `doctor` and `test` now agree through one shared answer (ready, almost, needs attention). `status --fix` repairs what it lists.
+- A step that failed is never reported as done; the safety-check self-test retries once.
+- Setup ends with the one command to run, copied to the clipboard when possible, and the Claude Desktop route by hand.
+- A call that waits for your permission says so and says how long; `resume --yes` works at a real terminal.
+- Plainer wording: activity log text, the unreadable folder `scan` names, the port note only when asked, and a warning when an old stuntkey program is first on PATH.
+
+Round 4, builder A (security panel: hook, proxy, policy, panic). In plain words:
+
+- hook: Windows 8.3 short names (STUNTK~1, CLAUDE~1.JSO, ENV~1) are spelled out (GetLongPathNameW, else realpath) before every path check for Read, Write, Edit, MultiEdit, NotebookEdit, Grep, Glob and path-like MCP arguments; shell text that names a short twin on Windows is refused (git revisions such as HEAD~1 and the profile folder's own short name stay allowed).
+- hook: inline Python (-c, stdin, heredoc, runpy) that loads stuntkey's keychain, store, broker, scrub, proxy, consent, capture, mint, remote, runner, httpd, mcp or approve modules is refused, as is `python -m stuntkey.<module>` (only `python -m stuntkey` and `.cli` stay).
+- hook: caret and quote splitting of protected names (.stu^ntkey, .stu'nt'key) is caught (a squash that keeps the slashes; % added to the name boundary).
+- hook: MCP tool arguments named path, file, filepath, uri, url, source or directory (or that look like a path or file:// address) go through the file rules (.env, settings, stuntkey's store, credential files).
+- hook: `claude` started with --settings, --setting-sources, --dangerously-skip-permissions, `mcp add` or CLAUDE_CONFIG_DIR= is refused from an agent's shell.
+- hook: more env-dump forms are refused (/usr/bin/env, env -u X env, busybox env, sudo -E env, VAR=1 env; Python `from os import environ as e; print(e)`, os.environ._data, os.environb; node {...process.env}); `stuntkey audit reset` and the --yes forms of setup, install, fix, wrap and hook install are only for the person; SendKeys, AppActivate, pyautogui, keybd_event are refused in shell text.
+- hook: `env | grep ^PATH` (also HOME, USER, LOGNAME, TEMP, TMP, LANG, LC_*, SHELL, PWD, TERM) is the one filtered form that stays allowed; `env | grep PATH`, `-v ^PATH`, `^PATHEXT`, a second pipe or a redirect stay blocked.
+- hook: a plain content search that is too big to check (over 400 files, or out of time) is refused in a place where keys are kept (name, .stuntkey/.ssh folders, home folder, drive root) and let through, with a line in the activity log, in an ordinary project folder.
+- hook: Grep `mode` is optional (a missing mode is content); a notebook Read is masked in its cells; pdf, image and parts results pass and are logged once as "unmaskable type"; shape-miss logging only for a true miss (not for a successful mask or a non-text result).
+- hook: PostToolUse output nested deeper than 20 levels is withheld instead of shown; a key used as a dict key in an MCP result is masked.
+- hook: the secret-name check matches whole name parts (environment.py, development.md and tokenizer.py are not secret paths).
+- hook: the install message no longer says Read and Grep results cannot be changed afterwards.
+- logfacts is the leaf home of the activity-log words and counters; doctor imports it statically (the importlib trick is gone); the log is read from its last megabyte, line by line.
+- proxy: a recipe that is not approved is a plain refusal again (remote was used without being imported: NameError).
+- policy: the GraphQL reader is linear in the size of the document; a REST {"query": "shoes"} body on a non-GraphQL path is documented as unreadable and fails closed.
+- panic: a locked or unreachable keychain says so, with the manual revoke steps, instead of "no stored key found".
+- docs: SECURITY.md and docs/THREAT_MODEL.md now say that telemetry and transcripts keep the original output, mention CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1, and describe the best-effort Read/Grep mask, 8.3 names, inline Python and MCP path rules.
+
+Security panel, round 3 (builder pass on the verified round-2 findings). In plain words:
+
+**Security**
+- **The attack-test shortcut is now keyed on the code itself.** `start` and `doctor` reuse a clean
+  attack-test result for 10 minutes only when a SHA-256 of every file in the stuntkey package (code,
+  recipes, web, skill) and the version is unchanged. File dates no longer count, and a planted cache
+  with a wrong hash is ignored.
+- **A key on a huge line is now found.** The after-the-call check cut a very long unbroken line into
+  separate 512-character pieces, so a key that straddled a cut was missed (seen with a 6 MB file and the
+  key on its last line). The pieces now overlap. A text that cannot be checked inside the time allowance
+  is still withheld, never shown. Key-shaped text written with look-alike letters (full-width, Cyrillic,
+  Greek) is now masked too, not only stored keys.
+- **Read / Grep output shape:** the check now needs only the text field it masks; extra fields a newer
+  Claude Code adds are copied through unchanged (before, one new field switched masking off). Outputs in
+  a shape it cannot use are counted, and `stuntkey doctor` shows the count.
+- **Grep rule no longer depends on the pattern.** A Grep that prints matching lines (`output_mode`
+  `content`, also when left out) over a file or folder that holds one of your stored keys is refused,
+  whatever the pattern looks like (`s(?:k)-`, `s[jk]-`, `s.k-`, `[A-Za-z0-9_-]+`). `files_with_matches`
+  and `count` are allowed there. The key-prefix refusal is kept. A big folder that cannot be read in time is
+  not refused for a plain search (the output is still masked afterwards).
+- **GraphQL route rules:** a document in the address (`GET /graphql?query=mutation{a}`) is read; a JSON
+  body with `query`, `operationName` or `variables` twice (also in another letter case) counts as a
+  mutation; a GraphQL address with no document (a persisted-query call) counts as a mutation.
+- **Warden feed paths:** secrets are masked, anything after `;` is cut, and only the first two path
+  parts are written (the rest becomes a short hash).
+- **`status`/`fix` key places:** a plaintext `.env` copy is reported even when the keychain also has
+  the key; a locked or unavailable keychain says "Keychain unavailable", not "No key is saved yet".
+- **Sites stuntkey has no recipe for:** Enter now means NO. To save, type the first 3 characters shown
+  (capitals count). In a window that cannot ask, the key is not kept. No more key characters are shown
+  than before.
+
+**Warden feed rewritten to warden's real file shapes (unverified against a live warden)**
+- `audit export --warden` now writes `warden-feed.mcp-jail.jsonl` (`run_id`, `agent_id`, `fleet`,
+  `tool`, `server`, `args`, `allowed`, `at`) and `warden-feed.mcp-jail.planok.jsonl` (`run_id`,
+  `agent_id`, `gate`, `decision`, `approver`, `requested_at`, `decided_at`). It is meant for warden's
+  `report --from mcp-jail --file ...` and `report --from planok --file ...`. These shapes were read
+  from warden's source; they have NOT been tried against a live warden. Raw `net.egress` lines and byte
+  counts are gone. Only a refused approval is in the activity log, so only `denied` is written.
+
+**Plainer commands**
+- `status`, `overview` and `fix` now agree. With no `claude` program, `fix` and `overview` print the exact
+  `claude mcp add` line (and `fix` says in plain words that Claude Desktop needs no command). A folder
+  with no setup now says "Run `stuntkey setup`" (it said `init`).
+- `setup` ends in ONE state: "All done" or "Almost done: N step(s) left: ...". "Now close Claude" appears
+  only with "All done", never beside a FAIL.
+- Bare `stuntkey completion` prints "Install: stuntkey completion powershell >> $PROFILE" style lines.
+  `start` prints its next steps once.
+- `call`: a 401 or 403 prints one hint ("The key was rejected. Run `stuntkey rotate <service>`.") and
+  the JSON output is compact. A busy-port note is `[i]`, not `[ok]`.
+- `STUNTKEY_APPROVE_TIMEOUT` (seconds, kept between 10 and 900, default 120) sets how long the approval
+  window waits.
+
+**Leak benchmark**
+- New usability check: 20 harmless commands (`leakbench/probes/benign/`) scored `allowed`, `over-blocked`,
+  `over-masked` or `n/a`, with two summary lines (Protection over 64, Usability "allowed N of 20"). A
+  profile is "perfect" only with leaked=0 AND over-blocked=0. The 64-probe totals are unchanged.
+  Measured after round 4 (2026-11-15): every profile allows 20 of 20 (the hook now lets `env | grep ^PATH` through).
+  Core 64: none 0 blocked / 0 masked / 57 leaked / 7 n/a; hook 56 / 6 / 2 / 0; hook-unregistered 50 / 12 / 2 / 0;
+  with `--canary opaque` 49 / 6 / 7 / 2; full 58 / 6 / 0 / 0 (the only "perfect" one). Extended 86: none 79 leaked / 7 n/a;
+  hook 70 / 12 / 4; unregistered 64 / 15 / 7; opaque 63 / 7 / 14 / 2 n/a; full 72 / 12 / 2.
+
+**Docs**
+- "A log that can't be rewritten" is now "tamper-evident, not tamper-proof". "Sends no telemetry" is now
+  "sends nothing except the calls you ask for", and a test lists exactly which files may import network
+  libraries. The stale "nothing here was run on Windows" lines in the guide now match this changelog.
+
+Beginner experience, from a tester who ran every command on real Windows. In plain words:
+- **One "Start here" path, the same everywhere:** 1. `stuntkey setup`, 2. `stuntkey get github`,
+  3. close and reopen your AI app. `stuntkey try` is the optional practice run. The same block is in
+  `stuntkey`, `--help` (above the long list), `help`, `help --all`, `start`, the README and the guide
+  (one text in the code, a test keeps them equal). The "about 50 commands" claim is now "more than 50",
+  and `help --all` ends with the exact count.
+- **`get` with closed input no longer hangs on Windows.** Python calls a closed input (NUL) a terminal
+  there, so the hidden prompt waited for ever. stuntkey now asks the console itself and stops at once
+  with "run this in a normal terminal window" (checked: 0.2 s instead of 40 s+).
+- **Clipboard wait in a window that cannot redraw** (an AI's shell, a log): it says so up front and
+  prints one short line a minute instead of staying silent. The live countdown wipe uses the real
+  window width, not 70 spaces.
+- **"Connected" and "saved" now mean the keychain.** `start`, `overview` and `status` count only keys
+  in your keychain. A real-looking key found only in a `.env` file is shown as "not protected"
+  (`stuntkey setup` moves it); an example (`sk-xxxx`, `your_key_here`, `FAKE`) counts for nothing.
+- **`scan` and `scan-git` agree about examples.** Both skip made-up example values; `scan-git` says how
+  many in one line. Outside a git repository it says "this folder is not a git repository" instead of
+  "git exited with 128".
+- **New: `stuntkey install --dry-run`** lists the files it would change and changes nothing (the same
+  words as `setup --dry-run`).
+- **Plainer status lines:** a busy port 8787 is a note, not a problem; "I can repair N of the M items"
+  now uses the same numbers as the headline; `test` on a fresh computer ends with a friendly summary and
+  the next step (a real fault in the built-in check is called a fault).
+- **`call` shows an example** (`stuntkey call github GET /user`) when words are missing and in its help.
+  `completion` says where to paste its output (PowerShell profile, `.bashrc`). `start` and `doctor` say
+  "Checking N attack tests (about 6 seconds)..." and reuse a clean result for 10 minutes (only a full
+  pass, only for the same stuntkey files; `stuntkey selftest` always runs fresh).
+
+Security panel, round 2. In plain words:
+- **`get` no longer claims "clipboard emptied" unchecked.** It empties the clipboard, reads it back,
+  and warns loudly (with what to do) if the key is still there.
+- **A hidden prompt needs a real terminal.** Where typing cannot be hidden (an IDE shell, a pipe,
+  closed input) `get` now stops up front with "run this in a normal terminal window" instead of
+  hanging or showing what you type. If a terminal cannot hide typing it says so and asks for a yes.
+- **Sites stuntkey has no recipe for (`stuntkey get example.com`):** the clipboard could be
+  poisoned with look-alike text, so after copy-and-go it shows the first 3 characters, the length and
+  where it will be saved, and (round 3) you must TYPE those 3 characters to save it; Enter throws
+  it away. Known services are unchanged: still no extra step (a decision for Dan: keep it off for
+  known recipes).
+- **Hook, before the call:** a Grep for the start of a key (`sk-`, `AKIA`, `ghp_`, `xox` ...) over a
+  folder or file that holds a stored key or a key-shaped secret is refused (the files are read first;
+  too many files, too big or out of time also refuses). A Read now scans the whole file up to 4
+  million characters (it was the first 600,000); a bigger file in a place where keys are kept is refused.
+- **Hook, after the call (experimental, unverified):** Read and Grep (content mode) output is
+  masked in the shape third-party reports describe. The text field must be where we expect it (other
+  fields are copied through unchanged since round 3), anything else is left alone, and
+  `shape-unverified` is recorded in the activity log (`stuntkey doctor` shows the count). This is not in Claude Code's own
+  docs and has not been tested live. The hook output check is fail-open: a crash or a timeout shows
+  the original output. Re-run `stuntkey hook install` to add Read and Grep to the output check.
+- **Numbers fixed in the README:** every row of the benchmark table now adds up to 64 (new `n/a`
+  column); hook 55 blocked / 7 masked / 2 leaked, hook + caps 57 / 7 / 0, nothing 0 / 0 / 57 (+7 n/a).
+  Wording: "scrubbed (best effort)", and the hook is Claude Code only.
+- **Stricter `stuntkey.policy` loading:** an unknown key is refused with a "did you mean" hint
+  (allowed: `methods`, `paths`), `NaN` and `Infinity` are refused, a UTF-8 BOM (Notepad) is accepted,
+  a file that is not UTF-8 gets a clear error. An empty `methods` or `paths` list still means nothing
+  is allowed.
+- **New: `stuntkey audit export --warden [--since DATE] [--out FILE]`** writes two separate JSON Lines
+  files (rewritten to warden's file shapes in round 3, see below). The activity log itself is never
+  changed. Hook denials are not in the activity log, so they are not in the feed yet.
+- **GraphQL-aware route rules.** A route rule can say `"QUERY"` (a POST that is provably only a
+  query) or `"MUTATION"`. `["GET", "QUERY"]` is a read-only GraphQL rule: a mutation, a subscription, a
+  batch holding one, or anything unreadable (treated as a mutation) is refused. `POST` still means any POST.
+
+Smoother `stuntkey get`. In plain words:
+- **A countdown while it waits.** On a real terminal `get` shows one line that counts down
+  ("Waiting for your copy... 2:47 left (round 1 of 3)"). When a round runs out it says so and
+  starts the next one by itself - you do not run the command again. After 3 rounds (9 minutes) it
+  says nothing was copied and offers the hidden paste, or Ctrl-C to stop. Ctrl-C always stops
+  cleanly. The clipboard is emptied on every path (taken, timed out, cancelled).
+- **No scary errors without a keyboard.** If `get` or `install` is run where typing is not
+  possible (closed input, a script, an AI tool's shell) you now get one plain sentence - "run this
+  in a normal terminal window" - not a Python traceback or a `GetPassWarning`.
+- **`doctor`:** a missing `ssh` is shown as optional info (only `remote`/`deploy` need it), not
+  FIX. The keychain hint now fits your computer (Linux: install `libsecret-tools`). A new
+  clipboard line says what to install on Linux (wl-clipboard, xclip or xsel) if copy-and-go is
+  unavailable.
+- **Confirmations unchanged on purpose.** The "is this the right site?" question and the
+  typed `yes` for a validation address on another domain each guard a different decision, so they
+  were not merged. A known service asks neither.
 
 Round 14. In plain words:
 

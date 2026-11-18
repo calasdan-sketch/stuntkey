@@ -37,6 +37,7 @@ import urllib.parse
 import urllib.request
 
 from . import __version__
+from . import logfacts
 from . import recipes as recipes_mod
 
 USER_AGENT = f"stuntkey-doctor/{__version__} (+https://github.com/calasdan-sketch/stuntkey)"
@@ -266,8 +267,18 @@ def cmd_doctor(args, catalog: dict, out=None, fetch_fn=None) -> int:
         out.write(f"unknown service: {', '.join(recipes_mod.printable(u) for u in unknown)}\n")
         return 2
     rows = run(catalog, fetch_fn, args.service or None, args.timeout)
+    try:
+        shapes = logfacts.shape_unverified_count()
+    except Exception:           # noqa: BLE001 - a side note, never a reason to fail
+        shapes = 0
     if args.json:
-        out.write(json.dumps({"rows": rows, "rotted": exit_code(rows) == 1}, indent=2) + "\n")
+        out.write(json.dumps({"rows": rows, "rotted": exit_code(rows) == 1,
+                              "hook_shape_unverified": shapes}, indent=2) + "\n")
     else:
-        out.write("\n" + render(rows) + "\n")
+        out.write("\n" + render(rows))
+        if shapes:
+            out.write(f"\n  Note: {shapes} file-read / search output(s) came back in a shape "
+                      "stuntkey could not check or could\n  only check unverified, so the "
+                      "after-the-fact key hiding may not have covered them.\n")
+        out.write("\n")
     return exit_code(rows)

@@ -75,7 +75,7 @@ class PlainErrors(unittest.TestCase):
         with in_empty_dir():
             code, out, _e = run(["status"])
             self.assertEqual(code, 0)
-            self.assertIn("This folder has no stuntkey setup. Run `stuntkey init` to create one.", out)
+            self.assertIn("This folder has no stuntkey setup. Run `stuntkey setup` to set it up.", out)
             code, out, _e = run(["status", "--json"])
             self.assertEqual(json.loads(out)["services"], [])
 

@@ -40,14 +40,40 @@ def _drain_input() -> None:
         pass
 
 
+class NoTerminal(EOFError):
+    """There is no real terminal to hide typing on (callers treat it as the
+    end of input and say "run this in a normal terminal window")."""
+
+
+def stdin_is_terminal() -> bool:
+    """True only for a real keyboard window. On Windows, Python says a closed
+    input (the NUL device, `< NUL`) IS a terminal, and then getpass / getwch
+    read the console directly and wait for ever. So there we also ask the
+    console itself."""
+    try:
+        if not (sys.stdin and sys.stdin.isatty()):
+            return False
+    except (OSError, ValueError):
+        return False
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            from ctypes import wintypes
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel32.GetStdHandle.restype = wintypes.HANDLE
+            handle = kernel32.GetStdHandle(-10)         # STD_INPUT_HANDLE
+            mode = wintypes.DWORD()
+            return bool(kernel32.GetConsoleMode(handle, ctypes.byref(mode)))
+        except (OSError, AttributeError, ValueError):
+            return True         # cannot tell: keep the old answer
+    return True
+
+
 def read_quiet(prompt: str) -> str:
     """One line, without echo when there is a terminal; from a pipe or file
     otherwise (nothing is shown for those). EOFError at the end of input."""
     stdin = sys.stdin
-    try:
-        is_tty = bool(stdin and stdin.isatty())
-    except (OSError, ValueError):
-        is_tty = False
+    is_tty = stdin_is_terminal()
     if is_tty:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")     # "may be echoed": never the text
@@ -73,17 +99,31 @@ def read_hidden(prompt: str) -> str:
     ends - no Enter needed (typing by hand still ends with Enter). Elsewhere
     (a pipe, a test) it reads like getpass. The rest of a multi-line paste is
     thrown away afterwards."""
+    is_tty = stdin_is_terminal()
+    if not is_tty:
+        # No real terminal (an IDE shell, a pipe, closed input): typing cannot
+        # be hidden there, and on Windows getpass can hang on closed input.
+        # Stop BEFORE asking. EOFError is what every caller already turns into
+        # "run this in a normal terminal window" (nothing is saved).
+        raise NoTerminal("no terminal to hide typing on")
     try:
-        is_tty = bool(sys.stdin and sys.stdin.isatty())
-    except (OSError, ValueError):
-        is_tty = False
-    try:
-        if is_tty:
-            try:
-                return _read_masked(prompt)
-            except ImportError:
-                pass
-        return getpass.getpass(prompt)
+        try:
+            return _read_masked(prompt)
+        except ImportError:
+            pass
+        # A terminal, but one that cannot hide typing: say so, and go on only
+        # after a yes (typing here may be visible, and in a screenshot).
+        try:
+            sys.stderr.write("  Typing may be VISIBLE in this window. Type y and press "
+                             "Enter to go on, anything else stops: ")
+            sys.stderr.flush()
+            if (sys.stdin.readline() or "").strip().lower() not in ("y", "yes"):
+                raise NoTerminal("typing could be visible and was not accepted")
+        except (OSError, ValueError):
+            raise NoTerminal("no terminal to hide typing on") from None
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            return getpass.getpass(prompt)
     finally:
         _drain_input()
 

@@ -118,12 +118,14 @@ class Policy:
             self.calls += 1
             self._stamps.append(now)
 
-    def gate(self, service: str, method: str, path: str) -> None:
-        """Route policy, kill switch and caps: checked before every call."""
+    def gate(self, service: str, method: str, path: str, body=None, query=None) -> None:
+        """Route policy, kill switch and caps: checked before every call. `body`
+        (bytes) and `query` (dict) let the route policy tell a GraphQL query from
+        a mutation (policy.graphql_kind)."""
         from . import caps, policy as route
         home = self.limits_home()
         route.check(route.load(home, self.project_dir or os.getcwd()),
-                    service, method, path)
+                    service, method, path, body=body, query=query)
         with self.lock:
             caps.begin(home, service, self.service_calls.get(service, 0))
             self.service_calls[service] = self.service_calls.get(service, 0) + 1
@@ -412,7 +414,13 @@ def call(recipe: dict, values: dict, method: str, path: str,
     policy.count()          # every attempt counts, refused ones included
     try:
         host, url = build_url(recipe, path, query)
-        policy.gate(recipe["service"], method, path)
+        gate_body = body
+        if body is not None and not isinstance(body, (bytes, str)):
+            try:
+                gate_body = json.dumps(body).encode()
+            except (TypeError, ValueError):
+                gate_body = b"\x00"          # cannot be read: treated as unknown
+        policy.gate(recipe["service"], method, path, body=gate_body, query=query)
     except BrokerError:
         _log(audit, recipe, values, method, "?", _clean(path), 0, 0, "refused")
         raise

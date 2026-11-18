@@ -141,7 +141,7 @@ class TestSetup(Home):
         self.assertEqual(keychain.read("anthropic", "ANTHROPIC_API_KEY", be), FAKE_ANTHROPIC)
         # the file still holds the key, so it is NOT safe yet, and the step is plain
         self.assertEqual(code, 1)
-        self.assertIn("Not safe yet", out)
+        self.assertIn("Almost done", out)
         self.assertIn(".env", out)
         self.assertTrue(os.path.exists(os.path.join(self.cwd, ".env")))   # never deleted for them
 
@@ -198,13 +198,13 @@ class TestSetup(Home):
         self.use_claude_code(with_cli=False)
         code, out, _ = self.run_cli("setup", "--yes")
         self.assertEqual(code, 1)
-        self.assertIn("Not safe yet", out)
+        self.assertIn("Almost done", out)
         self.assertIn("claude mcp add --scope user", out)
 
     def test_old_project_setup_still_there(self):
         code, out, _ = self.run_cli("setup", "--project")
         self.assertEqual(code, 1)
-        self.assertIn("stuntkey init", out)
+        self.assertIn("no stuntkey setup", out)
 
 
 class TestUndo(Home):
@@ -270,9 +270,12 @@ class TestTest(Home):
     def test_fails_before_setup_with_one_line_and_one_step(self):
         code, out, _ = self.run_cli("test")
         self.assertEqual(code, 1)
-        self.assertEqual(len(out.strip().splitlines()), 1)
+        lines = out.strip().splitlines()
+        # one FAIL line with the one next step, then one friendly summary line
+        self.assertEqual(len(lines), 2)
         self.assertTrue(out.startswith("FAIL"))
-        self.assertIn("Next:", out)
+        self.assertIn("Next:", lines[0])
+        self.assertIn("Summary:", lines[1])
 
     def test_passes_after_setup_on_one_line(self):
         self.use_claude_code()

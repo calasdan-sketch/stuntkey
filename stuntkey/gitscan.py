@@ -55,9 +55,29 @@ def _is_text(sample: bytes) -> bool:
     return b"\0" not in sample
 
 
+_NOT_EXAMPLE_KINDS = ("Private key block", "Database URL with password")
+
+
+def _is_example(kind: str, value: str) -> bool:
+    """The same call `stuntkey scan` makes about a made-up value."""
+    if kind in _NOT_EXAMPLE_KINDS:
+        return False
+    try:
+        from . import scan as scan_mod
+        return bool(scan_mod.is_placeholder(value))
+    except Exception:           # noqa: BLE001 - never let the check hide a real key
+        return False
+
+
 def _pattern_hits(line: str) -> list[tuple[str, str]]:
     return [(kind, mask(m.group(0))) for kind, rx in PATTERNS
-            for m in [rx.search(line)] if m]
+            for m in [rx.search(line)] if m and not _is_example(kind, m.group(0))]
+
+
+def _example_count(line: str) -> int:
+    """How many key-shaped values on this line are examples (skipped)."""
+    return sum(1 for kind, rx in PATTERNS
+               for m in [rx.search(line)] if m and _is_example(kind, m.group(0)))
 
 
 def scan_file(path: str, matcher=_pattern_hits) -> list[dict]:
@@ -160,6 +180,29 @@ def format_report(result: dict) -> str:
     return "\n".join(lines)
 
 
+def keychain_fix_hint(platform_name: str | None = None) -> str:
+    """What to do when there is no OS keychain, in words for this computer."""
+    plat = platform_name or sys.platform
+    base = "Without an OS keychain, keys are kept in a .env file (owner-only)."
+    if plat.startswith("linux"):
+        return (base + " To get a keychain: install libsecret-tools "
+                "(Debian/Ubuntu: `sudo apt install libsecret-tools`; Fedora: "
+                "`sudo dnf install libsecret`) and make sure a keyring such as "
+                "GNOME Keyring is running.")
+    if plat == "darwin":
+        return base + " macOS normally has one built in: check that `security` runs in Terminal."
+    return base + " Windows normally has one built in (Credential Manager)."
+
+
+def clipboard_fix_hint(platform_name: str | None = None) -> str:
+    """What to install so copy-and-go works, in words for this computer."""
+    plat = platform_name or sys.platform
+    if plat.startswith("linux"):
+        return ("Copy-and-go needs a clipboard tool: install wl-clipboard (Wayland) "
+                "or xclip / xsel (X11). Until then stuntkey asks you to paste the key.")
+    return "Copy-and-go is not available here; stuntkey asks you to paste the key instead."
+
+
 def doctor(env=None, which=shutil.which) -> dict:
     env = os.environ if env is None else env
     from . import keychain as keychain_mod
@@ -174,13 +217,24 @@ def doctor(env=None, which=shutil.which) -> dict:
         "stuntkey needs Python 3.10 or newer.")
     backend = keychain_mod.detect_backend()
     add("keychain", backend is not None, keychain_mod.label(backend) if backend else "none",
-        "Without an OS keychain, keys are kept in a .env file (owner-only).")
+        keychain_fix_hint())
     if keychain_mod.test_backend():
         add("keychain", True, f"test backend {env.get(keychain_mod.TEST_ENV, '')}", info=True)
-    add("ssh", bool(which("ssh")), "found" if which("ssh") else "missing",
-        "Needed for `remote`/`deploy`. Windows: Settings > Apps > Optional features > OpenSSH Client.")
+    have_ssh = bool(which("ssh"))
+    add("ssh", have_ssh,
+        "found" if have_ssh else "not installed - optional, only needed for `remote`/`deploy`",
+        "", info=not have_ssh)
     add("git", bool(which("git")), "found" if which("git") else "missing",
         "Needed for `deploy` and git-based updates.")
+    try:
+        from . import clipboard as clipboard_mod
+        clipboard_mod.backend()
+        add("clipboard", True, "copy-and-go available")
+    except Exception as e:                                   # noqa: BLE001
+        # optional: without it `get` asks for a hidden paste instead
+        add("clipboard", False, "no clipboard tool - optional (paste works instead)",
+            clipboard_fix_hint(), info=True)
+        del e
     proxy = env.get("HTTPS_PROXY") or env.get("https_proxy")
     if proxy:           # only worth a line when set; stuntkey ignores it for AI calls
         add("proxy", True, "set (stuntkey ignores it for AI calls)", "")
@@ -219,9 +273,12 @@ def _doctor_stuntkey_checks(add) -> None:
         add("AI tools", False, f"could not check ({type(e).__name__})", "")
     try:
         from . import selftest
-        res = selftest.run_all()
-        passed = sum(1 for r in res if r["pass"])
-        add("self-attack test", passed == len(res), f"{passed} of {len(res)} attacks stopped",
+        # one short line first (to stderr, so --json stays clean), and a clean
+        # result from the last few minutes is reused instead of running 6 seconds again
+        passed, total, cached = selftest.checked(
+            say=lambda t: print("  " + t, file=sys.stderr, flush=True))
+        add("self-attack test", passed == total,
+            f"{passed} of {total} attacks stopped" + (" (checked a moment ago)" if cached else ""),
             "Run `stuntkey selftest` to see which attack got through, and report it (see https://github.com/calasdan-sketch/stuntkey/blob/main/SECURITY.md).")
     except Exception as e:                                   # noqa: BLE001
         add("self-attack test", False, f"could not run ({type(e).__name__})", "")
@@ -232,9 +289,9 @@ def format_doctor(result: dict) -> str:
     for c in result["checks"]:
         mark = "info" if c.get("info") else "ok " if c["ok"] else "FIX"
         lines.append(f"  [{mark}] {c['check']}: {c['detail']}" +
-                     (f"  -> {c['fix']}" if (not c["ok"] and c["fix"]) else ""))
+                     (f"  -> {c['fix']}" if ((not c["ok"] or c.get("info")) and c["fix"]) else ""))
     lines.append("")
-    lines.append("  Ready. Next: stuntkey get github" if result["ok"]
+    lines.append("  Ready. Next: stuntkey setup (then stuntkey get github)" if result["ok"]
                  else "  Fix the items marked FIX, then run `stuntkey doctor` again.")
     from .selftest import BETA_NOTICE
     lines.append("  " + BETA_NOTICE)
@@ -259,6 +316,19 @@ def scan_git(repo: str = ".", staged: bool = False, max_lines: int = 5_000_000,
             ["log", "--all", "-p", "-U0", "--no-color", "--no-textconv",
              "--no-ext-diff", "--format=commit %H"])
     findings: list[dict] = []
+    examples = 0
+    try:
+        # a plain folder is not a repository: say so in words, not "exit 128"
+        probe = subprocess.run(["git", "-C", repo, "rev-parse", "--git-dir"],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                               timeout=30)
+        if probe.returncode != 0:
+            return {"error": "this folder is not a git repository (no git history "
+                             "to look through)", "findings": [], "examples": 0}
+    except OSError:
+        return {"error": "git not found", "findings": []}
+    except subprocess.SubprocessError:
+        pass                                # fall through: the real run will say
     try:
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     except OSError:
@@ -277,18 +347,30 @@ def scan_git(repo: str = ".", staged: bool = False, max_lines: int = 5_000_000,
             for kind, hint in matcher(line):
                 findings.append({"file": fname, "commit": commit, "kind": kind,
                                  "hint": hint})
+            if matcher is _pattern_hits:
+                examples += _example_count(line)
     proc.stdout.close()
     code = proc.wait()
     if code not in (0, None) and not findings:
-        return {"error": f"git exited with {code} (is this a repository?)", "findings": []}
-    return {"findings": findings, "error": None}
+        return {"error": f"git could not read the history (it stopped with code {code})",
+                "findings": [], "examples": examples}
+    return {"findings": findings, "error": None, "examples": examples}
+
+
+def _examples_line(res: dict) -> str:
+    n = res.get("examples") or 0
+    if not n:
+        return ""
+    return (f"  {n} made-up example value(s) skipped: they are not real keys, so "
+            "they are not counted (the same rule `stuntkey scan` uses).")
 
 
 def format_git(res: dict) -> str:
     if res.get("error"):
         return f"  git scan problem: {res['error']}"
+    extra = _examples_line(res)
     if not res["findings"]:
-        return "  git history: no keys found."
+        return "  git history: no keys found." + ("\n" + extra if extra else "")
     seen, lines = set(), [f"  git history: {len(res['findings'])} key(s) found "
                           "(still readable by anyone with the repo):"]
     for f in res["findings"]:

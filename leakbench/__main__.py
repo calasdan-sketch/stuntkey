@@ -23,17 +23,21 @@ def main(argv: list[str] | None = None) -> int:
                              "scored apart from the core set")
     parser.add_argument("--json", action="store_true",
                         help="emit JSON instead of a table")
+    parser.add_argument("--no-benign", action="store_true",
+                        help="skip the 20 harmless probes (the usability check)")
     args = parser.parse_args(argv)
 
     try:
         results = harness.run(args.profile, canary=args.canary, extended=args.extended)
+        benign = ([] if args.no_benign
+                  else harness.run_benign(args.profile, canary=args.canary))
     except ImportError:
         print(f"profile '{args.profile}' unavailable: StuntKey is not importable "
               f"(install it or run from the repo).", file=sys.stderr)
         return 2
 
-    out = (report.to_json(results, args.profile) if args.json
-           else report.to_table(results, args.profile))
+    out = (report.to_json(results, args.profile, benign) if args.json
+           else report.to_table(results, args.profile, benign))
     print(out)
     return 0
 

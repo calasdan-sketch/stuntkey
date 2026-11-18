@@ -503,7 +503,9 @@ class TestFixIsCareful(Home):
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             cmds.cmd_start({}, ".env")
-        self.assertIn("stuntkey fix", out.getvalue())
+        # start now shows the one Start-here path (setup does the fix step too)
+        self.assertIn("stuntkey setup", out.getvalue())
+        self.assertNotIn("stuntkey install", out.getvalue())
 
     def test_dark_theme_text_passes_contrast_too(self):
         css = open(os.path.join(ROOT, "docs", "site", "styles.css"), encoding="utf-8").read()

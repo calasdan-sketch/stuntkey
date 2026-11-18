@@ -160,6 +160,26 @@ def restore_env(snap: dict) -> None:
     os.environ.update(snap)
 
 
+def _restore_after_each_test() -> None:
+    """tests/conftest.py does this per test under pytest. Under `python -m unittest discover`
+    (the CI way) there is no conftest, so one test's `STUNTKEY_KEYCHAIN=memory` would reach
+    every later test: wrap TestCase.run so each test ends with the variables as it found them."""
+    import unittest
+    if getattr(unittest.TestCase.run, "_stuntkey_env_guard", False):
+        return
+    original = unittest.TestCase.run
+
+    def run(self, result=None):
+        snap = snapshot_env()
+        try:
+            return original(self, result)
+        finally:
+            restore_env(snap)
+    run._stuntkey_env_guard = True
+    unittest.TestCase.run = run
+
+
+_restore_after_each_test()
 scrub_env()
 
 _TEMP_DIRS: list = []

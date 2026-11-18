@@ -63,9 +63,12 @@ class McpToolsAreScanned(unittest.TestCase):
         self.assertTrue(hook.is_ours(old))
 
     def test_every_string_is_looked_at(self):
-        # MCP arguments are data: .env names and stuntkey commands in them are
-        # not refused (they named Monomem notes); a settings-file write is
-        self.assertFalse(denied(call("mcp__fs__read", args={"a": [{"p": "/home/me/app/.env"}]})))
+        # MCP arguments are data: .env names and stuntkey commands in prose are
+        # not refused (they named Monomem notes); a settings-file write is.
+        # Round 4: a value that IS a path (a file tool's argument) goes through the file rules,
+        # so a bare .env path is refused, while a sentence that mentions .env is not.
+        self.assertTrue(denied(call("mcp__fs__read", args={"a": [{"p": "/home/me/app/.env"}]})))
+        self.assertFalse(denied(call("mcp__fs__read", args={"a": [{"p": "the app reads .env at startup"}]})))
         self.assertFalse(denied(call("mcp__x__run", opts={"deep": {"deeper": ["stuntkey call github GET /u"]}})))
         self.assertFalse(denied(call("mcp__x__run", **{"~/.stuntkey/keys": 1})))
         self.assertTrue(denied(call("mcp__x__run", opts={"deep": {"deeper": ["cp x ~/.claude/settings.json"]}})))

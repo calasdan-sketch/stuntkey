@@ -14,7 +14,6 @@ import json
 import os
 import shutil
 import subprocess
-import sys
 
 NAME = "stuntkey"
 RUN = subprocess.run            # tests replace this; nothing real is started then

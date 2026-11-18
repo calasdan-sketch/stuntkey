@@ -890,7 +890,9 @@ def collect_files(root: str, everything: bool = False
                     entries.append(entry)
             entries.sort(key=lambda e: e.name)
         except OSError:
-            notes.append(Skipped(os.path.relpath(directory, root),
+            rel_dir = os.path.relpath(directory, root)
+            # the folder you asked for shows as "." - say its real name instead
+            notes.append(Skipped(root if rel_dir == "." else rel_dir,
                                  "a folder that could not be opened", True))
             continue
         for entry in entries:

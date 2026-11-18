@@ -98,6 +98,15 @@ network layer.
     lets the call through.
   - The hook reads the text of a call. A command built at run time, a tool the
     hook is not attached to, or an AI app other than Claude Code gets past it.
+  - The hook's output mask (PostToolUse) is fail-open by Claude Code's design: if it
+    crashes or times out, the model sees the original output. A Read or Grep result
+    is masked only in a shape Claude Code does not document (best effort); a pdf or
+    image result cannot be masked and is noted in the activity log. Reads and
+    searches are therefore also checked BEFORE they run.
+  - Windows short (8.3) names such as `STUNTK~1` are expanded to the long name for
+    path arguments (Read, Write, Edit, Grep, MCP path-like arguments) and refused in
+    shell text on Windows; an MCP tool's `path`, `file`, `uri`, `url`, `source` or
+    `directory` argument goes through the same file rules as a Read.
   - Agent key capture (`capture_key`): with no window possible (SSH, a server,
     `STUNTKEY_NO_WINDOW=1`) it falls back to the grant made with the terminal
     command `stuntkey allow-agent`, which is weaker and labelled advisory in
@@ -105,11 +114,11 @@ network layer.
   - `STUNTKEY_ENV_FILE` and `STUNTKEY_NO_WINDOW` are read from the MCP server's
     environment, which the AI app's config sets. An agent that can edit that
     config can change them.
-- **Telemetry and what the AI vendor sees.** stuntkey itself sends no telemetry
+- **Telemetry and what the AI vendor sees.** stuntkey itself sends nothing except the calls you ask for
   and has no account or server; it only connects to the services you call,
   their key-test addresses, and, for `find`, a public list on GitHub. But the
   *replies* from those services go to your AI app and so to the AI vendor. The
-  key is scrubbed; the data is not.
+  key is scrubbed; the data is not. Claude Code's own telemetry, its session transcript and any other hook see the original output of a tool, because the PostToolUse mask runs after the tool has finished and only changes what the model is shown. A key printed by a command can therefore still sit in those records. A cheap extra layer is Claude Code's `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1` setting, which removes Anthropic and cloud-provider credentials from the environment of the commands it starts (it does nothing for keys stuntkey holds; check Claude Code's documentation for what it covers in your version).
 - **The clipboard and screenshots.** `stuntkey get` empties the clipboard after
   taking the key, but clipboard-history tools and other programs may keep a copy.
   Use `--no-clipboard` if that matters. Nothing covers screenshots or screen

@@ -18,7 +18,9 @@ import time
 NAME = "stuntkey"
 LEGACY_NAME = "oathkey"     # the entry 0.8 wrote: `install` replaces it
 PER_FOLDER = ("claude-code", "vscode")     # config lives in the project folder
-NO_TERMINAL = "no terminal to answer on; re-run with --yes"
+NO_TERMINAL = ("I cannot ask you a question in this window, so nothing was changed. "
+               "Run this in a normal terminal window (Command Prompt, PowerShell or "
+               "Terminal) and answer there, or re-run with --yes to say yes to everything.")
 LABELS = {"claude-desktop": "Claude Desktop", "cursor": "Cursor",
           "claude-code": "Claude Code", "vscode": "VS Code"}
 
@@ -175,18 +177,19 @@ def apply(p: dict) -> str | None:
     return backup
 
 
-def run(names, yes: bool, ask=input, out=print, **kw) -> int:
+def run(names, yes: bool, ask=input, out=print, dry_run: bool = False, **kw) -> int:
     try:
-        return _run(names, yes, ask, out, **kw)
+        return _run(names, yes, ask, out, dry_run=dry_run, **kw)
     except _NoTerminal:
         out(NO_TERMINAL)
         return 1
 
 
-def _run(names, yes, ask, out, **kw) -> int:
+def _run(names, yes, ask, out, dry_run: bool = False, **kw) -> int:
     tg = targets(**kw)
     chosen = names or [n for n, (path, _) in tg.items()
                        if os.path.exists(path) or n in ("claude-code",)]
+    would: list = []
     done = 0
     unreadable = False
     for n in chosen:
@@ -214,12 +217,25 @@ def _run(names, yes, ask, out, **kw) -> int:
         if p.get("legacy") is not None:
             out(f"    and replace the old '{LEGACY_NAME}' entry (0.8):\n"
                 + legacy_diff(p).rstrip("\n"))
+        if dry_run:
+            would.append(path)
+            out("    (--dry-run: this file was not changed.)")
+            continue
         if not yes and not _go_ahead(ask, "    go ahead? [y/N] "):
             out("    skipped.")
             continue
         b = apply(p)
         out(f"    done." + (f" Backup: {b}" if b else ""))
         done += 1
+    if dry_run:
+        if would:
+            out("\n  Files that `stuntkey install` would change:")
+            for w in would:
+                out(f"    - {os.path.abspath(w)}")
+        else:
+            out("\n  Nothing to change.")
+        out("  (--dry-run: nothing was changed.)")
+        return 1 if unreadable else 0
     if not chosen:
         out("no AI tools found. Name one: " + ", ".join(tg))
     elif done:

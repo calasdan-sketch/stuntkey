@@ -4,8 +4,8 @@
 
 ## The plain-words path (for people who do not write code)
 
-0. **The shortest version:** `stuntkey setup` (finds loose keys, moves them to the keychain, switches everything on; one yes), then `stuntkey test` (proves it works with a fake service), and `stuntkey undo` takes the last change back. `stuntkey get` with no name shows a menu; `stuntkey help --all` lists every command; the Compare page says where 1Password, Infisical and Doppler are better.
-0. **The short version:** `stuntkey get github`, then `stuntkey fix` (switches everything on after listing what it will change and asking once), restart your AI app, then ask it "Who am I on GitHub?". If anything is not working, `stuntkey status` shows green, yellow or red for each part with one next step, and `stuntkey fix` repairs what it can. `stuntkey help` groups the commands by task, `stuntkey limits` says what stuntkey does not protect, and `stuntkey uninstall` undoes the setup (saved keys stay).
+0. **Start here (the one path):** 1. `stuntkey setup` (finds loose keys, moves them to the keychain, switches everything on, tests it; one yes). 2. `stuntkey get github` (adds a key; any service name works, and `stuntkey get` with no name shows a menu). 3. Close and reopen your AI app, then ask it "Who am I on GitHub?". Want to practise first? `stuntkey try` uses a pretend key. Check it any time with `stuntkey test` (it ends with a one-line summary and the next step); `stuntkey undo` takes the last change back. `stuntkey help --all` lists every command (more than 50; the list ends with the exact count); the Compare page says where 1Password, Infisical and Doppler are better. `stuntkey --help`, `stuntkey help`, `stuntkey start` and the README all show this same block.
+0. **If something is not working:** `stuntkey fix` switches things on after listing what it will change and asking once (`stuntkey install --dry-run` and `stuntkey setup --dry-run` show what would change and change nothing). If anything is not working, `stuntkey status` shows green, yellow or red for each part with one next step, and `stuntkey fix` repairs what it can. `stuntkey help` groups the commands by task, `stuntkey limits` says what stuntkey does not protect, and `stuntkey uninstall` undoes the setup (saved keys stay).
 1. **Practice first:** `stuntkey try`. It walks you through adding a pretend key, using it and forgetting it. It runs in a throwaway store and a temporary folder (your keychain, your keys, your project and your activity log are not opened) and deletes everything when it ends. `--auto` goes through it without pausing.
 2. **Add a real key:** `stuntkey get github`, or `stuntkey get example.com` for a site stuntkey has no recipe for (the key is then saved untested). Every command says in one line what it is about to do before it does it. The key goes in your computer's keychain unless you ask for `--store env`.
 3. **Already have keys in a file or a password manager?** `stuntkey import FILE` reads a `.env` file, a Doppler or Bitwarden JSON export, or a 1Password or Bitwarden CSV export (or `--paste`: lines you paste, hidden). It shows the *names* it found, never the values, asks, and saves them in the keychain. A name stuntkey has no service for is left alone and listed. When it is done it tells you to delete the file you read them from; use the command it prints (a file deleted in Explorer waits in the Recycle Bin), or pass `--delete-source`, which overwrites and deletes it (on an SSD or a synced folder an old copy can remain, so also remove it from there).
@@ -13,9 +13,9 @@
 
 ### The questions stuntkey asks, and why
 
-- **Removed:** the "Press Enter to save" step after a key is taken, and the 3-minute clipboard timeout that ended the run. A copy that comes late no longer fails: stuntkey says "Still waiting for you to copy the key (try 2 of 3)" and goes on, 3 times 3 minutes in all, then asks for a hidden paste. This is safe because nothing new is trusted: only a key-shaped value is taken, it is sent only to the vendor's own address, nothing is saved unless the vendor accepts it, and Ctrl-C stops it at any time.
-- **Kept:** the typed `yes` when a recipe would send your key to a different company's domain or to a program on your own network (a poisoned recipe must not be able to harvest a key); the `[y/N]` before a key goes into a plain-text `.env` file because the keychain did not work; the `[y/N]` before `forget` and before `import` saves; and the operating-system permission windows (see the README), which are only for an AI agent's actions and which the agent cannot click. `get` itself never opens one: you are at the keyboard.
-- **Plain messages:** `stuntkey getx` says "I don't know 'getx'. Did you mean: stuntkey get?"; `stuntkey call github FETCH /user` says "FETCH is not a method I know. Use GET, POST, PUT, PATCH or DELETE."; `status` or `setup` in a folder with no `stuntkey.json` says "This folder has no stuntkey setup. Run `stuntkey init` to create one."; `run` or `forget` for a service with no key says "No key saved for github. Run `stuntkey get github`."; and a bad `--project-dir` names the folder and the reason.
+- **Removed:** the "Press Enter to save" step after a key is taken, and the 3-minute clipboard timeout that ended the run. A copy that comes late no longer fails: stuntkey shows a countdown line (in a window that cannot redraw, such as an AI's shell, it says so and prints one short line a minute instead; with no keyboard at all, `get` stops at once and says to use a normal terminal window), says "Nothing copied yet - that was round 1 of 3 ... starting round 2" and goes on by itself, 3 times 3 minutes in all, then asks for a hidden paste (or Ctrl-C to stop). This is safe because nothing new is trusted: only a key-shaped value is taken, it is sent only to the vendor's own address, nothing is saved unless the vendor accepts it, and Ctrl-C stops it at any time.
+- **Kept:** the typed `yes` when a recipe would send your key to a different company's domain or to a program on your own network (a poisoned recipe must not be able to harvest a key); the `[y/N]` before a key goes into a plain-text `.env` file because the keychain did not work; the `[y/N]` before `forget` and before `import` saves; and the operating-system permission windows (see the README), which are only for an AI agent's actions and which the agent cannot click. `get` itself never opens one: you are at the keyboard. For a site stuntkey has no recipe for (`stuntkey get example.com`), after copy-and-go it shows the first 3 characters and the length and you must type those 3 characters to save the key; just pressing Enter throws it away, and a window that cannot ask does not keep the key.
+- **Plain messages:** `stuntkey getx` says "I don't know 'getx'. Did you mean: stuntkey get?"; `stuntkey call github FETCH /user` says "FETCH is not a method I know. Use GET, POST, PUT, PATCH or DELETE."; `status` or `setup` in a folder with no `stuntkey.json` says "This folder has no stuntkey setup. Run `stuntkey setup` to set it up."; `run` or `forget` for a service with no key says "No key saved for github. Run `stuntkey get github`."; and a bad `--project-dir` names the folder and the reason.
 - **For scripts and tests only:** `stuntkey get <service> --key-from-stdin` reads the key (one line per value) from a pipe, so it never waits on a terminal. It is refused at a terminal, because there the clipboard flow is safer and the key would otherwise be typed into a shell history. A key in a script or a pipe can end up in logs: do not use it for real keys.
 
 **Quickstart**
@@ -436,10 +436,17 @@ stuntkey install | uninstall         # plug stuntkey into (or out of) Claude Des
 stuntkey start                       # first run: check this computer, look for loose keys, say what is next
 stuntkey start --simple              # plain-English setup, one question at a time, for apps made with Lovable, Bolt, Replit or Vercel
 stuntkey overview [--json]           # what is connected, and is the activity log intact
-stuntkey doctor [--json]             # is this computer ready (keychain, ssh, git, a quick self-attack)
+stuntkey doctor [--json]             # is this computer ready (keychain, git, a quick self-attack; ssh and a clipboard tool are optional and only shown as info)
 stuntkey doctor --self               # are the installed stuntkey files unchanged since you installed them (compares with the installer's list)
 stuntkey trust-server user@host      # make a server trust this PC (used by remote and deploy)
 stuntkey scan [PATH]                 # find keys an AI agent can read (offline)
+stuntkey scan --agent-configs        # look for keys written into AI app settings (.mcp.json, .claude, .cursor, .codex, .gemini); files over 1 MB are skipped and listed; --json prints only this result
+stuntkey verify [--json]             # proves the rules hold using its own copy of stuntkey, a pretend server and a made-up key in a throwaway folder; not tested against a live Claude
+stuntkey explain [--since 7d]        # the last week in plain sentences, read from the activity log (so only what the log recorded)
+stuntkey age [--warn 90]             # keys older than 90 days; STUNTKEY_AGE_WARN changes the number; counts only keys stuntkey saved or rotated; always exits 0
+stuntkey clean-env [--yes] [--dry-run] # remove plaintext key copies from .env once they are in the keychain; the old file is backed up privately under ~/.stuntkey/undo
+stuntkey status --fix [--yes]        # fix what status lists, asking first
+stuntkey resume [--yes]              # lift the kill switch; --yes skips the question only at a real terminal
 stuntkey scan --validate [--yes]     # also check if they still work (sends them; asks first)
 stuntkey scan --json | --sarif       # machine-readable reports
 stuntkey scan --fail-on live         # exit 1 only for keys that still work
@@ -498,6 +505,9 @@ stuntkey caps set <service> --calls-session N --calls-hour N --calls-day N --tok
 stuntkey caps set <service> --clear  # remove that key's limits
 stuntkey stop | resume               # kill switch for every brokered and proxied call (resume asks you)
 stuntkey policy show | approve       # stuntkey.policy: allowed methods and paths per service; a new or changed file needs your approval
+                                     #   only the keys "methods" and "paths" are allowed (a typo is refused with a hint); an empty list allows nothing;
+                                     #   for GraphQL list "QUERY" (POST that is only a query) and/or "MUTATION": ["GET","QUERY"] is read-only,
+                                     #   an unreadable GraphQL body counts as a mutation, and "POST" still means any POST
 stuntkey scan --no-mcp               # skip the AI tools' MCP server configs (scanned by default)
 stuntkey scan --bundle dist/|https://your-app.com   # secret keys a website ships to every visitor
 stuntkey wrap <client> <server> [--file CONFIG] [--dry-run]   # move an MCP server's key into the keychain; it then starts through `stuntkey run`
@@ -1271,11 +1281,11 @@ every text file is opened as UTF-8.
   input is not documented field by field, so the hook reads every text field
   of it except `description`. The documentation does not say which Claude Code
   version added `args` (hence `--shell-form`). The hook was exercised by
-  feeding it Claude Code's JSON, not inside a running Claude Code. **Nothing
-  here was run on Windows**: the Windows command (exec form, forward-slash
-  shell form), the junction check in the folder walk and the "no timer, so no
-  patterns from your own recipes" path were written from the documentation
-  and tested with the platform faked on Linux, not on a Windows machine.
+  feeding it Claude Code's JSON, not inside a running Claude Code. A tester
+  has since run every stuntkey command on a real Windows machine (see the
+  CHANGELOG), and the leak benchmark was re-run there. What is still not
+  verified is the hook inside a live Claude Code: the Read / Grep output
+  shape, and the Windows command forms as Claude Code itself starts them.
 
 - 0.6.0: `doctor-recipes` was run once for real against the 36 recipes' addresses
   before release; its tests, like every test, use no network beyond
@@ -1283,9 +1293,10 @@ every text file is opened as UTF-8.
   speak (Stripe, Supabase, Vercel, GitHub, Resend, SendGrid); for ElevenLabs the
   docs do not say how a restricted key answers, so that rule is flagged
   `unverified`. `export` was checked against the `gh` and `vercel` manuals and
-  run against a stand-in `gh`, not a real GitHub or Vercel account. Nothing of
-  the Windows clipboard-history check was run on Windows (it reads the
-  `EnableClipboardHistory` registry value). The agent handshake was exercised
+  run against a stand-in `gh`, not a real GitHub or Vercel account. The
+  Windows clipboard-history check (it reads the `EnableClipboardHistory`
+  registry value) was first written without a Windows machine and has since
+  been run on one (see the CHANGELOG). The agent handshake was exercised
   over the MCP wire format and with a stand-in client, not inside a running
   Claude Code.
 - Keychain storage is best effort. `get` saves to the keychain; `connect` saves
@@ -1328,6 +1339,7 @@ These commands let an AI use a saved key while only stuntkey ever holds it.
 - `stuntkey remote SERVICE user@host [--as USER] [--ssh-arg ARG] -- COMMAND`: run a command on another machine with the key sent over ssh stdin.
 - `stuntkey deploy user@host --service NAME --dir FOLDER [--as USER] [--then COMMAND]`: trust the server, send the key, `git pull`, optionally restart.
 - `stuntkey audit verify|show|reset [--last N]`: check the activity log has not been tampered with.
+- `stuntkey audit export --warden [--since 2026-11-14] [--out FILE]`: write two JSON Lines files next to the log (`warden-feed.mcp-jail.jsonl` for tool calls and `warden-feed.mcp-jail.planok.jsonl` for approvals a person refused), shaped for warden's `report --from mcp-jail --file ...` and `report --from planok --file ...`. This is written to the shapes read from warden's source and is **unverified against a live warden**. It only reads the activity log. A call line has `run_id` (`stuntkey-<date>`), `agent_id`, `fleet`, `tool`, `server`, short `args` (service, method and only the first two path parts, secrets masked, no query string), `allowed` and `at`. No bodies, headers, keys or byte counts. Running it twice gives the same files. Hook denials are not written to the activity log, so they are not in the feed.
 - `stuntkey selftest [--verbose]`: attack stuntkey with a made-up key; `--verbose` lists every attack.
 - `stuntkey scan-git [--staged] [--install-hook]`: look through git history, or what is about to be committed, for keys.
 - `stuntkey get SERVICE [--no-clipboard]`: one command: open the key page, take the key from your copy, test it, save it in the keychain.

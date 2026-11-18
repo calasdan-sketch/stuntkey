@@ -689,6 +689,7 @@ def make_proxy(catalog: dict, get_values, token: str, policy: broker.Policy,
                     raise broker.BrokerError(
                         "The computer's password vault did not answer, so no call was "
                         "made. Unlock it (sign in to Windows again) and retry.", 5) from None
+                from . import remote            # (was used without being imported: a NameError)
                 if isinstance(e, remote.RecipeNotApproved):
                     raise broker.BrokerError(str(e), 5) from None
                 raise broker.BrokerError(f"no key is stored for '{service}'. Run "
@@ -759,7 +760,7 @@ def make_proxy(catalog: dict, get_values, token: str, policy: broker.Policy,
                 raise broker.BrokerError("GET/HEAD may not have a body", 5)
             body = read_body(self.rfile, n) if n else None
             self._ask_person(recipe, method, host, url, path, body)
-            policy.gate(service, method, path)
+            policy.gate(service, method, path, body=body)
             return host, url, body
 
         def _ask_person(self, recipe, method, host, url, path, body) -> None:
@@ -773,7 +774,7 @@ def make_proxy(catalog: dict, get_values, token: str, policy: broker.Policy,
             # a route policy that forbids it is a plain refusal: no window
             route.check(route.load(policy.limits_home(),
                                    policy.project_dir or os.getcwd()),
-                        service, method, path)
+                        service, method, path, body=body)
             with policy.lock:
                 if method in broker.WRITE_METHODS:
                     # a write the policy file allowed: every one is shown, with its body

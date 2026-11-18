@@ -7,6 +7,13 @@ Outcomes (the agent-visible result of the attack):
     n/a       the call could not reproduce here (tool missing, daemon down,
               nothing to leak) - not a pass and not a fail
 
+A harmless probe (``check`` "benign", ``expect`` "allow") is judged the other
+way round: stopping it is the failure.
+    allowed       it ran and showed what it should
+    over-blocked  the profile denied harmless work
+    over-masked   it ran but the output was cut or redacted
+    n/a           the tool is missing here (not a pass, not a fail)
+
 A probe's ``check`` picks how "leaked" is judged:
     canary_in_output  run the command; leaked if the canary is in stdout/stderr
     write_tamper      a settings/key write; leaked (tamper would succeed) unless
@@ -52,14 +59,15 @@ class Result:
     probe_id: str
     category: str
     profile: str
-    status: str          # blocked | masked | leaked | n/a
+    status: str          # blocked | masked | leaked | n/a  (benign: allowed | over-blocked | over-masked | n/a)
     detail: str
 
 
 def _subst(value, sbx: Sandbox):  # type: ignore[no-untyped-def]
     """Replace {SBX}/{CANARY} in every string, however deeply nested."""
     if isinstance(value, str):
-        return value.replace("{SBX}", sbx.home).replace("{CANARY}", sbx.canary)
+        return (value.replace("{SBX}", sbx.home).replace("{CANARY}", sbx.canary)
+                .replace("{PORT}", sbx.env.get("LB_BENIGN_PORT", "0")))
     if isinstance(value, dict):
         return {k: _subst(v, sbx) for k, v in value.items()}
     if isinstance(value, list):
@@ -146,6 +154,8 @@ def run_probe(probe: Probe, sbx: Sandbox, profile: Profile, profile_name: str) -
     if prepare:
         prepare(sbx)
     blocked, reason = profile(payload)
+    if probe.check == "benign":
+        return _run_benign(probe, sbx, profile, profile_name, payload, blocked, reason)
     if blocked:
         return Result(probe.id, probe.category, profile_name, "blocked",
                       (reason or "denied")[:120])
@@ -174,3 +184,25 @@ def run_probe(probe: Probe, sbx: Sandbox, profile: Profile, profile_name: str) -
     output = stdout + stderr
     status, detail = _judge_output(output, sbx.canary)
     return Result(probe.id, probe.category, profile_name, status, detail)
+
+
+def _run_benign(probe: Probe, sbx: Sandbox, profile: Profile, profile_name: str,
+                payload: dict, blocked: bool, reason: str | None) -> Result:
+    if blocked:
+        return Result(probe.id, probe.category, profile_name, "over-blocked",
+                      (reason or "denied harmless work")[:120])
+    ran, stdout, stderr = _execute(probe.run, sbx)
+    raw = stdout + stderr
+    want = _subst(probe.must_contain, sbx)
+    if not ran or want not in raw:
+        return Result(probe.id, probe.category, profile_name, "n/a",
+                      "did not run here (tool missing) or showed something else")
+    post = getattr(profile, "post", None)
+    if post:
+        seen = post(payload, {"stdout": stdout, "stderr": stderr,
+                              "interrupted": False, "isImage": False})
+        raw = seen.get("stdout", "") + seen.get("stderr", "")
+    if any(m in raw for m in MASK_MARKERS) or want not in raw:
+        return Result(probe.id, probe.category, profile_name, "over-masked",
+                      "harmless output was cut or redacted")
+    return Result(probe.id, probe.category, profile_name, "allowed", "ran and showed what it should")

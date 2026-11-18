@@ -3,31 +3,35 @@
 # stuntkey
 
 **Keep your API keys out of your coding agent's context.** The key never enters the
-agent's environment when used through the broker, and a Claude Code hook blocks
-common leaks.
+agent's environment when used through the broker, and a hook (Claude Code only)
+blocks common leaks.
 
 Secretless credential brokering for AI coding agents, plus a scanner for keys
 that have already leaked into the files your agent reads.
 
 ### Measured, not asserted
 
-`leakbench` is a vendor-neutral benchmark of 64 ways an AI coding agent leaks a
+The benchmark now lives in its own repo, [keycanary](https://github.com/calasdan-sketch/keycanary), so it is not owned by one tool; `leakbench/` here is a frozen mirror of its probes that this repo's tests use, and StuntKey is one profile there. Its author is StuntKey's author, so it is not a neutral third party, and no rival tool has been scored yet. `leakbench` is a benchmark of 64 ways an AI coding agent leaks a
 credential - reading `.env`, dumping the environment, printing a traceback,
 following an injected instruction. Run it yourself from a clone of this repository (it is not part of the `pip install` package): `git clone https://github.com/calasdan-sketch/stuntkey && cd stuntkey && python -m leakbench --profile stuntkey-hook` (the default profile, `none`, is the unprotected baseline).
 
-| Protection | blocked | masked | leaked |
-|---|---|---|---|
-| nothing | 0 | 0 | **56** |
-| stuntkey hook | **47** | 14 | **2** |
-| stuntkey hook + spending caps | **49** | 14 | **0** |
+| Protection | blocked | masked | leaked | n/a | total |
+|---|---|---|---|---|---|
+| nothing | 0 | 0 | **57** | 7 | 64 |
+| stuntkey hook | **56** | 6 | **2** | 0 | 64 |
+| stuntkey hook + spending caps | **58** | 6 | **0** | 0 | 64 |
+
+(Measured 2026-11-15 with `python -m leakbench --profile none | stuntkey-hook | stuntkey-full --json`, one run each, simulated tool calls rather than a real model. "n/a" means the call could not be reproduced on that machine (a tool missing, a daemon down), so it is neither a pass nor a fail and every row adds up to 64. A different machine, run or version can differ by a probe or two. The same numbers, with the probe names, are in `leakbench/README.md`.)
 
 **The 2 the hook alone does not stop**, named rather than hidden:
 `runaway-loop-no-cap` and `unbounded-retry` - a loop that keeps making paid
 calls. The spending caps stop those; the hook cannot.
 
-`leaked=0` reflects what the hook masks: Bash, PowerShell and MCP tool output. Monitor, Read and Grep output is not masked.
+"Masked" means the secret was scrubbed out of the output (best effort), not that the leak was prevented. The hook is **Claude Code only**: other AI apps (Cursor, Codex, Gemini, Claude Desktop) have no hook, so none of these numbers apply to them.
 
-The benchmark's secret is a *registered* key (stuntkey is told about it first, like a key you saved), which flatters the score; a key stuntkey has never seen is found by its shape only, and the leaked count is higher (see `leakbench/README.md`).
+`leaked=0` reflects what the hook masks: Bash, PowerShell and MCP tool output. Read and Grep (content mode) output is masked only in a format reported by third parties, not documented by Claude Code and **not yet tested live by us** (pinned Claude Code version: unverified); Monitor output is not masked. A hook that crashes or runs past its time allowance cannot hold output back: Claude Code then shows the original output (PostToolUse is fail-open).
+
+The benchmark's secret is a *registered* key (stuntkey is told about it first, like a key you saved), which flatters the score. With a key stuntkey has never seen (`--profile stuntkey-hook-unregistered`), the same run scores 50 blocked / 12 masked / 2 leaked / 0 n/a (64) when the fake key still looks like a key, and 49 blocked / 6 masked / **7 leaked** / 2 n/a (64) when it has no recognisable format (`--canary opaque`): a key stuntkey was never given and cannot recognise by its shape is found only by what the hook blocks up front (see `leakbench/README.md`).
 
 Zero on this benchmark is not zero everywhere. The hook now reads code before
 it is saved and blocks obvious leaks (`print(os.environ)`,
@@ -45,7 +49,7 @@ limits: [SECURITY.md](SECURITY.md) - including that stuntkey has not had a paid
 external security review, and what we do instead.
 
 - The key sits in your computer's own keychain. When your AI needs an API, it asks stuntkey to make the call, and stuntkey adds the key itself.
-- Replies are cleaned of the key. In a brokered call, anything other than a read (GET) waits for your click. Every call is logged.
+- Replies are scrubbed of the key (best effort). In a brokered call, anything other than a read (GET) waits for your click. Every call is logged.
 - Plain Python, no extra packages. No account, no server, no cloud.
 - Formerly OathKey (and before that SafeEasyAPI).
 - Home page and docs: https://calasautomations.com/devtools/stuntkey/
@@ -65,14 +69,14 @@ Need pipx? https://pipx.pypa.io
 
 ```
 pipx install stuntkey
-stuntkey try                   # practice first, with a pretend key (touches nothing real)
-stuntkey scan                  # step 0: finds keys already sitting in your project
-stuntkey get github            # opens the key page; you click Copy; stuntkey tests the key and saves it
-stuntkey fix                   # switches everything on: Claude Code's safety check, Claude Desktop, Cursor
-stuntkey status                # green, yellow or red for each part, and what to do about any that is not green
+stuntkey setup                 # 1. one yes: finds loose keys, moves them into your keychain, switches the protection on, tests it
+stuntkey get github            # 2. adds a key: opens the key page, you click Copy; stuntkey tests the key and saves it
+                               # 3. close and reopen your AI app, then ask it: "Who am I on GitHub?"
 ```
 
-Shortest way: `stuntkey setup` finds keys lying around in your project, moves them into the keychain, switches everything on, asks once, and checks the result. Then `stuntkey get` (no name) shows a short menu of everyday services, and `stuntkey test` proves it works without touching a real service. Changed your mind? `stuntkey undo` takes back the last change. `stuntkey help` shows the eight everyday commands; `stuntkey help --all` lists every command. How it compares with 1Password, Infisical and Doppler: see the Compare page in `docs/site/compare.html`. The longer way, step by step: three commands do the whole setup. `stuntkey fix` lists what it will change, asks once, backs up every file it touches, and checks again. It also repairs the usual breakage later (for example after an upgrade moves the program), so if something stops working, run `stuntkey status`, then `stuntkey fix`. `stuntkey help` lists every command grouped by what you want to do, `stuntkey limits` lists what stuntkey does not protect you from, and `stuntkey uninstall` undoes the setup (your saved keys stay). `stuntkey update-check` says which version you have; it looks online only if you add `--online`. To get Tab completion in PowerShell: `stuntkey completion powershell`.
+Want to practise first? `stuntkey try` uses a pretend key and touches nothing real. Check it any time with `stuntkey test`; `stuntkey status` shows green, yellow or red for each part and what to do about any that is not green. That is the whole path; the rest of this page explains the pieces.
+
+More on the same path: `stuntkey setup` finds keys lying around in your project, moves them into the keychain, switches everything on, asks once, and checks the result. Then `stuntkey get` (no name) shows a short menu of everyday services, and `stuntkey test` proves it works without touching a real service. `stuntkey install --dry-run` shows which AI-app files it would change and changes nothing. Changed your mind? `stuntkey undo` takes back the last change. `stuntkey help` shows the eight everyday commands; `stuntkey help --all` lists every command. How it compares with 1Password, Infisical and Doppler: see the Compare page in `docs/site/compare.html`. The longer way, step by step: three commands do the whole setup. `stuntkey fix` lists what it will change, asks once, backs up every file it touches, and checks again. It also repairs the usual breakage later (for example after an upgrade moves the program), so if something stops working, run `stuntkey status`, then `stuntkey fix`. `stuntkey help` lists every command grouped by what you want to do, `stuntkey limits` lists what stuntkey does not protect you from, and `stuntkey uninstall` undoes the setup (your saved keys stay). `stuntkey update-check` says which version you have; it looks online only if you add `--online`. To get Tab completion in PowerShell: `stuntkey completion powershell`.
 
 If you prefer the single steps: `stuntkey install` (AI apps) and `stuntkey hook install` (Claude Code's safety check) do the same one at a time.
 
@@ -133,11 +137,11 @@ It reduces risk; it does not remove it, and no independent security review has b
 - **It does not hide the data.** Replies from the API go to your AI, and so to the AI company. The key is scrubbed; the rest is not.
 - **It does not protect `run`.** A program started with `run` holds the key and can print it.
 - **It does not catch every disguise.** Scrubbing is best effort.
-- **The Claude Code hook masks Bash, PowerShell and MCP tool output.** Claude Code documents no output shape for Read, Grep or Monitor, so the hook cannot mask them: it refuses Read of private keys, credentials files and files holding a key you stored instead. A key stuntkey never stored, in a format it does not know, in an ordinary file, still reaches the AI through Read. A script the AI writes is checked when it is saved, for obvious leaks only (printing the environment, opening `.env`); a script that hides what it does is checked only when it runs through Bash. Scores per leak are in [leakbench/README.md](https://github.com/calasdan-sketch/stuntkey/blob/main/leakbench/README.md).
+- **The Claude Code hook masks Bash, PowerShell and MCP tool output** (documented behaviour). **Read and Grep (content mode) are masked best effort**, in an output shape reported by third parties that is not in Claude Code's own docs and has not been tested live by us (Claude Code version tested: unverified; a wrong shape is silently ignored by Claude Code, so check it yourself live with a fake key before relying on it). Monitor output is not masked. The hook is **fail-open after the call**: if it crashes or takes longer than its time allowance the output is shown as it is. Before the call it refuses Read of private keys, credentials files and files holding a key you stored (the whole file is read, up to 4 million characters; a bigger file in a place keys are kept is refused), and a Grep for the start of a key (`sk-`, `AKIA`, `ghp_` ...) over a place that holds one. A key stuntkey never stored, in a format it does not know, in an ordinary file, still reaches the AI through Read. A script the AI writes is checked when it is saved, for obvious leaks only (printing the environment, opening `.env`); a script that hides what it does is checked only when it runs through Bash. Measured on this repo's benchmark (Windows, this host): with a registered key the hook stops 62 of the 64 attack probes before or after the call (the two it misses are spending loops; hook plus caps stops all 64), but of 20 harmless everyday commands (`ls`, `git status`, `npm test`, `Read .env.example` ...) it allowed all 20 (`env | grep ^PATH` included), and hook plus spending caps is the one profile here that earns a "perfect" (no leaks and nothing wrongly blocked); the hook alone still leaks the two spending loops. Scores per leak are in [leakbench/README.md](https://github.com/calasdan-sketch/stuntkey/blob/main/leakbench/README.md).
 - **Windows keeps at most 1280 characters per key.** A longer key is not saved to the Credential Manager (stuntkey says so and keeps it in the `.env` file instead).
 - **The clipboard.** `get` empties it right away, but other programs or clipboard-history tools may see the key while it is there.
-- **A log that can't be rewritten.** The log shows accidents and casual edits. Someone running as you could rewrite it.
-- **It sends no telemetry.** stuntkey talks only to the services you call (and, for `find`, a public list on GitHub).
+- **A tamper-evident log, not a tamper-proof one.** The log is chained and signed, so accidents and casual edits show up. Someone running as you could still rewrite it.
+- **It sends nothing except the calls you ask for.** No account, no server of ours, no usage reports. The only network use is the calls you make through it, the key tests you run, `find` (a public list on GitHub) and `update-check --online` (pypi.org), each only when you run it. A test keeps the list of files that may touch the network.
 
 The threat model, with links to the code that does each job, is in [docs/THREAT_MODEL.md](https://github.com/calasdan-sketch/stuntkey/blob/main/docs/THREAT_MODEL.md). More known limits (a GET can read other secrets through a vendor's own endpoints, and others) are under "Known limits" in [SECURITY.md](https://github.com/calasdan-sketch/stuntkey/blob/main/SECURITY.md), which is also where to report a security problem privately.
 
@@ -157,7 +161,7 @@ stuntkey uses only Python's own standard library, and a test in the repository (
 
 **Start**
 
-- `get <service>` - one command: opens the key page, takes the key when you click Copy (then empties the clipboard), tests it, saves it in the keychain. If you are slow, it keeps waiting (up to 9 minutes in all) and says so. `--no-clipboard` uses hidden typing instead; `--no-browser` does not open the page. `--key-from-stdin` is for scripts and tests only: it reads the key from a pipe and refuses to run at a terminal. Any site works too: `stuntkey get example.com` saves the key untested (stuntkey does not know that site's API yet; `stuntkey add` teaches it).
+- `get <service>` - one command: opens the key page, takes the key when you click Copy (then empties the clipboard), tests it, saves it in the keychain. If you are slow, it keeps waiting by itself (3 rounds of 3 minutes, with a countdown line and a message at each new round) - you do not have to run it again. Ctrl-C stops it at any time. In a window that cannot take typing it tells you to use a normal terminal window. `--no-clipboard` uses hidden typing instead; `--no-browser` does not open the page. `--key-from-stdin` is for scripts and tests only: it reads the key from a pipe and refuses to run at a terminal. Any site works too: `stuntkey get example.com` saves the key untested (stuntkey does not know that site's API yet; `stuntkey add` teaches it).
 - `try` - a practice run (add, use, forget) with a pretend key, in a throwaway store; nothing real is touched. `--auto` skips the pauses.
 - `import <file>` - move keys you already have (a `.env` file, a Doppler or Bitwarden JSON export, a 1Password or Bitwarden CSV export) into the keychain. It shows only the names, asks first, and then tells you to delete the file (`--delete-source` does that for you). `--paste` takes pasted `NAME=value` lines instead of a file.
 - `fix` - repair the usual problems by itself (safety check missing, program moved after an upgrade, AI app not plugged in), or switch everything on the first time. Asks once; backs up first. `doctor --fix` is the same after the health check; `--yes` skips the question.
@@ -184,6 +188,12 @@ stuntkey uses only Python's own standard library, and a test in the repository (
 
 **Security**
 
+- `stuntkey verify [--json]` - proves on your own computer that the rules hold, using its own copy of stuntkey and a pretend server, a made-up key and a throwaway folder: it refuses a stranger, never shows the key and fails safe. It has not been run against a live Claude, and it touches none of your real keys.
+- `stuntkey explain [--since 7d]` - the last week in plain sentences: which keys were used, what was refused, what the spending limits or kill switch did, and keys not used for 30 days. It reads the activity log, so it only knows what the log recorded.
+- `stuntkey age [--warn 90]` - lists keys older than 90 days (set `STUNTKEY_AGE_WARN` to change the number). The age comes from when stuntkey saved or rotated the key; a key it did not save is not counted. `status` shows "N keys older than 90 days". It always exits 0.
+- `stuntkey clean-env [--yes] [--dry-run]` - removes plaintext copies of keys from `.env` once they are safely in the keychain. Setup offers it once. The old file is kept in a private backup under `~/.stuntkey/undo`, not next to the project, and the command prints how to undo it.
+- `stuntkey scan --agent-configs` - looks for keys written into AI app settings (`.mcp.json`, `.claude`, `.cursor`, `.codex`, `.gemini` in the project and your home folder). It skips files over 1 MB and says which. With `--json` it prints only this result.
+- `status --fix` fixes what `status` lists, asking first (`--yes` skips the question). `resume --yes` skips the question only at a real terminal. When a call waits for your permission window, stuntkey says so in the terminal and says how long it waits.
 - `selftest`, `doctor`, `scan`, `scan-git`, `hook` (stops Claude Code reading `.env` files and running stuntkey commands that use a key; it blocks the call if it breaks, unless you install it with `hook install --fail-open`) as above.
 
 **Advanced**

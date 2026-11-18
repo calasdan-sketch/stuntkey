@@ -17,9 +17,11 @@ then stops every brokered call until it is approved again (fail closed).
 """
 from __future__ import annotations
 
+import difflib
 import hashlib
 import json
 import os
+import re
 import urllib.parse
 
 from .broker import BrokerError
@@ -27,6 +29,9 @@ from .broker import BrokerError
 FILE = "stuntkey.policy"
 LEGACY_FILE = "oathkey.policy"     # 0.8's name: used when ours is absent
 MAX_BYTES = 64_000
+ALLOWED_KEYS = ("methods", "paths")
+# An empty (or missing) "methods" or "paths" list means NOTHING is allowed for
+# that service - deny by default, the same as describe() tells the person.
 POLICY_REVIEW = 900       # longest policy file a person is asked to read in one window
 
 
@@ -82,13 +87,23 @@ def _plain_prefix(p: str) -> bool:
 def parse(raw: bytes, where: str = FILE) -> dict:
     """{service: (frozenset(methods), tuple(path prefixes))}. Service names are kept in
     lower case (a rule written for "OpenAI" applies to "openai")."""
-    bad = BrokerError(f"{where} is not a valid policy file (see `stuntkey policy "
-                      "show` for the format; a service named twice, a path with `..` "
-                      "or `%`, or a path that does not start with / is refused), "
-                      "so no call was made.", 5)
+    def bad_because(why: str = "") -> BrokerError:
+        return BrokerError(f"{where} is not a valid policy file{(': ' + why) if why else ''} "
+                           "(see `stuntkey policy show` for the format; a service named twice, "
+                           "a path with `..` or `%`, or a path that does not start with / is "
+                           "refused), so no call was made.", 5)
+    bad = bad_because()
+
+    def _no_constant(name):
+        raise ValueError(f"{name} is not a number a policy can use")
     try:
-        data = json.loads(raw.decode("utf-8"), object_pairs_hook=_no_duplicates)
-    except (ValueError, UnicodeDecodeError, RecursionError):
+        # utf-8-sig: a file saved by Notepad starts with an invisible BOM mark
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        raise bad_because("it is not UTF-8 text (save it as UTF-8)") from None
+    try:
+        data = json.loads(text, object_pairs_hook=_no_duplicates, parse_constant=_no_constant)
+    except (ValueError, RecursionError):
         raise bad from None
     if not isinstance(data, dict):
         raise bad
@@ -96,6 +111,15 @@ def parse(raw: bytes, where: str = FILE) -> dict:
     for service, rule in data.items():
         if not isinstance(rule, dict):
             raise bad
+        unknown = [k for k in rule if k not in ALLOWED_KEYS]
+        if unknown:
+            # a misspelt key ("method") must not quietly leave the service with
+            # "nothing allowed" or, worse, look like a rule that is not there
+            name = _shown(unknown[0], 40)
+            near = difflib.get_close_matches(str(unknown[0]).lower(), ALLOWED_KEYS, n=1, cutoff=0.5)
+            hint = f" - did you mean \"{near[0]}\"?" if near else ""
+            raise bad_because(f"'{_shown(service, 40)}' has an unknown key \"{name}\"{hint} "
+                              f"(allowed: {', '.join(ALLOWED_KEYS)})")
         methods, paths = rule.get("methods", []), rule.get("paths", [])
         if not (isinstance(methods, list) and isinstance(paths, list)
                 and all(isinstance(m, str) for m in methods)
@@ -183,7 +207,205 @@ def load(home: str, project_dir: str) -> dict:
     return narrow(user, _checked(proj, approved))
 
 
-def check(rules: dict, service: str, method: str, path: str) -> None:
+# ---- GraphQL: a read and a write look the same on the wire ------------------------
+#
+# Every GraphQL call is a POST to one address, so "POST /graphql" says nothing
+# about whether it reads or changes data. A rule can therefore name two extra
+# "methods":
+#     QUERY     a POST whose GraphQL body is provably only queries
+#     MUTATION  a POST (or GET) that is a mutation, a subscription, or anything
+#               that cannot be read with certainty as a query
+# A rule that lists POST keeps meaning "any POST" (as before). A read-only
+# GraphQL rule is {"methods": ["GET", "QUERY"], ...}: a mutation then fails,
+# and so does a body the reader cannot understand (unknown = mutation).
+
+_GQL_OPS = ("query", "mutation", "subscription")
+MAX_GQL_CHARS = 200_000
+
+
+def _gql_strip(doc: str) -> str | None:
+    """`doc` without comments, and with every string's content removed (so a
+    word inside a string is never read as a keyword). None when a string is
+    not closed."""
+    out, i, n = [], 0, len(doc)
+    while i < n:
+        c = doc[i]
+        if c == "#":
+            while i < n and doc[i] not in "\r\n":
+                i += 1
+        elif doc.startswith('"""', i):
+            end = i + 3
+            while True:
+                end = doc.find('"""', end)
+                if end < 0:
+                    return None
+                if doc[end - 1] == "\\":
+                    end += 1
+                    continue
+                break
+            out.append('""')
+            i = end + 3
+        elif c == '"':
+            i += 1
+            while i < n and doc[i] != '"':
+                if doc[i] in "\r\n":
+                    return None
+                i += 2 if doc[i] == "\\" else 1
+            if i >= n:
+                return None
+            out.append('""')
+            i += 1
+        else:
+            out.append(c)
+            i += 1
+    return "".join(out)
+
+
+def _skip_braces(s: str, i: int) -> int | None:
+    """Index just after the `}` that closes the `{` at s[i], or None."""
+    depth = 0
+    while i < len(s):
+        if s[i] == "{":
+            depth += 1
+        elif s[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return i + 1
+            if depth < 0:
+                return None
+        i += 1
+    return None
+
+
+_GQL_NAME_RE = re.compile(r"[A-Za-z_]\w*")
+
+
+def gql_operations(doc) -> set | None:
+    """The operation types in a GraphQL document ({"query"}, {"mutation"} ...),
+    or None when it cannot be read with certainty (callers treat None as a
+    mutation). A body that is not GraphQL at all but has a "query" field (a
+    REST search such as {"query": "shoes"} on a path that is not a GraphQL
+    path) is also None: unreadable, so it is treated as a mutation (fails
+    closed, on purpose). Linear in the size of the document."""
+    if not isinstance(doc, str) or not doc.strip() or len(doc) > MAX_GQL_CHARS:
+        return None
+    s = _gql_strip(doc)
+    if s is None:
+        return None
+    import re
+    kinds: set = set()
+    i, n = 0, len(s)
+    while i < n:
+        c = s[i]
+        if c.isspace() or c in ",\ufeff":
+            i += 1
+            continue
+        if c == "{":                                   # shorthand query
+            kinds.add("query")
+            i = _skip_braces(s, i)
+            if i is None:
+                return None
+            continue
+        m = _GQL_NAME_RE.match(s, i)        # (matched in place: the work stays linear)
+        if not m:
+            return None
+        word = m.group()
+        if word not in _GQL_OPS and word != "fragment":
+            return None                                # SDL, extend, unknown: not plainly a query
+        if word in _GQL_OPS:
+            kinds.add(word)
+        i += len(word)
+        paren = 0
+        while i < n and not (s[i] == "{" and paren == 0):     # name, ($vars), @directives
+            if s[i] in "([":
+                paren += 1
+            elif s[i] in ")]":
+                paren -= 1
+                if paren < 0:
+                    return None
+            i += 1
+        if i >= n:
+            return None
+        i = _skip_braces(s, i)
+        if i is None:
+            return None
+    return kinds or None
+
+
+_GQL_FIELDS = ("query", "operationname", "variables")
+
+
+class _DuplicateField(ValueError):
+    pass
+
+
+def _gql_pairs(pairs):
+    """json object hook: `query`, `operationName` or `variables` written twice in
+    one object (also in another letter case) is refused - a server may read the
+    first, the last or the other spelling, and the policy cannot tell which."""
+    seen = set()
+    for k, _v in pairs:
+        key = k.lower() if isinstance(k, str) else k
+        if key in _GQL_FIELDS:
+            if key in seen:
+                raise _DuplicateField(key)
+            seen.add(key)
+    return dict(pairs)
+
+
+def _gql_docs(path: str, body, query) -> list | None:
+    """The GraphQL documents a request carries: a list of strings (maybe empty
+    when the request is not GraphQL at all), or None when it looks like
+    GraphQL but the document cannot be found or read the same way twice
+    (ambiguous: treated as a mutation)."""
+    gql_path = path.split("?")[0].rstrip("/").lower().endswith("graphql")
+    docs: list = []
+    if isinstance(query, dict) and isinstance(query.get("query"), str):
+        docs.append(query["query"])
+    if "?" in path:
+        # round 3: a document in the address itself (GET /graphql?query=mutation{a})
+        qs = path.split("?", 1)[1].split("#", 1)[0]
+        for k, v in urllib.parse.parse_qsl(qs, keep_blank_values=True):
+            if k.lower() == "query" and (gql_path or gql_operations(v) is not None):
+                # on a GraphQL address always; elsewhere only a value that reads as a
+                # GraphQL document (a search page's ?query=shoes is not one)
+                docs.append(v)
+    if body is not None:
+        raw = body if isinstance(body, (bytes, bytearray)) else str(body).encode("utf-8", "replace")
+        try:
+            data = json.loads(bytes(raw).decode("utf-8-sig"), object_pairs_hook=_gql_pairs)
+        except _DuplicateField:
+            return None
+        except (ValueError, UnicodeDecodeError, RecursionError):
+            return None if gql_path else docs      # not JSON: unreadable GraphQL, or not GraphQL
+        items = data if isinstance(data, list) else [data]       # a batch is a list
+        for item in items:
+            if isinstance(item, dict) and isinstance(item.get("query"), str):
+                docs.append(item["query"])
+            elif gql_path:
+                return None             # persisted-query hash only, or an unknown shape
+    if gql_path and not docs:
+        return None                     # a GraphQL address with no document: persisted query
+    return docs
+
+
+def graphql_kind(path: str, body=None, query=None) -> str | None:
+    """None when the request is not GraphQL; "query" when every document in it
+    is provably only queries; "mutation" for everything else (a mutation, a
+    subscription, or a document that cannot be read with certainty)."""
+    docs = _gql_docs(path, body, query)
+    if docs is None:
+        return "mutation"
+    if not docs:
+        return None
+    for d in docs:
+        ops = gql_operations(d)
+        if ops is None or ops != {"query"}:
+            return "mutation"
+    return "query"
+
+
+def check(rules: dict, service: str, method: str, path: str, body=None, query=None) -> None:
     service = str(service).lower()
     if service not in rules:
         return
@@ -194,8 +416,24 @@ def check(rules: dict, service: str, method: str, path: str) -> None:
                           f"'{service}': the path uses a trick (a `..` part, `%`-encoding "
                           "inside encoding, a backslash, a `;` or a control character) that "
                           "could reach a place the policy does not list, so it was not sent.", 5)
-    if method.upper() in methods and any(_under(plain, p) for p in prefixes):
-        return
+    m = method.upper()
+    if any(_under(plain, p) for p in prefixes):
+        kind = graphql_kind(path, body, query) if m in ("POST", "GET") else None
+        if kind is None:
+            ok = m in methods
+        elif m == "POST":
+            # POST keeps meaning "any POST"; QUERY / MUTATION say which kind
+            ok = bool(methods & ({"POST", "QUERY"} if kind == "query" else {"POST", "MUTATION"}))
+        else:                                    # GET carrying a GraphQL document
+            ok = m in methods and (kind == "query" or "MUTATION" in methods)
+        if ok:
+            return
+        if kind == "mutation":
+            raise BrokerError(f"Your stuntkey policy does not allow a GraphQL mutation (or a "
+                              f"GraphQL request that cannot be read as a plain query) "
+                              f"{m} {_shown(path.split('?')[0])} for '{service}', so it was not "
+                              "sent. Allow it with \"POST\" or \"MUTATION\" in the methods of "
+                              "stuntkey.policy, then run `stuntkey policy approve`.", 5)
     raise BrokerError(f"Your stuntkey policy does not allow {method.upper()} "
                       f"{_shown(path.split('?')[0])} for '{service}', so it was not "
                       "sent. A person can change stuntkey.policy and run "

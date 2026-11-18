@@ -505,6 +505,28 @@ MAX_WORD = 512
 _WORD_RE = re.compile(r"[^\s\"'`,;()\[\]{}<>|&\\]{%d,%d}" % (MIN_LEN, MAX_WORD))
 
 
+_RUN_RE = re.compile(r"[^\s\"'`,;()\[\]{}<>|&\\]{%d,}" % MIN_LEN)
+WORD_STEP = MAX_WORD // 2
+
+
+def _words(text: str):
+    """(start, word) for every run of word characters. A run longer than
+    MAX_WORD (a minified file, one huge line) is cut into MAX_WORD pieces that
+    overlap by half, so a key of up to MAX_WORD/2 characters sits whole in at
+    least one piece wherever it falls (round 3: it used to be cut in two)."""
+    for m in _RUN_RE.finditer(text):
+        run, at = m.group(), m.start()
+        if len(run) <= MAX_WORD:
+            yield at, run
+            continue
+        for i in range(0, len(run), WORD_STEP):
+            piece = run[i:i + MAX_WORD]
+            if len(piece) >= MIN_LEN:
+                yield at + i, piece
+            if i + MAX_WORD >= len(run):
+                break
+
+
 def fingerprint_path() -> str:
     return os.path.join(os.path.expanduser("~"), ".stuntkey", FINGERPRINT_FILE)
 
@@ -912,9 +934,8 @@ def _stored_spans_one(text: str, salt: bytes, prints: frozenset, deadline, folde
     seed = zlib.crc32(salt)
     crcs = getattr(prints, "crcs", ())
     legacy = getattr(prints, "lengths", ())
-    for m in _WORD_RE.finditer(text):
+    for base, word in _words(text):
         _tick(deadline)
-        word, base = m.group(), m.start()
         size = len(word)
         cands = {(0, size)}
         splits = 0
@@ -1080,6 +1101,13 @@ def mask_secrets(text: str, prints: tuple[bytes, frozenset] | None = None,
         spans = list(_all_stored_spans(text, salt, hashes, deadline)) if hashes else []
         if _MAYBE_KEY_RE.search(text):
             spans += _format_spans(text, deadline)
+        if not text.isascii():
+            # round 3: a key-shaped text written with look-alike letters (fullwidth,
+            # Cyrillic, Greek) is read a second time turned into Latin. The folded
+            # text is the same length, so its spans line up with the original.
+            folded = _fold_confusables(text)
+            if folded != text and _MAYBE_KEY_RE.search(folded):
+                spans += _format_spans(folded, deadline)
         _tick(deadline)
     except (CheckTimeout, MemoryError, RecursionError):
         return WITHHELD_NOTICE, 1

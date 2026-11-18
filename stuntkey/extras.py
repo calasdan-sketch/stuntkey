@@ -5,7 +5,6 @@ uninstall, remote, trust-server, deploy, scan-git, doctor.
 Kept apart from cli.py so the key-capture commands and these stay separate."""
 from __future__ import annotations
 
-import argparse
 import difflib
 import os
 import sys
@@ -16,7 +15,7 @@ from . import recipes as recipes_mod
 COMMANDS = {"remote", "trust-server", "deploy", "install", "uninstall", "start",
             "overview", "audit", "call", "serve", "selftest", "scan-git", "doctor",
             "try", "import", "fix", "update-check", "limits", "test", "check", "try-it",
-            "undo", "recipe"}
+            "undo", "recipe", "verify", "explain", "age", "clean-env"}
 
 NEEDS_NEWER = ("This needs a newer stuntkey than the one that is installed. "
                "Run `pipx upgrade stuntkey`, then try again.")
@@ -99,6 +98,8 @@ def add_parsers(sub) -> None:
     ins.add_argument("targets", nargs="*", help="claude-desktop, cursor, claude-code, vscode "
                                                 "(default: the ones found)")
     ins.add_argument("--yes", action="store_true", help="Do not ask (for scripts)")
+    ins.add_argument("--dry-run", action="store_true",
+                     help="Show which files it would change; change nothing.")
     un = sub.add_parser("uninstall", help="Undo the setup: take stuntkey out of your AI "
                                           "tools' settings and switch the Claude Code "
                                           "safety check off (your saved keys are not "
@@ -162,7 +163,7 @@ def add_parsers(sub) -> None:
     sub.add_parser("limits", help="What StuntKey does NOT protect you from, in plain words.")
     cp = sub.add_parser("completion", help="Print a script that completes stuntkey "
                                            "commands when you press Tab.")
-    cp.add_argument("shell", choices=["powershell", "bash"])
+    cp.add_argument("shell", nargs="?", default=None, choices=["powershell", "bash"])
     st = sub.add_parser("start", help="First run: check this computer, look for loose "
                                       "keys, and say what to do next.",
                       description="Run it in your project folder.")
@@ -173,13 +174,32 @@ def add_parsers(sub) -> None:
     ov.add_argument("--json", action="store_true", help="Machine-readable output.")
     ov.add_argument("--env-file", default=".env")
     au = sub.add_parser("audit", help="Check the activity log has not been tampered with.")
-    au.add_argument("action", nargs="?", default="verify", choices=["verify", "show", "reset"],
+    au.add_argument("action", nargs="?", default="verify",
+                    choices=["verify", "show", "reset", "export"],
                     help="verify (the default): check the log; show: list the last calls; "
-                         "reset: start a fresh log after a problem (the old one is kept)")
+                         "reset: start a fresh log after a problem (the old one is kept); "
+                         "export: write a separate copy for another tool (needs --warden)")
+    au.add_argument("--warden", action="store_true",
+                    help="with `export`: write two files shaped for warden's `report --from "
+                         "mcp-jail` and `--from planok` (not tried against a live warden; "
+                         "the activity log itself is never changed)")
+    au.add_argument("--since", default=None, metavar="ISO",
+                    help="with `export`: only entries from this date/time on, "
+                         "e.g. 2026-11-14 or 2026-11-14T09:30:00Z")
+    au.add_argument("--out", default=None, metavar="FILE",
+                    help="with `export`: where to write the tool-call file (default: "
+                         "warden-feed.mcp-jail.jsonl next to the activity log; the "
+                         "approvals go beside it as ...mcp-jail.planok.jsonl)")
     au.add_argument("--json", action="store_true")
     au.add_argument("--last", type=int, default=20, help="how many entries to show")
     ca = sub.add_parser("call", help="Call a connected service's API; the key is "
-                                     "added for you and hidden from the output.")
+                                     "added for you and hidden from the output.",
+                        usage="stuntkey call SERVICE METHOD PATH [options]",
+                        epilog="Example: stuntkey call github GET /user   "
+                               "(asks GitHub who you are; the key stays hidden)",
+                        description="Call a connected service's API; the key is added "
+                                    "for you and hidden from the output.")
+    ca.example = "stuntkey call github GET /user   (asks GitHub who you are)"
     ca.add_argument("service")
     ca.add_argument("method", help="GET, or POST/PUT/PATCH/DELETE (asks you first).")
     ca.add_argument("path", help="like /user")
@@ -213,6 +233,44 @@ def add_parsers(sub) -> None:
     im.add_argument("--yes", action="store_true", help="Do not ask first (for scripts).")
     im.add_argument("--delete-source", action="store_true",
                     help="After saving, overwrite the file and delete it.")
+    vf = sub.add_parser("verify", help="Prove on this computer that the safety promises hold "
+                                       "(pretend service, made-up key).",
+                        description="Starts stuntkey's proxy for a moment in a throwaway "
+                                    "folder, with a made-up key and a pretend service, and "
+                                    "checks: a request with no (or a wrong) password is "
+                                    "refused; the answer and a program's environment hold "
+                                    "no key; with the proxy off a call fails and there is "
+                                    "no key to fall back on. Nothing real is used and "
+                                    "nothing leaves this computer. Exit status 0 all "
+                                    "passed, 1 one failed.")
+    vf.add_argument("--json", action="store_true", help="Machine-readable output.")
+    xp = sub.add_parser("explain", help="What happened lately, in a few plain sentences.",
+                        description="Reads your activity log and says, in a few sentences: "
+                                    "how many calls went through and to which service, how "
+                                    "many were blocked and why, today's use against the "
+                                    "limits, whether panic or stop was used, and which saved "
+                                    "keys have not been used for 30 days. Never shows a key.")
+    xp.add_argument("--since", default="7d", metavar="TIME",
+                    help="How far back to look, like 24h, 7d or 2w (default 7d).")
+    xp.add_argument("--json", action="store_true", help="Machine-readable output.")
+    ag = sub.add_parser("age", help="How old each saved key is, and which are worth replacing.",
+                        description="Lists your saved keys with how many days ago each was "
+                                    "added or last replaced. A key with no date says "
+                                    "\"unknown age\". Never shows a key. The limit can also "
+                                    "be set with STUNTKEY_AGE_WARN.")
+    ag.add_argument("--warn", type=int, default=None, metavar="DAYS",
+                    help="Call a key old after this many days (default 90).")
+    ag.add_argument("--json", action="store_true", help="Machine-readable output.")
+    ce = sub.add_parser("clean-env", help="Comment out the plaintext copy of keys that are "
+                                          "already safe in your keychain.",
+                        description="For each key that is saved in your keychain AND still "
+                                    "written in a .env file of this project, comment that line "
+                                    "out. Only a line whose value is exactly the keychain copy "
+                                    "is touched. A copy of the file as it was is kept privately "
+                                    "in your stuntkey folder, and `stuntkey undo` puts it "
+                                    "back. Asks first.")
+    ce.add_argument("--yes", action="store_true", help="Do not ask first (for scripts).")
+    ce.add_argument("--dry-run", action="store_true", help="Say what would change; change nothing.")
     stp = sub.add_parser("selftest", help="Attack stuntkey with a made-up key and a pretend "
                                           "server; shows how many attacks it stopped.")
     stp.add_argument("--json", action="store_true")
@@ -237,10 +295,14 @@ def install_facts() -> dict:
 
 def about_extra() -> str:
     f = install_facts()
-    return (f"  Version:           {recipes_mod.printable(f['version'])}\n"
+    text = (f"  Version:           {recipes_mod.printable(f['version'])}\n"
             f"  Program file:      {recipes_mod.printable(f['program'])}\n"
             f"  Installed in:      {recipes_mod.printable(f['install_folder'])}\n"
             f"  Python used:       {recipes_mod.printable(f['python'])}\n")
+    stale = fixcmd.stale_program_warning()
+    if stale:
+        text += "  Note: " + recipes_mod.printable(stale) + "\n"
+    return text
 
 
 def self_check(dist=None) -> dict:
@@ -426,8 +488,11 @@ def dispatch(args, catalog: dict):
         return None
     if cmd == "install":
         from . import clients
-        code = clients.run(args.targets, args.yes)
-        _hook_hint()
+        dry = getattr(args, "dry_run", False)
+        code = (clients.run(args.targets, args.yes, dry_run=True) if dry
+                else clients.run(args.targets, args.yes))
+        if not dry:
+            _hook_hint()
         return code
     if cmd == "uninstall":
         from . import clients
@@ -452,6 +517,18 @@ def dispatch(args, catalog: dict):
         return undo.cmd_undo(args)
     if cmd == "recipe":
         return _recipe_command(args)
+    if cmd == "verify":
+        from . import verify
+        return verify.cmd_verify(args)
+    if cmd == "explain":
+        from . import explain
+        return explain.cmd_explain(args)
+    if cmd == "age":
+        from . import age
+        return age.cmd_age(args, catalog)
+    if cmd == "clean-env":
+        from . import setupcmd
+        return setupcmd.cmd_clean_env(args, catalog)
     if cmd == "try":
         from . import connect_try
         return connect_try.cmd_try(auto=args.auto)
@@ -470,7 +547,10 @@ def dispatch(args, catalog: dict):
         if cmd == "overview":
             return cmds.cmd_status(catalog, args.env_file, args.json)
         if cmd == "audit":
-            return cmds.cmd_audit(args.action, args.json, args.last)
+            return cmds.cmd_audit(args.action, args.json, args.last,
+                                  warden=getattr(args, "warden", False),
+                                  since=getattr(args, "since", None),
+                                  out_path=getattr(args, "out", None))
         if cmd == "serve":
             return cmds.cmd_serve(catalog, args.port, args.env_file)
         recipe = catalog.get(args.service)
@@ -511,7 +591,21 @@ def dispatch(args, catalog: dict):
             return 0 if found["state"] == "ok" else 1
         _ensure_log_key()
         res = gitscan.doctor()
-        print(_json.dumps(res, indent=2) if args.json else gitscan.format_doctor(res))
+        # the same state `status`, `overview` and `test` use (read only)
+        from . import fixcmd as _fix       # (a local `fixcmd` import below makes that name local here)
+        try:
+            overall, words = _fix.state(_fix.collect(catalog))
+        except Exception:       # noqa: BLE001 - an extra line must never break doctor
+            overall, words = None, ""
+        if overall:
+            res["overall"] = {"state": overall, "summary": words}
+        if args.json:
+            print(_json.dumps(res, indent=2))
+        else:
+            print(gitscan.format_doctor(res))
+            if overall:
+                print(f"  Overall: {_fix.STATE_WORDS[overall]} ({words}). "
+                      "`stuntkey status` lists each part.")
         code = 0 if res["ok"] else 1
         if getattr(args, "fix", False) and not args.json:
             from . import fixcmd

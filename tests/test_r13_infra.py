@@ -415,6 +415,7 @@ class TestProxyFraming(unittest.TestCase):
     def setUp(self):
         from stuntkey import approve, recipes
         os.environ["STUNTKEY_KEYCHAIN"] = "memory"
+        self.addCleanup(os.environ.pop, "STUNTKEY_KEYCHAIN", None)   # no conftest under `unittest discover`
 
         def real_window(*a, **k):
             raise AssertionError("a REAL approval window was requested")
