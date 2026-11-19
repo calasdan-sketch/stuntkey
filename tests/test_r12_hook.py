@@ -375,7 +375,7 @@ class TamperProtection(unittest.TestCase):
         for path in ("src/app.py", "docs/notes.md", ".claude/commands/review.md", "README.md",
                      os.path.join(home, ".claude", "plans", "plan.md"),
                      os.path.join(home, ".claude", "projects", "x", "mem.md"),
-                     r"C:\Users\danie\oathkey\stuntkey\hook.py", "my.claude-notes.txt"):
+                     r"C:\Users\user\oathkey\stuntkey\hook.py", "my.claude-notes.txt"):
             with self.subTest(path=path):
                 self.assertIsNone(decision("Write", file_path=path, content="hello"), path)
 

@@ -995,7 +995,7 @@ def find_env_files(text: str) -> list[str]:
 _SHORT_NAME_RE = re.compile(
     r"(?:^|(?<=[\\/\s\"'=:;(<>,]))(?!(?:HEAD|ORIG_HEAD|FETCH_HEAD|MERGE_HEAD|master|main)~)"
     r"[\w$%'-]{1,6}~\d(?:\.\w{0,3})?(?=$|[\\/\s\"';&|)<>,])", re.I)
-# the home folder's own short name (`C:\Users\DANIE~1`) is how Windows spells
+# the home folder's own short name (`C:\Users\USER~1`) is how Windows spells
 # %TEMP% and the profile in many tools: that one part is not what is refused
 _USER_SHORT_RE = re.compile(r"(?<=[\\/]Users[\\/])[\w$%'-]{1,8}~\d(?=[\\/\s\"';&|)<>,]|$)", re.I)
 _SHORT_CONTEXT_RE = re.compile(

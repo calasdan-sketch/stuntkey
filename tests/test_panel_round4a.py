@@ -126,7 +126,7 @@ class ShortNames(unittest.TestCase):
 
     def test_git_revisions_and_the_profile_folders_own_short_name_stay_allowed(self):
         with mock.patch.object(hook_mod, "_ON_WINDOWS", True):
-            for cmd in (r"cd C:\proj && git diff HEAD~1", r"dir C:\Users\DANIE~1\AppData\Local\Temp",
+            for cmd in (r"cd C:\proj && git diff HEAD~1", r"dir C:\Users\USER~1\AppData\Local\Temp",
                         "git log main~3"):
                 self.assertFalse(denied(bash(cmd)), cmd)
 

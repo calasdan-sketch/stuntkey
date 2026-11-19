@@ -13,3 +13,9 @@ packaging/npm/stuntkey.pyz
 
 # graft's local graph cache — regenerable, not committed (run `graft build`).
 /graft/
+
+# internal working notes and run logs (hold local paths); never publish. build_brand.py is the page generator and stays tracked.
+docs/_work/*
+!docs/_work/build_brand.py
+!docs/_work/brand_src/
+!docs/_work/brand_src/**
