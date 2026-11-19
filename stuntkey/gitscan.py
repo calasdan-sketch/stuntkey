@@ -278,7 +278,7 @@ def _doctor_stuntkey_checks(add) -> None:
         passed, total, cached = selftest.checked(
             say=lambda t: print("  " + t, file=sys.stderr, flush=True))
         add("self-attack test", passed == total,
-            f"{passed} of {total} attacks stopped" + (" (checked a moment ago)" if cached else ""),
+            f"{passed} of {total} simulated attacks on stuntkey's own rules stopped; an internal check, not the separate keycanary benchmark" + (" (checked a moment ago)" if cached else ""),
             "Run `stuntkey selftest` to see which attack got through, and report it (see https://github.com/calasdan-sketch/stuntkey/blob/main/SECURITY.md).")
     except Exception as e:                                   # noqa: BLE001
         add("self-attack test", False, f"could not run ({type(e).__name__})", "")

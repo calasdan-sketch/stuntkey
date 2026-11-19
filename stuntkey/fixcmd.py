@@ -656,7 +656,7 @@ def cmd_fix(args, catalog=None, out=None, ask=None, collector=None) -> int:
     items = (collector or collect)(catalog)
     fixable = [i for i in items if i.fixer]
     if getattr(args, "json", False) and not getattr(args, "yes", False):
-        out.write(json.dumps({"fixable": [i.as_dict() for i in fixable]}, indent=2) + "\n")
+        out.write(json.dumps({"schema": 1, "applied": False, "fixable": [i.as_dict() for i in fixable]}, indent=2) + "\n")
         return 0
     if not fixable:
         out.write(render(items))

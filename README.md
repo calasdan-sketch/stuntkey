@@ -209,7 +209,7 @@ stuntkey uses only Python's own standard library, and a test in the repository (
 
 Coming from `oathkey` (0.8)? The first run copies `~/.oathkey` to `~/.stuntkey` (the old folder stays), old `oathkey.json` / `oathkey.policy` files are still read, and `stuntkey doctor` points at what is left: `stuntkey migrate` copies saved keychain keys to the new names and reads each one back (add `--remove-old` to then delete the old entries), and `stuntkey install` / `stuntkey hook install` replace old `oathkey` hook and MCP entries after showing the change and asking (`hook install --yes` skips the question). Coming from the older `safeeasyapi` name? Nothing is migrated from it: re-run `stuntkey get <service>` and `stuntkey install`, and remove any old `safeeasyapi` hook or MCP entry by hand.
 
-Many commands accept `--json` (try `list`, `overview`, `selftest`, `doctor`, `audit`). Exit codes: 0 fine, 1 problem, 2 wrong usage, 3 service not found, 5 refused by policy, 7 network problem.
+Many commands accept `--json` (try `list`, `overview`, `selftest`, `doctor`, `audit`, `status`, `test`, `fix`; the JSON of `status`, `test` and `fix` carries `"schema": 1`). Exit codes: 0 fine, 1 problem, 2 wrong usage, 3 service not found, 5 refused by policy, 7 network problem. `stuntkey test` exits 1 on FAIL; `stuntkey status` exits 1 when a computer that was set up now needs attention (a computer never set up is told to run `stuntkey setup` and exits 0).
 
 ## Services
 

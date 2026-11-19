@@ -140,6 +140,9 @@ def add_parsers(sub) -> None:
                                         "next step. Nothing real is used.")
         tp.add_argument("--verbose", action="store_true",
                         help="Also list every problem, not just the first.")
+        tp.add_argument("--json", action="store_true",
+                        help="One JSON object instead of the line: {schema, ok, fault, summary, details}. "
+                             "Exit status: 0 PASS, 1 FAIL.")
     ud = sub.add_parser("undo", help="Put back what setup, fix or get changed last.",
                         description="Reverses the last change made by `stuntkey setup`, "
                                     "`fix` or `get`, using the copies it made first: "

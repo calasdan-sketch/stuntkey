@@ -164,6 +164,11 @@ def run_check(catalog: dict | None = None) -> Result:
 def cmd_test(args=None, catalog=None, out=None) -> int:
     out = out or sys.stdout
     res = run_check(catalog)
+    if getattr(args, 'json', False):
+        import json
+        out.write(json.dumps({"schema": 1, "ok": bool(res.ok), "fault": bool(res.fault),
+                              "summary": _p(res.line), "details": [_p(d) for d in res.details]}) + "\n")
+        return 0 if res.ok else 1
     out.write(_p(res.line) + "\n")
     if not res.ok:
         n = max(1, len(res.details))

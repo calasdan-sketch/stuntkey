@@ -51,3 +51,55 @@ class FixPreview(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ExitCodesAndJson(unittest.TestCase):
+    """README: exit 0 fine, 1 problem. status and test must agree, and --json must carry a schema field."""
+
+    def test_test_json_has_schema_and_matches_the_exit_code(self):
+        import io
+        import json
+        from stuntkey import setupcmd
+        out = io.StringIO()
+        from unittest import mock
+        res = setupcmd.Result(False, "FAIL: x Next: y")
+        with mock.patch.object(setupcmd, "run_check", return_value=res):
+            rc = setupcmd.cmd_test(type("A", (), {"json": True, "verbose": False})(), {}, out)
+        doc = json.loads(out.getvalue())
+        self.assertEqual((rc, doc["schema"], doc["ok"]), (1, 1, False))
+        ok = setupcmd.Result(True, "PASS: fine")
+        out = io.StringIO()
+        with mock.patch.object(setupcmd, "run_check", return_value=ok):
+            rc = setupcmd.cmd_test(type("A", (), {"json": True, "verbose": False})(), {}, out)
+        self.assertEqual((rc, json.loads(out.getvalue())["ok"]), (0, True))
+
+    def test_doctor_row_does_not_claim_a_bare_absolute(self):
+        src = open(__import__("stuntkey.gitscan", fromlist=["x"]).__file__, encoding="utf-8").read()
+        self.assertIn("simulated attacks on stuntkey's own rules", src)
+        self.assertNotIn("stuntkey help leakbench", src)
+
+
+class StatusExitCode(unittest.TestCase):
+    def _run(self, level, set_up):
+        import contextlib
+        import io
+        import json
+        from unittest import mock
+        args = type("A", (), {"json": True, "fix": False})()
+        items = [fixcmd.Item("x", level, "something")]
+        buf = io.StringIO()
+        with mock.patch.object(fixcmd, "collect", return_value=items), mock.patch.object(cli, "_computer_is_set_up", return_value=set_up),                 contextlib.redirect_stdout(buf):
+            rc = cli._status_without_project(args)
+        return rc, json.loads(buf.getvalue())
+
+    def test_a_set_up_computer_that_needs_attention_exits_1(self):
+        rc, doc = self._run(fixcmd.RED, True)
+        self.assertEqual((rc, doc["state"], doc["schema"]), (1, "attention", 1))
+
+    def test_a_never_set_up_computer_is_told_to_run_setup_and_exits_0(self):
+        rc, doc = self._run(fixcmd.RED, False)
+        self.assertEqual((rc, doc["setup"]), (0, False))
+
+    def test_ready_and_almost_exit_0(self):
+        self.assertEqual(self._run(fixcmd.GREEN, True)[0], 0)
+        self.assertEqual(self._run(fixcmd.YELLOW, True)[0], 0)

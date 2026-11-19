@@ -1015,6 +1015,8 @@ def _status_without_project(args) -> int:
     items = fixcmd.collect(catalog)
     state, words = fixcmd.state(items)
     done = _computer_is_set_up(items)
+    # README: 1 = problem. A computer that was set up and now needs attention is a problem; one that was never set up is not (it is told to run setup, exit 0)
+    code = 1 if (state == fixcmd.ATTENTION and done) else 0
     if done:
         note = ("This folder has no stuntkey.json, which is fine: stuntkey is set up for "
                 "your whole computer. A project file is only needed to list one "
@@ -1022,8 +1024,8 @@ def _status_without_project(args) -> int:
     else:
         note = "This folder has no stuntkey setup. Run `stuntkey setup` to set it up."
     if getattr(args, "json", False):
-        print(json.dumps({"setup": done, "state": state, "services": [], "note": note}))
-        return 0
+        print(json.dumps({"schema": 1, "setup": done, "state": state, "services": [], "note": note}))
+        return code
     if not done:
         print(note + "\n(To see keys saved anywhere on this computer, run "
               "`stuntkey overview`.)")
@@ -1031,7 +1033,7 @@ def _status_without_project(args) -> int:
         print(note)
     sys.stdout.write(fixcmd.render(items))
     sys.stdout.write(_status_extras(args, catalog))
-    return _maybe_fix(args, catalog, 0)
+    return _maybe_fix(args, catalog, code)
 
 
 def _maybe_fix(args, catalog: dict, code: int) -> int:
