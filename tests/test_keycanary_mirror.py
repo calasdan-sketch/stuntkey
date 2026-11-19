@@ -1,12 +1,19 @@
 """leakbench/ is a frozen mirror of keycanary's probes; fail if they drift."""
-import pytest
+import unittest
 
 from leakbench import loader as lb
 
-kc = pytest.importorskip("keycanary.loader")
+try:
+    from keycanary import loader as kc
+except ImportError:
+    kc = None
 
 
-def test_probe_ids_match_keycanary():
-    for extended in (False, True):
-        assert [p.id for p in lb.load(extended=extended)] == \
-               [p.id for p in kc.load(extended=extended)]
+@unittest.skipIf(kc is None, "keycanary is not installed")
+class Mirror(unittest.TestCase):
+    def test_probe_ids_match_keycanary(self):
+        for extended in (False, True):
+            self.assertEqual([p.id for p in lb.load(extended=extended)],
+                             [p.id for p in kc.load(extended=extended)])
+
+

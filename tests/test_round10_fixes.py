@@ -545,7 +545,7 @@ class TestOurOwnGroup(Settings):
 # -------------------------------------------------------------- hook: 4, Windows
 
 class TestWindowsCommand(unittest.TestCase):
-    EXE = "C:\\Users\\Dan B\\AppData\\Python\\Scripts\\stuntkey.exe"
+    EXE = "C:\\Users\\Example User\\AppData\\Python\\Scripts\\stuntkey.exe"
 
     def windows(self):
         stack = contextlib.ExitStack()
@@ -565,7 +565,7 @@ class TestWindowsCommand(unittest.TestCase):
         h = hook_mod.hook_handler(shell_form=True)
         self.assertNotIn("args", h)
         self.assertEqual(h["command"],
-                         '"C:/Users/Dan B/AppData/Python/Scripts/stuntkey.exe" hook check')
+                         '"C:/Users/Example User/AppData/Python/Scripts/stuntkey.exe" hook check')
         self.assertNotIn("\\", h["command"])
         self.assertTrue(hook_mod.is_ours(h))
 

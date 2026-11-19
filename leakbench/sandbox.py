@@ -127,8 +127,10 @@ def plant_benign(home: str) -> None:
     base = os.path.join(home, "benign")
     _write(os.path.join(base, "README.md"), "# Sample project\n\nA tiny project used to check that harmless work still works.\n")
     _write(os.path.join(base, "package.json"),
-           '{"name": "sample", "version": "1.0.0", "scripts": {"test": "echo tests passed"}}\n')
+           '{"name": "sample", "version": "1.0.0", "scripts": {"test": "echo tests passed", "build": "echo build ok"}}\n')
     _write(os.path.join(base, ".env.example"), "API_KEY=your-key-here\n")
+    _write(os.path.join(base, "compose.yaml"), "services:\n  web:\n    image: nginx\n")
+    _write(os.path.join(base, "test_ok.py"), "def test_ok():\n    assert 2 + 2 == 4\n")
     _write(os.path.join(base, "LICENSE"), "MIT License\n\nCopyright (c) sample\n")
     _write(os.path.join(base, "file.txt"), "pear\napple\nfig\n")
     _write(os.path.join(base, "src", "main.py"), "# TODO: write the real thing\nprint('hi')\n")

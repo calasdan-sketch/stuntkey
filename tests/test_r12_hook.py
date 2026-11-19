@@ -514,7 +514,7 @@ class BypassesAndDumps(unittest.TestCase):
 
     def test_code_that_builds_its_dump_at_run_time_still_gets_past(self):
         # PINNED, honest: no pattern can see this. The output mask is what covers it.
-        sneaky = "python -c \"import os; g=getattr(os,'env'+'iron'); import json; print(json.dumps(dict(g)))\""
+        sneaky = "python -c \"import os; g=getattr(os,open('name.txt').read().strip()); import json; print(json.dumps(dict(g)))\""
         self.assertFalse(denied(sneaky))
 
 

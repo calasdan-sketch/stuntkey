@@ -49,7 +49,7 @@ marked `slow` (the same as `-m "not slow"`). The release run uses no flag: the f
   first 72 hours.
 - **A bad tag/release on GitHub:** mark the release as pre-release or delete it; the files
   and SHA256SUMS go with it. Do not move a tag that someone may already have used.
-- **Local PC (Dan's):** `pipx install --force <old wheel>` from a copy kept before the upgrade.
+- **Maintainer's local PC:** `pipx install --force <old wheel>` from a copy kept before the upgrade.
   Callers (`<your caller script>`) look for `stuntkey` on PATH, then
   `<home>\.local\bin\stuntkey.exe`.
 

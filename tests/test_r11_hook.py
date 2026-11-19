@@ -511,12 +511,12 @@ class OutputMasking(unittest.TestCase):
         return json.loads(out)["hookSpecificOutput"] if out else None
 
     def test_a_token_in_git_config_list_output_is_masked(self):
-        listing = ("user.name=Dan\nremote.origin.url=https://dan:" + TOKEN + "@github.com/x/y.git\n"
+        listing = ("user.name=Example\nremote.origin.url=https://dan:" + TOKEN + "@github.com/x/y.git\n"
                    "credential.helper=manager\nurl.https://x:hunter2Zq9!kP@example.com/.insteadof=ex\n")
         got = self.post("Bash", {"stdout": listing, "stderr": ""})
         self.assertNotIn(TOKEN, got["updatedToolOutput"]["stdout"])
         self.assertNotIn("hunter2Zq9", got["updatedToolOutput"]["stdout"])
-        self.assertIn("user.name=Dan", got["updatedToolOutput"]["stdout"])
+        self.assertIn("user.name=Example", got["updatedToolOutput"]["stdout"])
 
     def test_powershell_output_is_masked_too_when_it_reaches_the_hook(self):
         got = self.post("PowerShell", {"stdout": "key is " + STORED, "stderr": ""})

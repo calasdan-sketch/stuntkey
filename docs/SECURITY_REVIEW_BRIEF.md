@@ -50,8 +50,8 @@ keychain; it is not secure). Use made-up keys only.
 
 ## Known numbers (from `leakbench/README.md`, real runs)
 
-- Core 64 probes, `stuntkey-hook`, key registered: 55 blocked, 7 masked, 2 leaked.
-- Same with a key stuntkey never saw and no known format (`--canary opaque`): 7 of 64 leak.
+- Core 64 probes, `stuntkey-hook`, key registered: 56 blocked before the call, 6 masked after the call (not verified live in Claude Code), 2 leaked (self-written benchmark, one run).
+- Same with a key stuntkey never saw and no known format (`--canary opaque`): 7 of 64 leak in most runs (12 in one run).
 - The probes are simulated tool calls, not a real model.
 
 ## What we want back

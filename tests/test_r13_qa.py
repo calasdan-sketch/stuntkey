@@ -519,7 +519,7 @@ class CodexToml(unittest.TestCase):
 
     def test_a_command_with_quotes_backslashes_and_accents_is_valid_toml(self):
         from stuntkey import agentsetup
-        for cmd in ('C:\\Users\\Dan "D" \u00c7alas\\py thon.exe', "/home/o'brien/\u4e2d/python", "a\tb"):
+        for cmd in ('C:\\Users\\Example "D" \u00c7alas\\py thon.exe', "/home/o'brien/\u4e2d/python", "a\tb"):
             text = agentsetup._toml({"command": cmd, "args": ["-m", "x", 'q"uote', "back\\slash"]})
             data = tomllib.loads(text)
             self.assertEqual(data["mcp_servers"]["stuntkey"]["command"], cmd)

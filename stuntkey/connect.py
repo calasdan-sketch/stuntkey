@@ -441,7 +441,7 @@ def _ask_one(field: dict, single: bool, prompt, out, clip, taken: set,
             out.write("\ncancelled.\n")
             return None
         if value:
-            # No "press Enter to save" step (Dan, 2026-11-08: it confused
+            # No "press Enter to save" step (maintainer, 2026-11-08: it confused
             # people). A wrong copy is caught by the check that follows: it
             # goes only to the vendor's own address, and nothing is saved
             # unless the vendor accepts it.
@@ -460,7 +460,7 @@ def _ask_one(field: dict, single: bool, prompt, out, clip, taken: set,
                 # clipboard is taken, so a poisoned clipboard could slip in a
                 # look-alike. Say what was captured (3 characters, never more)
                 # and where it goes, and wait for a yes. Known recipes keep the
-                # zero-prompt flow (Dan, 2026-11-08).
+                # zero-prompt flow (maintainer, 2026-11-08).
                 from . import safeprompt as _sp
                 if confirm is None and not (sys.stdin and sys.stdin.isatty()):
                     out.write("  This site is new to me and I cannot ask you in this window, "

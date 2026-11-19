@@ -332,8 +332,8 @@ _ENV_DUMP_RX = _ENV_DUMP_RULE[0]
 # redirect, no `;`. (`env | grep PATH`, `-v ^PATH`, `-A9 ^PATH`, `^PATHEXT` stay blocked.)
 _ENV_SAFE_FILTER_RE = re.compile(
     r"(?<![\w.:~$\\/-])(?:[\w.:~$\\/-]*[/\\])?(?:env|printenv)(?:\.exe)?(?:[ \t]+-[0-9A-Za-z]+)*[ \t]*\|[ \t]*"
-    r"(?:grep|egrep|rg|findstr|Select-String)(?:\.exe)?(?:[ \t]+[-/][iw]+)*[ \t]+[\"']?\^"
-    r"(?:PATH|HOME|USER|LOGNAME|TEMP|TMP|LANG|LC_\w+|SHELL|PWD|TERM)\b[\"']?[ \t]*(?=\r?\n|\Z)", re.I)
+    r"(?:grep|egrep|rg|findstr|Select-String)(?:\.exe)?(?:[ \t]+[-/][iw]+)*[ \t]+[\"']?"
+    r"(?:\^(?:PATH|HOME|USER|LOGNAME|TEMP|TMP|LANG|LC_\w+|SHELL|PWD|TERM)|\^?NODE_ENV)\b[\"']?[ \t]*(?=\r?\n|\Z)", re.I)
 
 DUMP_RULES = (
     (re.compile(r"(?:^|[\s;&|(@])(?:echo|set|type|call|for|more|print)\b[^\n;&|]{0,200}%\w*"
@@ -357,7 +357,9 @@ DUMP_RULES = (
                 r"(?:-\w+\s+)*Env::?(?:(?!\w)|\w*\*|\w*" + _SECRET_WORD + r")|"
                 r"GetEnvironmentVariables\b", re.I),
      "list the environment variables (that is where keys live)"),
-    (re.compile(r"\bdocker(?:-compose|\s+compose)\b[^\n;&|]{0,300}\sconfig\b", re.I),
+    # (`config --services|--quiet|--profiles|--images|--volumes|--hash` print no values and stay allowed)
+    (re.compile(r"\bdocker(?:-compose|\s+compose)\b[^\n;&|]{0,300}\sconfig\b"
+                r"(?![^\n;&|]{0,300}(?:--(?:services|quiet|profiles|images|volumes|hash)|\s-q)(?![\w-]))", re.I),
      "print the compose file with every variable filled in (keys included)"),
     (re.compile(r"\bdocker\s+(?:container\s+|image\s+)?inspect\b(?![^\n;&|]{0,300}\s(?:--format|-f)\b)|"
                 r"\bdocker\s+(?:container\s+|image\s+)?inspect\b[^\n;&|]{0,300}"
@@ -446,6 +448,19 @@ DUMP_RULES = (
                 r"\{\s*\.\.\.\s*process\s*\.\s*env\b|\.\.\.\s*process\s*\.\s*env\s*[,}]|"
                 r"\bObject\.assign\s*\(\s*\{\s*\}\s*,\s*process\.env\b", re.I),
      "print or copy every environment variable from code"),
+    # ---- skeptic review: one-liner idioms that print the WHOLE environment ----
+    # Pattern checks only; the after-call mask (fail-open) is the defence for the rest.
+    (re.compile(r"\bjq(?:\.exe)?\b[^\n;&|]{0,300}(?:\$ENV\b|(?<![\w.$\"'-])env\b)(?!\s*(?:\.\s*\w|\[))", re.I),
+     "print every environment variable through jq"),
+    (re.compile(r"\bjq(?:\.exe)?\b[^\n;&|]{0,300}(?:\$ENV|(?<![\w.$\"'-])env)\s*\.\s*\w*" + _SECRET_WORD, re.I),
+     "print a key from an environment variable through jq"),
+    (re.compile(r"\bphp(?:\.exe)?\b[^\n]{0,60}[ \t]-r\b[^\n]{0,400}(?:\bgetenv\s*\(\s*\)|\$_(?:ENV|SERVER)\b(?!\s*\[)|"
+                r"\bphpinfo\s*\(|\bget_defined_vars\s*\(|\$_(?:ENV|SERVER)\s*\[\s*['\"]\w*" + _SECRET_WORD + r")", re.I),
+     "print every environment variable from a php one-liner"),
+    (re.compile(r"\b(?:python[\d.]*|py)(?:\.exe)?\b[^\n]{0,60}[ \t]-c\b[^\n]{0,400}"
+                r"(?<!import )(?<!import\t)\benviron\b(?!\s*(?:[\[,]|\.\s*(?:get|pop|setdefault)\b))|"
+                r"\b(?:node|deno|bun)(?:\.exe)?\b[^\n]{0,60}[ \t]-[ep]\b[^\n]{0,400}\bprocess\.env\b(?!\s*(?:\.\w|\[))", re.I),
+     "print every environment variable from a one-liner"),
     (re.compile(r"\b(?:SendKeys|AppActivate|pyautogui|keybd_event|SendInput|xdotool)\b", re.I),
      "press keys or click in other programs' windows (that could answer a question only the person may answer)"),
     # an agent starting Claude Code again with other settings, or with the safety questions off

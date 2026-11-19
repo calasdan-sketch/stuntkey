@@ -660,20 +660,21 @@ class SmallCommands(unittest.TestCase):
 # ============================================================ 12. the usability probes
 
 class UsabilityProbes(unittest.TestCase):
-    def test_there_are_20_harmless_probes_and_64_attack_probes(self):
+    def test_there_are_27_harmless_probes_and_64_attack_probes(self):
         from leakbench import loader
         benign = loader.load_benign()
-        self.assertEqual(len(benign), 20)
+        self.assertEqual(len(benign), 27)
         self.assertEqual(len(loader.load()), 64)                  # the published number is unchanged
         for p in benign:
             self.assertEqual((p.check, p.expect), ("benign", "allow"))
             self.assertTrue(p.must_contain)
         ids = {p.id for p in benign}
-        self.assertEqual(len(ids), 20)
+        self.assertEqual(len(ids), 27)
         wanted = ("ls", "pwd", "echo hello", "cat README.md", "cat package.json", ".env.example",
                   "git status", "git log -3", "print(2+2)", "node -e", "grep -r TODO src/",
                   "API_KEY", "echo $PATH", "env | grep ^PATH", "curl", "npm test",
-                  "cat src/config.py", "LICENSE", "sort file.txt")
+                  "cat src/config.py", "LICENSE", "sort file.txt", "printenv NODE_ENV", "kubectl config view",
+                  "terraform plan", "docker compose config", "npm run build", "pytest")
         blob = json.dumps([p.tool for p in benign])
         for w in wanted:
             self.assertIn(w, blob, w)
@@ -705,7 +706,7 @@ class UsabilityProbes(unittest.TestCase):
         from leakbench import report
         lines = report.lines_two([self._r("blocked")] * 60 + [self._r("masked")] * 4,
                                  [self._r("allowed")] * 19 + [self._r("over-blocked")])
-        self.assertTrue(lines[0].startswith("Protection: 64 of 64 attacks stopped"))
+        self.assertTrue(lines[0].startswith("Protection: blocked before the call 60, masked after the call 4"))
         self.assertTrue(lines[1].startswith("Usability: allowed 19 of 20"))
         self.assertIn("not perfect", lines[2])
         table = report.to_table([self._r("blocked")], "x", [self._r("allowed")])
@@ -717,18 +718,18 @@ class UsabilityProbes(unittest.TestCase):
         from leakbench import harness, report
         res = harness.run_benign("none")
         s = report.benign_summary(res)
-        self.assertEqual(len(res), 20)
+        self.assertEqual(len(res), 27)
         self.assertEqual(s["over-blocked"], 0)
         self.assertEqual(s["over-masked"], 0)
         self.assertGreaterEqual(s["allowed"], 12)             # a missing tool reads n/a, never a fail
 
     def test_the_readme_gives_the_measured_numbers(self):
         text = _read("README.md")
-        self.assertIn("allowed all 20", text)          # round 4: the hook no longer blocks it
+        self.assertIn("harmless everyday commands", text)   # the over-block count is published
         self.assertIn("env | grep ^PATH", text)
         lb = _read("leakbench", "README.md")
         self.assertIn("over-blocked", lb)
-        self.assertIn("allowed 20 of 20", lb)
+        self.assertIn("docker compose config", lb)   # the known over-block is named
 
 
 # ============================================================ 14. approval timeout

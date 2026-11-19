@@ -623,7 +623,16 @@ def _lock_once(path: str, lock_path: str, deadline: float, attempt: int = 0):
         if _windows():
             import msvcrt
             if os.fstat(fd).st_size == 0:
-                os.write(fd, b"\0")
+                # A waiter can see size 0 just after the holder (re)created the
+                # file; the holder's byte-0 lock then denies this write with a
+                # PermissionError. That is harmless (locking a byte past the end
+                # of the file works) and the lock loop below does the waiting, so
+                # do not let it escape as an error (the old flaky
+                # test_twenty_writers_lose_nothing).
+                try:
+                    os.write(fd, b"\0")
+                except OSError:
+                    pass
             while True:
                 try:
                     os.lseek(fd, 0, 0)

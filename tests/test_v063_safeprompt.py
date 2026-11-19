@@ -64,7 +64,7 @@ def run_connect(confirm, stored):
 
 
 class TestConnectConfirm(unittest.TestCase):
-    """2026-11-08 (Dan): the "Press Enter to save it" step after a clipboard
+    """2026-11-08 (maintainer): the "Press Enter to save it" step after a clipboard
     capture confused people, so it is gone. The key is taken, said in plain
     words, checked with the vendor and saved - no question in between."""
 

@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased (round 15, from a hands-on audit and a competitor review)
+## Unreleased, 0.9.4 (not yet on PyPI; round 15, from a hands-on audit and a competitor review)
 
 - The first screen, `help` and `--help` now say up front: beta, not independently reviewed, lowers risk, does not stop malware or what your
   AI does with a key you allow, and point to `stuntkey limits`. The usage line no longer lists 65 command names. "Did you mean" only for a
@@ -12,7 +12,11 @@
   Built from each app's published documentation; NOT yet run inside the real apps. Both answer "block" if they themselves fail. Codex
   hides a whole output that holds a protected key (it cannot redact in place). Cursor cannot hide a shell command's output at all, so
   there stuntkey only refuses before the call.
-- Internal working notes and run logs are no longer in the repository.
+- Internal working notes and run logs are no longer in the repository (the `docs/_work` release checklist is now neutral about who the maintainer is, and a test file that used a real person's name now uses `Example User`).
+- Skeptic-review fixes: README no longer says the benchmark is "not owned by one tool" next to the author disclosure; PyPI has 0.9.0 only, so 0.9.1 to 0.9.4 are marked as not on PyPI and an install-from-clone line was added; `leakbench` now reports "blocked before the call" and "masked after the call (not verified live in Claude Code)" apart instead of one "stopped" number; the self-written 77 of 77 and the one-run benchmark (7 to 12 leaks across runs of the opaque-key test) are labelled as such.
+- Hook: `env | grep NODE_ENV` and `docker compose config --services|--quiet|--profiles|--images|--volumes|--hash` are allowed; plain `docker compose config` and `export -p | grep PATH` stay blocked on purpose (published as known over-blocks). New refusals for `jq -n env` / `$ENV`, `php -r` environment dumps, `python -c` printing the whole `environ`, and `node -p process.env`.
+- leakbench: 4 new extended probes (26 in all) and 7 new harmless commands (27 in all; one, `docker compose config`, is over-blocked and published). The mirror in keycanary needs the same additions.
+- Store: a bounded retry on a Windows `PermissionError` in the atomic replace (see the store notes).
 
 
 ## Unreleased
@@ -261,7 +265,7 @@ Round-13 QA and integration work. In plain words:
 - `hook uninstall` rewrites the settings file in its own layout (and Windows line endings); the
   backup made at install holds the exact old bytes.
 
-## 0.9.3 - 2026-11-10
+## 0.9.3 - 2026-11-10 (not released to PyPI)
 
 Round-12 release. In plain words:
 
@@ -308,7 +312,7 @@ Round-12 release. In plain words:
 - Hardening in the broker, proxy, approval windows, caps, the local web door, keychain, ledger,
   runner, store and recipes code.
 
-## 0.9.2 - 2026-11-10
+## 0.9.2 - 2026-11-10 (not released to PyPI)
 
 Round-3 review release. Summary (details below and in the sections under it):
 
@@ -492,7 +496,7 @@ checklist until the lead has seen them land.)
   longer says "every `.env` read" is blocked, and says the spend probes test the counter,
   not an agent loop.
 
-## 0.9.1
+## 0.9.1 (not released to PyPI)
 
 ### Added
 

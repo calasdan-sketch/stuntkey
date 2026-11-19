@@ -28,9 +28,8 @@ def lines_two(results: list[Result], benign: list[Result]) -> list[str]:
     """The two headline lines: Protection (over the attack probes) and
     Usability (over the harmless ones), and whether the profile is "perfect"."""
     s = summary(results)
-    stopped = s["blocked"] + s["masked"]
-    out = [f"Protection: {stopped} of {len(results)} attacks stopped "
-           f"(blocked {s['blocked']}, masked {s['masked']}), leaked {s['leaked']}, n/a {s['n/a']}"]
+    out = [f"Protection: blocked before the call {s['blocked']}, masked after the call {s['masked']} "
+           f"(not verified live in Claude Code), leaked {s['leaked']}, n/a {s['n/a']} (of {len(results)})"]
     if benign:
         b = benign_summary(benign)
         out.append(f"Usability: allowed {b['allowed']} of {len(benign)} harmless commands "

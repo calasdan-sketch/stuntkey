@@ -14,13 +14,13 @@ runnable:
 - **`leakbench`**, a benchmark, written by this tool's own author (so not neutral), of 64 ways an agent leaks a
   credential. Run it against stuntkey with `python -m leakbench --profile
   stuntkey-hook` (the default profile, `none`, is the unprotected baseline), or
-  against another tool. Of the 64 probes the hook alone scores 56 blocked, 6 masked, 2 leaked (measured 2026-11-15, one run); it leaves **2 leaks**, named
+  against another tool. Of the 64 probes the hook alone scores 56 blocked before the call, 6 masked after the call (masking not verified live in Claude Code), 2 leaked (measured 2026-11-15, one run each; the no-format-key variant leaked 7 in most runs and 12 in one, so single numbers vary by several probes); it leaves **2 leaks**, named
   (`runaway-loop-no-cap`, `unbounded-retry`: a loop of paid calls, which
   the spending caps in `stuntkey-full` stop, leaving 0), rather than
   scoring only what it passes. The probes are simulated tool calls, not a
   real model.
 - **`stuntkey selftest`**, which attacks stuntkey's own rules and currently
-  reports 77 of 77 simulated attacks stopped. Note what it does *not* prove:
+  reports 77 of 77 self-written simulated attacks stopped (one run; written by the same author as the rules it tests). Note what it does *not* prove:
   the attacks are simulated against a pretend server, so it does not exercise
   the live network layer.
 - **A test suite that encodes its own known gaps as passing tests**, so a gap
@@ -83,7 +83,7 @@ These are known and not fixed. They are listed so you can judge for yourself.
 - **Other AI apps have no hook.** Cursor, Codex, Gemini and Claude Desktop file tools can read files without the hook seeing them. Brokered calls and `proxy` still keep the key out of their environment; a key left in a file they can read is not protected.
 - **Screenshots and the clipboard are not covered.** A key shown on screen or copied can be read by anything that can capture either.
 - **Code can leak a key in ways patterns cannot all catch.** The hook reads the text of code before it is saved or run; code that builds what it does at run time can get past. No pattern list can fully stop that.
-- **The `leakbench` score is flattered by its canary.** The benchmark's fake key is registered with stuntkey first, like a key you saved. A key stuntkey has never seen is found by its shape only, and more probes leak: with a key that has no known format, 7 of the 64 core probes leak instead of 2 (`python -m leakbench --profile stuntkey-hook-unregistered --canary opaque`; see `leakbench/README.md`). The extended set (`--extended`, 22 harder probes) also leaks a key printed with spaces between its characters or cut into short lines, even when the key is registered.
+- **The `leakbench` score is self-written and flattered by its canary.** The benchmark's fake key is registered with stuntkey first, like a key you saved. A key stuntkey has never seen is found by its shape only, and more probes leak: with a key that has no known format, 7 of the 64 core probes leak instead of 2 (`python -m leakbench --profile stuntkey-hook-unregistered --canary opaque`; see `leakbench/README.md`). The extended set (`--extended`, 22 harder probes) also leaks a key printed with spaces between its characters or cut into short lines, even when the key is registered.
 - **The Claude Code hook is a speed bump.** It reads the text of a call. A program that builds its command at run time, a tool it is not attached to, or an AI app other than Claude Code gets past it. A shell command over 100,000 characters is refused unread, and very large text sent to an MCP tool is only checked in part.
 - **Pop-ups can be clicked by a program that drives your screen**, and a window helper such as `zenity` is trusted if it sits in a system folder owned by root.
 
