@@ -24,6 +24,7 @@ import sys
 import time
 
 REASON_FAILED = "stuntkey could not check this call, so it was blocked (a hook that fails would let the call through)."
+REASON_UNREADABLE = "stuntkey could not read this tool call's arguments, so it was blocked rather than guessed at."
 REASON_WITHHELD = ("stuntkey withheld this tool output because it contained a key it protects. Codex cannot redact "
                    "in place, so the whole result is hidden.")
 EVENTS = ("PreToolUse", "PostToolUse")
@@ -34,24 +35,83 @@ def _deny(reason: str) -> str:
                                               "permissionDecisionReason": reason}}) + "\n"
 
 
-def _as_claude(payload: dict) -> dict:
-    """The same call in the shape stuntkey's check reads. Only `apply_patch` needs mapping."""
+SHELLISH = ("bash", "shell", "powershell", "exec_command", "local_shell", "terminal")
+PATH_KEYS = ("file_path", "path", "target_file", "notebook_path", "filepath", "filename")
+
+
+def tool_input_dict(value):
+    """The tool's arguments as a dict. Cursor sends MCP arguments as a JSON STRING; a bare string is treated as a command; anything else
+    (None, a number) cannot be read, so the caller denies rather than guessing."""
+    if isinstance(value, dict):
+        return dict(value)
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except ValueError:
+            parsed = None
+        return dict(parsed) if isinstance(parsed, dict) else {"command": value}
+    return None
+
+
+def command_text(ti: dict):
+    """A shell command as one string: `command` or `cmd`, a list joined with spaces. None when there is none."""
+    for k in ("command", "cmd"):
+        v = ti.get(k)
+        if isinstance(v, str) and v.strip():
+            return v
+        if isinstance(v, (list, tuple)) and v and all(isinstance(x, (str, int, float)) for x in v):
+            return " ".join(str(x) for x in v)
+    return None
+
+
+def infer_event(payload: dict):
+    """'pre' or 'post' from the event name in any spelling, else from the shape (a response means after). None when it cannot be told."""
+    name = str(payload.get("hook_event_name") or "").replace("_", "").replace("-", "").lower()
+    if name in ("pretooluse", "beforetooluse"):
+        return "pre"
+    if name in ("posttooluse", "aftertooluse"):
+        return "post"
+    if name:
+        return "other"
+    if "tool_response" in payload or "tool_output" in payload:
+        return "post"
+    return "pre" if payload.get("tool_name") else None
+
+
+def _as_claude(payload: dict):
+    """The same call in the shape stuntkey's check reads, as a LIST of calls (one per path field, so none is skipped); None when the
+    arguments cannot be read at all (the caller denies)."""
     out = dict(payload)
-    if out.get("tool_name") == "apply_patch":
-        ti = out.get("tool_input") if isinstance(out.get("tool_input"), dict) else {}
-        out["tool_name"] = "Bash"
-        out["tool_input"] = {"command": ti.get("command") if isinstance(ti.get("command"), str) else json.dumps(ti)}
-    return out
+    name = str(out.get("tool_name") or "")
+    ti = tool_input_dict(out.get("tool_input"))
+    if ti is None:
+        return None
+    low = name.lower()
+    if low == "apply_patch":
+        cmd = ti.get("command") if isinstance(ti.get("command"), str) else json.dumps(ti)
+        return [{**out, "tool_name": "Bash", "tool_input": {"command": cmd}}]
+    if low in SHELLISH:
+        cmd = command_text(ti)
+        if cmd is None:
+            return None
+        return [{**out, "tool_name": "Bash", "tool_input": {"command": cmd}}]
+    return [{**out, "tool_name": name, "tool_input": ti}]
 
 
 def pre(payload: dict, check=None) -> tuple:
     """(exit status, stdout, stderr) for one PreToolUse call."""
     from . import hook
     check = check or hook.check
-    status, out = check(json.dumps({**_as_claude(payload), "hook_event_name": "PreToolUse"}))
-    if status != 0:
-        return 2, "", REASON_FAILED
-    return 0, out, ""
+    calls = _as_claude(payload)
+    if calls is None:
+        return 2, "", REASON_UNREADABLE
+    for call in calls:
+        status, out = check(json.dumps({**call, "hook_event_name": "PreToolUse"}))
+        if status != 0:
+            return 2, "", REASON_FAILED
+        if out.strip():
+            return 0, out, ""
+    return 0, "", ""
 
 
 def post(payload: dict, mask=None) -> tuple:
@@ -81,19 +141,25 @@ def run(stdin_text: str, check=None, mask=None) -> tuple:
             raise ValueError("not an object")
     except Exception:   # noqa: BLE001
         return 2, "", REASON_FAILED
-    event = payload.get("hook_event_name")
+    event = infer_event(payload)
     try:
-        if event == "PreToolUse":
+        if event == "pre":
             return pre(payload, check)
-        if event == "PostToolUse":
+        if event == "post":
             return post(payload, mask)
+        if event is None:
+            return 2, "", REASON_UNREADABLE   # not a tool event we can tell apart: block rather than wave it through
     except Exception:   # noqa: BLE001
-        return 2, "", REASON_FAILED if event == "PreToolUse" else REASON_WITHHELD
-    return 0, "", ""      # any other event: not ours, say nothing
+        return (2, "", REASON_FAILED) if event == "pre" else (2, "", REASON_WITHHELD)
+    return 0, "", ""      # any other event (session start, stop...): not ours, say nothing
 
 
 def cmd_codex() -> int:
-    status, out, err = run(sys.stdin.read(4_000_000))
+    try:
+        status, out, err = run(sys.stdin.read(4_000_000))
+    except BaseException:   # noqa: BLE001 - Codex continues the call on any exit status other than 2
+        sys.stderr.write(REASON_FAILED + "\n")
+        return 2
     if out:
         sys.stdout.write(out)
     if err:
@@ -115,7 +181,7 @@ def command_line(sub: str = "codex") -> str:
 
 
 def _entry(event: str) -> dict:
-    return {"matcher": "Bash|apply_patch|mcp__.*" if event == "PreToolUse" else "Bash|apply_patch|mcp__.*",
+    return {"matcher": "*",
             "hooks": [{"type": "command", "command": command_line(),
                        "statusMessage": "stuntkey: checking" if event == "PreToolUse" else "stuntkey: checking output",
                        "timeout": 20}]}
@@ -166,15 +232,18 @@ def _load(path: str) -> dict:
 
 def _save(path: str, data: dict) -> str | None:
     """Write atomically; keep one backup of the old file beside it. Returns the backup path."""
+    path = os.path.realpath(path)          # a symlinked hooks file is written THROUGH, not replaced by a plain file
     os.makedirs(os.path.dirname(path), exist_ok=True)
     backup = None
     if os.path.exists(path):
-        backup = path + ".stuntkey-backup-" + time.strftime("%Y%m%d-%H%M%S")
+        backup = f"{path}.stuntkey-backup-{time.strftime('%Y%m%d-%H%M%S')}-{os.getpid()}"
         shutil.copy2(path, backup)
-    tmp = path + ".tmp"
+    tmp = f"{path}.tmp{os.getpid()}"
     with open(tmp, "w", encoding="utf-8", newline="\n") as f:
         json.dump(data, f, indent=2)
         f.write("\n")
+    if os.path.exists(path):
+        shutil.copymode(path, tmp)          # keep the old file's permissions
     os.replace(tmp, path)
     return backup
 
@@ -187,7 +256,11 @@ def cmd_install(write: bool, undo: bool = False, path: str | None = None, out=No
     except (OSError, ValueError) as e:
         out.write(f"  I cannot read {path} ({e}). I changed nothing; fix or move that file first.\n")
         return 1
-    new, changed = (remove_install if undo else merge_install)(data)
+    try:
+        new, changed = (remove_install if undo else merge_install)(data)
+    except Exception as e:   # noqa: BLE001 - e.g. "hooks": null or a list where an object belongs
+        out.write(f"  I do not understand the layout of {path} ({type(e).__name__}). I changed nothing; fix or move that file first.\n")
+        return 1
     if not write:
         out.write(f"  This is what stuntkey would {'remove from' if undo else 'put in'} {path} (nothing was changed; add --write to do it):\n\n")
         out.write(json.dumps(new, indent=2) + "\n")

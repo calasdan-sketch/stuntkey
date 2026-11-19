@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased (round 15, from a hands-on audit and a competitor review)
+
+- The first screen, `help` and `--help` now say up front: beta, not independently reviewed, lowers risk, does not stop malware or what your
+  AI does with a key you allow, and point to `stuntkey limits`. The usage line no longer lists 65 command names. "Did you mean" only for a
+  real near-miss. The absolute "never written to a log" wording is gone (a program started with `run` can print the key).
+- `stuntkey status` exits 1 when a computer that was set up now needs attention (a computer never set up is told to run setup and exits 0);
+  `stuntkey test --json` added; `status`, `test` and `fix` JSON carry `"schema": 1`; the doctor row says its 77 attacks are simulated
+  attacks on stuntkey's own rules, not the separate keycanary benchmark. Setup no longer prints its "done" list twice.
+- NEW: Codex and Cursor hooks (`stuntkey hook codex-install` / `cursor-install`; shows the change unless `--write`; backup and `--undo`).
+  Built from each app's published documentation; NOT yet run inside the real apps. Both answer "block" if they themselves fail. Codex
+  hides a whole output that holds a protected key (it cannot redact in place). Cursor cannot hide a shell command's output at all, so
+  there stuntkey only refuses before the call.
+- Internal working notes and run logs are no longer in the repository.
+
+
 ## Unreleased
 
 Round 4, builder B (everyday use). In plain words:

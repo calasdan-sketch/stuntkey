@@ -11,7 +11,8 @@ How Cursor differs from Claude Code, and what this does about it:
   - Cursor hooks FAIL OPEN by default. The install sets `failClosed: true`, and any failure here also answers exit 2 (block).
   - THE BIG LIMIT: after a tool runs, Cursor lets a hook replace the output of MCP tools only (`updated_mcp_tool_output`). The output of a
     shell command, a file read or a search CANNOT be hidden or redacted by a hook. So on Cursor stuntkey protects only BEFORE the call:
-    it refuses commands and reads that would show a key; it cannot clean up afterwards. Keys in an MCP tool's output are withheld.
+    it refuses commands and reads that would show a key; it cannot clean up afterwards. Keys in a local MCP server's output are withheld with `updated_mcp_tool_output` (the exact shape Cursor accepts is not
+    confirmed; its docs only say the object replaces the output).
   - Hooks are a guardrail, not an enforcement boundary; Tab completions and some paths have separate hooks that are not covered."""
 import json
 import os
@@ -25,7 +26,7 @@ REASON_FAILED = "stuntkey could not check this call, so it was blocked (Cursor h
 REASON_WITHHELD = "stuntkey withheld this MCP tool output because it contained a key it protects."
 NAME_MAP = {"Shell": "Bash", "Read": "Read", "Write": "Write", "Grep": "Grep", "Task": "Task"}
 PATH_FIELDS = ("file_path", "path", "target_file")
-PRE_MATCHER = "Shell|Read|Write|Grep|Delete|Task|MCP:.*"
+PRE_MATCHER = "*"                 # every tool: the docs list tool names with "include", so the list is not exhaustive
 POST_MATCHER = "MCP:.*"
 
 
@@ -40,38 +41,59 @@ def _deny_for_cursor(check_stdout: str) -> str:
     return json.dumps({"permission": "deny", "user_message": why, "agent_message": why}) + "\n"
 
 
-def as_claude(payload: dict) -> dict:
-    """The same call in the shape stuntkey's check reads."""
-    out = dict(payload)
-    name = str(out.get("tool_name") or "")
-    ti = dict(out.get("tool_input")) if isinstance(out.get("tool_input"), dict) else {}
-    if name.startswith("MCP:"):
-        out["tool_name"] = "mcp__cursor__" + name[4:]
-    elif name == "Delete":
-        out["tool_name"] = "Write"
-        ti.setdefault("content", "")
-    elif name in NAME_MAP:
-        out["tool_name"] = NAME_MAP[name]
-    if "file_path" not in ti:
-        for f in PATH_FIELDS:
-            if isinstance(ti.get(f), str):
-                ti["file_path"] = ti[f]
-                break
-    if name == "Write" and "content" not in ti and isinstance(ti.get("contents"), str):
-        ti["content"] = ti["contents"]
-    out["tool_input"] = ti
-    return out
+FILE_TOOLS = {"read": "Read", "write": "Write", "delete": "Write", "strreplace": "Write", "str_replace": "Write", "edit": "Write",
+              "editnotebook": "Write", "multiedit": "Write", "grep": "Grep", "glob": "Grep", "task": "Task"}
+
+
+def as_claude_all(payload: dict):
+    """The same call in the shape stuntkey's check reads, as a LIST (one per path field, so none is skipped); None when the arguments
+    cannot be read. Tool names are matched without regard to case. A tool this does not know is checked as an MCP tool, which scans
+    EVERY string in its arguments, so a new Cursor tool is checked, not waved through."""
+    base = dict(payload)
+    name = str(base.get("tool_name") or "")
+    ti = _shared.tool_input_dict(base.get("tool_input"))
+    if ti is None:
+        return None
+    low = name.lower()
+    if low.startswith("mcp:"):
+        return [{**base, "tool_name": "mcp__cursor__" + name[4:], "tool_input": ti}]
+    if low in _shared.SHELLISH:
+        cmd = _shared.command_text(ti)
+        return None if cmd is None else [{**base, "tool_name": "Bash", "tool_input": {"command": cmd}}]
+    if low in FILE_TOOLS:
+        tool = FILE_TOOLS[low]
+        paths = [ti[k] for k in _shared.PATH_KEYS if isinstance(ti.get(k), str)]
+        if low == "grep" and isinstance(ti.get("glob"), str):
+            paths.append(ti["glob"])
+        if low == "glob" and isinstance(ti.get("pattern"), str):
+            paths.append(ti["pattern"])
+        if tool == "Task" or not paths:
+            return [{**base, "tool_name": "mcp__cursor__" + name, "tool_input": ti}] if tool != "Task" else [{**base, "tool_name": "Task", "tool_input": ti}]
+        content = ti.get("content") if isinstance(ti.get("content"), str) else ti.get("contents") if isinstance(ti.get("contents"), str) else ""
+        key = "path" if tool in ("Read", "Grep") else "file_path"
+        calls = []
+        for pth in dict.fromkeys(paths):
+            args = {key: pth}
+            if tool == "Write":
+                args["content"] = content
+            calls.append({**base, "tool_name": tool, "tool_input": args})
+        return calls
+    return [{**base, "tool_name": "mcp__cursor__" + name, "tool_input": ti}]
 
 
 def pre(payload: dict, check=None) -> tuple:
     from . import hook
     check = check or hook.check
-    status, out = check(json.dumps({**as_claude(payload), "hook_event_name": "PreToolUse"}))
-    if status != 0:
-        return 2, "", REASON_FAILED
-    if not out.strip():
-        return 0, json.dumps({"permission": "allow"}) + "\n", ""
-    return 0, _deny_for_cursor(out), ""
+    calls = as_claude_all(payload)
+    if calls is None:
+        return 2, "", _shared.REASON_UNREADABLE
+    for call in calls:
+        status, out = check(json.dumps({**call, "hook_event_name": "PreToolUse"}))
+        if status != 0:
+            return 2, "", REASON_FAILED
+        if out.strip():
+            return 0, _deny_for_cursor(out), ""
+    return 0, json.dumps({"permission": "allow"}) + "\n", ""
 
 
 def post(payload: dict, mask=None) -> tuple:
@@ -104,19 +126,25 @@ def run(stdin_text: str, check=None, mask=None) -> tuple:
             raise ValueError("not an object")
     except Exception:   # noqa: BLE001
         return 2, "", REASON_FAILED
-    event = payload.get("hook_event_name")
+    event = _shared.infer_event(payload)
     try:
-        if event == "preToolUse":
+        if event == "pre":
             return pre(payload, check)
-        if event == "postToolUse":
+        if event == "post":
             return post(payload, mask)
+        if event is None:
+            return 2, "", _shared.REASON_UNREADABLE
     except Exception:   # noqa: BLE001
-        return (2, "", REASON_FAILED) if event == "preToolUse" else (0, "", "")
+        return (2, "", REASON_FAILED) if event == "pre" else (0, "", "")
     return 0, "", ""
 
 
 def cmd_cursor() -> int:
-    status, out, err = run(sys.stdin.read(4_000_000))
+    try:
+        status, out, err = run(sys.stdin.read(4_000_000))
+    except BaseException:   # noqa: BLE001 - any exit status other than 2 lets the call through
+        sys.stderr.write(REASON_FAILED + "\n")
+        return 2
     if out:
         sys.stdout.write(out)
     if err:
@@ -177,7 +205,11 @@ def cmd_install(write: bool, undo: bool = False, path: str | None = None, out=No
     except (OSError, ValueError) as e:
         out.write(f"  I cannot read {path} ({e}). I changed nothing; fix or move that file first.\n")
         return 1
-    new, changed = (remove_install if undo else merge_install)(data)
+    try:
+        new, changed = (remove_install if undo else merge_install)(data)
+    except Exception as e:   # noqa: BLE001
+        out.write(f"  I do not understand the layout of {path} ({type(e).__name__}). I changed nothing; fix or move that file first.\n")
+        return 1
     if not write:
         out.write(f"  This is what stuntkey would {'remove from' if undo else 'put in'} {path} (nothing was changed; add --write to do it):\n\n")
         out.write(json.dumps(new, indent=2) + "\n")
@@ -191,7 +223,7 @@ def cmd_install(write: bool, undo: bool = False, path: str | None = None, out=No
         out.write(f"  Your old file is kept as {backup}.\n")
     if not undo:
         out.write("  Limits, plainly: Cursor cannot hide or clean up the output of a shell command, a file read or a search, so stuntkey can "
-                  "only refuse those BEFORE they run. It can withhold a key from an MCP tool's output. The hook is set to block when it "
+                  "only refuse those BEFORE they run. It can withhold a key from a local (stdio) MCP server's output only; Cursor does not allow replacing a remote one. The hook is set to block when it "
                   "fails (Cursor lets calls through by default). Built from Cursor's documentation; not yet run inside the real app. "
                   "Restart Cursor so it loads the hook.\n")
     return 0

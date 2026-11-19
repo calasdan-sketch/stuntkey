@@ -42,7 +42,7 @@ class Pre(unittest.TestCase):
         c.run(payload("preToolUse", tool_name="MCP:search", tool_input={"q": "x"}), check=chk)
         c.run(payload("preToolUse", tool_name="Delete", tool_input={"path": "/p/.env"}), check=chk)
         self.assertEqual([s["tool_name"] for s in seen], ["Bash", "Read", "Write", "mcp__cursor__search", "Write"])
-        self.assertEqual(seen[1]["tool_input"]["file_path"], "/p/.env")
+        self.assertEqual(seen[1]["tool_input"]["path"], "/p/.env")
         self.assertEqual((seen[2]["tool_input"]["file_path"], seen[2]["tool_input"]["content"]), ("/p/a", "hi"))
 
     def test_the_real_check_refuses_reading_an_env_file(self):
@@ -141,6 +141,60 @@ class Config(unittest.TestCase):
             text = out.getvalue()
             self.assertIn("cannot hide or clean up the output of a shell command", text)
             self.assertIn("not yet run inside the real app", text)
+
+
+class FromTheSecurityReview(unittest.TestCase):
+    """Each input below was an ALLOW before the independent review. They run the REAL check against a throwaway home."""
+
+    def _decide(self, **kw):
+        with throwaway_home():
+            st, out, _err = c.run(payload("preToolUse", **kw))
+        return st, ("deny" if '"deny"' in out else "allow" if out.strip() else "none")
+
+    def test_mcp_arguments_sent_as_a_json_string_are_read(self):
+        self.assertEqual(self._decide(tool_name="MCP:fs_read", tool_input=json.dumps({"path": "/home/u/.ssh/id_rsa"})), (0, "deny"))
+
+    def test_a_shell_command_given_as_a_list_or_as_cmd_is_read(self):
+        self.assertEqual(self._decide(tool_name="Shell", tool_input={"command": ["bash", "-lc", "cat .env"]}), (0, "deny"))
+        self.assertEqual(self._decide(tool_name="shell", tool_input={"cmd": "cat .env"}), (0, "deny"))
+
+    def test_arguments_that_cannot_be_read_are_blocked_not_allowed(self):
+        for ti in (None, 5, [1, 2]):
+            self.assertEqual(self._decide(tool_name="Shell", tool_input=ti)[0], 2, ti)
+        self.assertEqual(self._decide(tool_name="Shell", tool_input={"working_directory": "/p"})[0], 2)
+
+    def test_tools_outside_the_documented_list_are_still_checked(self):
+        self.assertEqual(self._decide(tool_name="StrReplace", tool_input={"path": ".env", "old_string": "a", "new_string": "b"}), (0, "deny"))
+        self.assertEqual(self._decide(tool_name="SomeNewTool", tool_input={"target": "/home/u/.ssh/id_rsa"})[1], "deny")
+
+    def test_every_path_field_is_checked_not_only_the_first(self):
+        self.assertEqual(self._decide(tool_name="Read", tool_input={"file_path": "a.txt", "target_file": ".env"}), (0, "deny"))
+        self.assertEqual(self._decide(tool_name="Grep", tool_input={"target_file": ".env", "pattern": "x"})[1], "deny")
+
+    def test_a_missing_or_oddly_spelled_event_name_is_not_waved_through(self):
+        for ev in (None, "", "PRETOOLUSE", "pre_tool_use"):
+            with throwaway_home():
+                st, out, _ = c.run(json.dumps({"hook_event_name": ev, "tool_name": "Shell", "tool_input": {"command": "cat .env"}}))
+            self.assertIn((st, '"deny"' in out), ((0, True), (2, False)), ev)
+
+    def test_the_hook_files_cannot_be_changed_by_the_agent(self):
+        for cmd in ("rm ~/.cursor/hooks.json", "echo {} > ~/.cursor/hooks.json", "stuntkey hook cursor-install --undo --write"):
+            self.assertEqual(self._decide(tool_name="Shell", tool_input={"command": cmd}), (0, "deny"), cmd)
+        self.assertEqual(self._decide(tool_name="Delete", tool_input={"path": "/home/u/.cursor/hooks.json"}), (0, "deny"))
+
+    def test_an_internal_crash_exits_2(self):
+        from unittest import mock
+        with mock.patch.object(c, "run", side_effect=RuntimeError("boom")), mock.patch("sys.stdin", io.StringIO("{}")):
+            self.assertEqual(c.cmd_cursor(), 2)
+
+    def test_odd_hooks_files_are_a_plain_message_not_a_traceback(self):
+        for body in ('{"hooks": null}', '{"hooks": []}', '{"hooks": {"preToolUse": 5}}'):
+            with tempfile.TemporaryDirectory() as d:
+                p = os.path.join(d, "hooks.json")
+                with open(p, "w", encoding="utf-8") as f:
+                    f.write(body)
+                self.assertEqual(c.cmd_install(True, path=p, out=io.StringIO()), 1, body)
+                self.assertEqual(open(p, encoding="utf-8").read(), body)
 
 
 if __name__ == "__main__":

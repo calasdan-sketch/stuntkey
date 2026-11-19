@@ -210,12 +210,13 @@ _CRED_FILE = (r"(?:[\w.\-]{0,120}\.(?:pem|key|p12|pfx|jks|keystore)|id_(?:rsa|ds
 # The one STEAL_RULE also applied to an MCP tool's arguments (decide_steal).
 _SETTINGS_WRITE_RULE = (
     re.compile(r"(?:(?<!>)>>?|\btee\b|\b(?:cp|mv|rm)\b|\bsed\b[^\n;&|]{0,400}?\s(?:-[A-Za-z]*i\b|--in-place))"
-               r"[^\n;&|]{0,400}?(?:\.claude[/\\]settings(?:\.local)?\.json|\.mcp\.json|\.claude\.json)"
+               r"[^\n;&|]{0,400}?(?:\.claude[/\\]settings(?:\.local)?\.json|\.mcp\.json|\.claude\.json|"
+               r"\.codex[/\\](?:hooks\.json|config\.toml)|\.cursor[/\\]hooks\.json)"
                r"(?![\w.-])", re.I),
     "change the Claude settings files that decide which hooks and tools run "
     "(only the person may)")
 # A cheap look that must pass before the settings rule above is tried at all.
-_SETTINGS_HINT_RE = re.compile(r"\.claude|\.mcp\.json", re.I)
+_SETTINGS_HINT_RE = re.compile(r"\.claude|\.mcp\.json|\.codex|\.cursor", re.I)
 STEAL_RULES = (
     (re.compile(r"(?:stuntkey|oathkey)\b(?:(?!\s--\s)[^\n;&|]){0,300}\s--no-r\w*", re.I),
      "run a command with the key and turn output hiding off"),
@@ -226,6 +227,7 @@ STEAL_RULES = (
                 r"(?:remote|deploy|trust-server|export|run|serve|call|forget|stop|resume|rotate|"
                 r"proxy|mint|panic|setup-agent|skill\s+install|revoke|undo|recipe\s+(?:approve|revoke)|audit\s+reset|"
                 r"caps\s+(?:set|--clear)|policy\s+approve|(?:hook\s+)?uninstall|"
+                r"hook\s+(?:codex|cursor)-install\b[^\n;&|]{0,200}--(?:undo|write)|"
                 r"hook\s+install\b[^\n;&|]{0,200}--fail-open|"
                 r"install\s+(?:[^\n;&|]*\s)?--uninstall)(?![\w-])", re.I),
      "run a stuntkey command that uses, sends or removes a stored key, or switches "
@@ -1471,6 +1473,7 @@ _HOMEISH = (r"(?:~|\$\{?HOME\}?|%USERPROFILE%|%HOMEPATH%|\$env:(?:USERPROFILE|HO
 _CLAUDE_FREE = r"(?:plans|projects|todos|tasks|cache|logs|shell-snapshots|statsig|ide|session-env|file-history|worktrees)"
 _TAMPER_TARGET_RE = re.compile(
     r"\.claude/settings(?:\.local)?\.json(?![\w.-])|(?<![\w-])\.mcp\.json(?![\w.-])|(?<![\w-])\.claude\.json(?![\w.-])|"
+    r"\.codex/(?:hooks\.json|config\.toml)(?![\w.-])|\.cursor/hooks\.json(?![\w.-])|"
     + _HOMEISH + r"/\.claude(?![\w.-])(?!/" + _CLAUDE_FREE + r"(?![\w-]))|"
     r"site-packages/stuntkey(?![\w-])|pipx/venvs/stuntkey(?![\w-])|/Scripts/stuntkey(?:\.exe)?(?![\w.-])|"
     r"\.local/bin/stuntkey(?:\.exe)?(?![\w.-])|(?<![\w-])stuntkey\.pyz(?![\w-])", re.I)

@@ -172,5 +172,69 @@ class Config(unittest.TestCase):
             self.assertIn("not yet run inside the real app", text)
 
 
+class FromTheSecurityReview(unittest.TestCase):
+    """Inputs that were an ALLOW before the independent review, run against the real check in a throwaway home."""
+
+    def _decide(self, **kw):
+        with throwaway_home():
+            st, out, _err = c.run(payload("PreToolUse", **kw))
+        return st, ("deny" if '"deny"' in out else "allow" if out.strip() else "none")
+
+    def test_a_shell_command_as_a_list_or_cmd_is_read(self):
+        self.assertEqual(self._decide(tool_name="Bash", tool_input={"command": ["bash", "-lc", "cat .env"]}), (0, "deny"))
+        self.assertEqual(self._decide(tool_name="exec_command", tool_input={"cmd": "cat .env"}), (0, "deny"))
+
+    def test_unreadable_arguments_block(self):
+        for ti in (None, 5):
+            self.assertEqual(self._decide(tool_name="Bash", tool_input=ti)[0], 2, ti)
+
+    def test_a_string_tool_input_is_read_as_json_or_as_a_command(self):
+        self.assertEqual(self._decide(tool_name="mcp__fs__read", tool_input=json.dumps({"path": "/home/u/.ssh/id_rsa"})), (0, "deny"))
+        self.assertEqual(self._decide(tool_name="Bash", tool_input="cat .env"), (0, "deny"))
+
+    def test_event_names_in_other_spellings_or_missing_are_not_waved_through(self):
+        for ev in (None, "pretooluse", "pre_tool_use"):
+            with throwaway_home():
+                st, out, _ = c.run(json.dumps({"hook_event_name": ev, "tool_name": "Bash", "tool_input": {"command": "cat .env"}}))
+            self.assertIn((st, '"deny"' in out), ((0, True), (2, False)), ev)
+
+    def test_the_hook_files_cannot_be_changed_by_the_agent(self):
+        for cmd in ("rm ~/.codex/hooks.json", "sed -i s/stuntkey/x/ ~/.codex/hooks.json", "stuntkey hook codex-install --undo --write"):
+            self.assertEqual(self._decide(tool_name="Bash", tool_input={"command": cmd}), (0, "deny"), cmd)
+
+    def test_an_internal_crash_exits_2(self):
+        from unittest import mock
+        with mock.patch.object(c, "run", side_effect=RuntimeError("boom")), mock.patch("sys.stdin", io.StringIO("{}")):
+            self.assertEqual(c.cmd_codex(), 2)
+
+    def test_the_matcher_covers_every_tool(self):
+        new, _ = c.merge_install({})
+        self.assertEqual(new["hooks"]["PreToolUse"][0]["matcher"], "*")
+
+    def test_a_symlinked_hooks_file_is_written_through_and_keeps_its_mode(self):
+        if os.name == "nt":
+            self.skipTest("symlinks need a privilege on Windows")
+        with tempfile.TemporaryDirectory() as d:
+            real = os.path.join(d, "real.json")
+            link = os.path.join(d, "hooks.json")
+            with open(real, "w", encoding="utf-8") as f:
+                f.write("{}")
+            os.chmod(real, 0o640)
+            os.symlink(real, link)
+            c.cmd_install(True, path=link, out=io.StringIO())
+            self.assertTrue(os.path.islink(link))
+            self.assertIn("stuntkey", open(real, encoding="utf-8").read())
+            self.assertEqual(os.stat(real).st_mode & 0o777, 0o640)
+
+    def test_odd_hooks_files_are_a_plain_message(self):
+        for body in ('{"hooks": null}', '{"hooks": []}', '{"hooks": {"PreToolUse": 5}}'):
+            with tempfile.TemporaryDirectory() as d:
+                p = os.path.join(d, "hooks.json")
+                with open(p, "w", encoding="utf-8") as f:
+                    f.write(body)
+                self.assertEqual(c.cmd_install(True, path=p, out=io.StringIO()), 1, body)
+                self.assertEqual(open(p, encoding="utf-8").read(), body)
+
+
 if __name__ == "__main__":
     unittest.main()
