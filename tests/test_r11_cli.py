@@ -11,7 +11,7 @@ from unittest import mock
 import _isolation  # noqa: F401  (fake HOME for the whole run)
 from stuntkey import clipboard as clip_mod
 from stuntkey import cli, connect as connect_mod, connect_import, connect_try
-from stuntkey import keychain, recipes
+from stuntkey import keychain, recipes, scrub
 
 FAKE = "sk-FAKE-TEST-0000-abcdefghijklmnop"
 
@@ -39,6 +39,12 @@ def memory_keychain():
         yield
     finally:
         keychain._memory.clear()
+        # the fake key's fingerprints would make later hook tests think a key is stored
+        # (and refuse any Grep over the test files that contain it)
+        try:
+            os.remove(scrub.fingerprint_path())
+        except OSError:
+            pass
         if old is None:
             os.environ.pop("STUNTKEY_KEYCHAIN", None)
         else:

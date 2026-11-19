@@ -1417,11 +1417,15 @@ def decide_code_leak(payload) -> tuple[str, str] | None:
         # padding a file past what is scanned must not be a way around it
         return "big", str(total)
     budget = [WRITE_SCAN_BUDGET]
+    seen: set = set()   # the same piece gives the same answer: padding is read once
     for text in texts:
         hits = _printed_env_files(text)
         if hits:
             return "env", hits[0]
         for piece in _pieces(text, budget):
+            if piece in seen:
+                continue
+            seen.add(piece)
             _tick()
             what = steals_key(piece, shell=True)
             if what:
