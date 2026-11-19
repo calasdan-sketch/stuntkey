@@ -127,7 +127,7 @@ def _hook_items(path: str, label: str, required: bool) -> list:
                 "The safety check for Claude Code is not switched on, so Claude can "
                 "still open your .env files.",
                 "Run `stuntkey fix`.", fixer,
-                f"switch on the Claude Code safety check ({_p(path)})"))
+                f"switch on the Claude Code safety check ({_p(path)}); if that check itself breaks, Claude's tool calls are blocked until `stuntkey hook uninstall` (or install it with --fail-open)"))
         return out
     group, handler = mine[0]
     program = _program_of(handler)
@@ -805,6 +805,15 @@ START_HERE_EXTRA = [
 ]
 
 
+LIMITS_TEXT = "Beta, not independently reviewed. It lowers risk; it does not stop malware or what your AI does with a key you allow. What it does not protect: `stuntkey limits`."
+
+
+def _wrap_limits(indent: str = "") -> list:
+    """The up-front limits notice, wrapped so no help line is wider than the screens allow."""
+    import textwrap
+    return textwrap.wrap(LIMITS_TEXT, 76, initial_indent=indent, subsequent_indent=indent)
+
+
 def render_start_here() -> str:
     import textwrap
     lines = ["  Start here (three steps):"]
@@ -855,7 +864,9 @@ def _help_texts(parser) -> dict:
 
 def render_everyday() -> str:
     """The short help: eight commands, in plain words."""
-    lines = ["", "  stuntkey: let your AI use your API keys without holding them.", ""]
+    lines = ["", "  stuntkey: let your AI use your API keys without holding them.",
+             ""]
+    lines += _wrap_limits("  ") + [""]
     lines += render_start_here().rstrip("\n").split("\n")
     lines += ["", "  The commands you use every day", ""]
     for name, text in EVERYDAY:

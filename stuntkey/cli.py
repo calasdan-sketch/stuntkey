@@ -72,7 +72,8 @@ def _harden_streams() -> None:
 
 from . import fixcmd as _fixcmd  # noqa: E402  (the one "Start here" text)
 
-NEXT_STEPS = ("stuntkey: let your AI use your API keys without holding them.\n\n"
+NEXT_STEPS = ("stuntkey: let your AI use your API keys without holding them.\n"
+              + "\n".join(_fixcmd._wrap_limits()) + "\n\n"
               + _fixcmd.render_start_here().rstrip("\n") + "\n\n"
               "Is something not working? `stuntkey status` shows green, yellow or red; "
               "`stuntkey fix` repairs it.\n"
@@ -98,10 +99,10 @@ def _show_banner(cmd: str) -> None:
 class _Parser(argparse.ArgumentParser):
     def error(self, message):
         m = re.search(r"invalid choice: '([^']*)'", message)
-        if m and message.startswith("argument cmd:"):
+        if m and message.startswith(("argument cmd:", "argument <command>:")):
             # plain words, one line, no dump of every command name
             word = recipes_mod.printable(m.group(1))
-            near = difflib.get_close_matches(m.group(1), list(self._subparsers_choices()), n=1)
+            near = difflib.get_close_matches(m.group(1), list(self._subparsers_choices()), n=1, cutoff=0.75)
             text = f"I don't know '{word}'."
             if near:
                 text += f" Did you mean: stuntkey {near[0]}?"
@@ -128,7 +129,8 @@ def _build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         description="Let your AI use your API keys without holding them: guided "
                     "setup, tested, kept in your computer's safe store (on Windows, "
-                    "Credential Manager). The key is never shown or written to a log.\n\n"
+                    "Credential Manager). stuntkey itself never prints the key or writes it to a log.\n"
+                    + "\n".join(fixcmd._wrap_limits()) + "\n\n"
                     + fixcmd.render_start_here().rstrip("\n") + "\n\n"
                     "All the commands (`stuntkey help` shows the short list):",
         epilog="Find keys lying around in your files: `stuntkey scan`. "
@@ -139,7 +141,7 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="Work as if started in DIR (where stuntkey.json and "
                         ".env live). Without it, stuntkey.json is looked for "
                         "here and up to the git project's top folder, no further.")
-    sub = p.add_subparsers(dest="cmd")
+    sub = p.add_subparsers(dest="cmd", metavar="<command>")   # not the {65 names} blob; `stuntkey help` lists them
 
     sc = sub.add_parser(
         "scan", help="Find API keys that leaked into files an AI agent can read.",
