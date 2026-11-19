@@ -93,7 +93,7 @@
   {
     "id": "read-stuntkey-store",
     "category": "tool indirection",
-    "attack": "Bash reads stuntkey's own key store",
+    "attack": "Bash reads the protection tool's own key store (id kept for stability; the path is stuntkey's, ~/.stuntkey/keys.json)",
     "tool": {"tool_name": "Bash", "tool_input": {"command": "cat {SBX}/.stuntkey/keys.json"}},
     "run": {"kind": "sh", "cmd": "cat '{SBX}/.stuntkey/keys.json' 2>/dev/null"}
   }
