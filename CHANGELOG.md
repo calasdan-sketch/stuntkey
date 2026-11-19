@@ -156,7 +156,7 @@ Security panel, round 2. In plain words:
 - **Sites stuntkey has no recipe for (`stuntkey get example.com`):** the clipboard could be
   poisoned with look-alike text, so after copy-and-go it shows the first 3 characters, the length and
   where it will be saved, and (round 3) you must TYPE those 3 characters to save it; Enter throws
-  it away. Known services are unchanged: still no extra step (a decision for Dan: keep it off for
+  it away. Known services are unchanged: still no extra step (a decision for the maintainer: keep it off for
   known recipes).
 - **Hook, before the call:** a Grep for the start of a key (`sk-`, `AKIA`, `ghp_`, `xox` ...) over a
   folder or file that holds a stored key or a key-shaped secret is refused (the files are read first;

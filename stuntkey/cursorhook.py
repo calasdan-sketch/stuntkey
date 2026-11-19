@@ -24,8 +24,6 @@ from . import codexhook as _shared
 
 REASON_FAILED = "stuntkey could not check this call, so it was blocked (Cursor hooks fail open unless told otherwise)."
 REASON_WITHHELD = "stuntkey withheld this MCP tool output because it contained a key it protects."
-NAME_MAP = {"Shell": "Bash", "Read": "Read", "Write": "Write", "Grep": "Grep", "Task": "Task"}
-PATH_FIELDS = ("file_path", "path", "target_file")
 PRE_MATCHER = "*"                 # every tool: the docs list tool names with "include", so the list is not exhaustive
 POST_MATCHER = "MCP:.*"
 
@@ -42,13 +40,14 @@ def _deny_for_cursor(check_stdout: str) -> str:
 
 
 FILE_TOOLS = {"read": "Read", "write": "Write", "delete": "Write", "strreplace": "Write", "str_replace": "Write", "edit": "Write",
-              "editnotebook": "Write", "multiedit": "Write", "grep": "Grep", "glob": "Grep", "task": "Task"}
+              "editnotebook": "Write", "multiedit": "Write", "applypatch": "Bash", "apply_patch": "Bash", "grep": "Grep", "glob": "Grep",
+              "task": "Task"}
 
 
 def as_claude_all(payload: dict):
     """The same call in the shape stuntkey's check reads, as a LIST (one per path field, so none is skipped); None when the arguments
-    cannot be read. Tool names are matched without regard to case. A tool this does not know is checked as an MCP tool, which scans
-    EVERY string in its arguments, so a new Cursor tool is checked, not waved through."""
+    cannot be read. Tool names are matched without regard to case. A tool this does not know is checked as an MCP tool AND every string
+    in it is checked as a shell command line, so a new Cursor tool (or a call with no tool name) is not waved through."""
     base = dict(payload)
     name = str(base.get("tool_name") or "")
     ti = _shared.tool_input_dict(base.get("tool_input"))
@@ -62,23 +61,22 @@ def as_claude_all(payload: dict):
         return None if cmd is None else [{**base, "tool_name": "Bash", "tool_input": {"command": cmd}}]
     if low in FILE_TOOLS:
         tool = FILE_TOOLS[low]
+        if tool == "Bash":                                   # a patch: its text is shell-like, scan every string
+            return _shared.string_calls(base, ti) or None
+        if tool == "Task":
+            return [{**base, "tool_name": "Task", "tool_input": ti}] + _shared.string_calls(base, ti)
         paths = [ti[k] for k in _shared.PATH_KEYS if isinstance(ti.get(k), str)]
-        if low == "grep" and isinstance(ti.get("glob"), str):
-            paths.append(ti["glob"])
         if low == "glob" and isinstance(ti.get("pattern"), str):
             paths.append(ti["pattern"])
-        if tool == "Task" or not paths:
-            return [{**base, "tool_name": "mcp__cursor__" + name, "tool_input": ti}] if tool != "Task" else [{**base, "tool_name": "Task", "tool_input": ti}]
+        if low == "grep" and isinstance(ti.get("glob"), str):
+            paths.append(ti["glob"])
+        if not paths:
+            return [{**base, "tool_name": "mcp__cursor__" + name, "tool_input": ti}] + _shared.string_calls(base, ti)
+        if tool == "Read" or tool == "Grep":
+            return _shared.read_calls(base, {**ti, "pattern": ti.get("pattern") if low == "glob" else None}, tool) or None
         content = ti.get("content") if isinstance(ti.get("content"), str) else ti.get("contents") if isinstance(ti.get("contents"), str) else ""
-        key = "path" if tool in ("Read", "Grep") else "file_path"
-        calls = []
-        for pth in dict.fromkeys(paths):
-            args = {key: pth}
-            if tool == "Write":
-                args["content"] = content
-            calls.append({**base, "tool_name": tool, "tool_input": args})
-        return calls
-    return [{**base, "tool_name": "mcp__cursor__" + name, "tool_input": ti}]
+        return [{**base, "tool_name": "Write", "tool_input": {"file_path": pth, "content": content}} for pth in dict.fromkeys(paths)]
+    return [{**base, "tool_name": "mcp__cursor__" + name, "tool_input": ti}] + _shared.string_calls(base, ti)
 
 
 def pre(payload: dict, check=None) -> tuple:
@@ -99,7 +97,7 @@ def pre(payload: dict, check=None) -> tuple:
 def post(payload: dict, mask=None) -> tuple:
     """Only MCP tool output can be replaced in Cursor. Any other tool: nothing can be done after the call, so say nothing."""
     name = str(payload.get("tool_name") or "")
-    if not name.startswith("MCP:"):
+    if not name.lower().startswith("mcp:"):
         return 0, "", ""
     from . import hook
     from . import scrub as scrub_mod
@@ -135,7 +133,7 @@ def run(stdin_text: str, check=None, mask=None) -> tuple:
         if event is None:
             return 2, "", _shared.REASON_UNREADABLE
     except Exception:   # noqa: BLE001
-        return (2, "", REASON_FAILED) if event == "pre" else (0, "", "")
+        return (2, "", REASON_FAILED) if event == "pre" else (0, json.dumps({"updated_mcp_tool_output": {"withheld": REASON_WITHHELD}}) + chr(10), "")
     return 0, "", ""
 
 

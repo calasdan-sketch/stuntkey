@@ -26,12 +26,12 @@ class Pre(unittest.TestCase):
         self.assertEqual((st, json.loads(out)), (0, {"permission": "allow"}))
 
     def test_a_failing_check_blocks_with_exit_2_because_cursor_fails_open_by_default(self):
-        self.assertEqual(c.run(payload("preToolUse", tool_name="Shell", tool_input={}), check=lambda t: (1, ""))[0], 2)
+        self.assertEqual(c.run(payload("preToolUse", tool_name="Shell", tool_input={"command": "ls"}), check=lambda t: (1, ""))[0], 2)
 
     def test_a_crashing_check_blocks(self):
         def boom(t):
             raise RuntimeError("x")
-        self.assertEqual(c.run(payload("preToolUse", tool_name="Shell", tool_input={}), check=boom)[0], 2)
+        self.assertEqual(c.run(payload("preToolUse", tool_name="Shell", tool_input={"command": "ls"}), check=boom)[0], 2)
 
     def test_tool_names_and_path_fields_are_mapped(self):
         seen = []
@@ -195,6 +195,57 @@ class FromTheSecurityReview(unittest.TestCase):
                     f.write(body)
                 self.assertEqual(c.cmd_install(True, path=p, out=io.StringIO()), 1, body)
                 self.assertEqual(open(p, encoding="utf-8").read(), body)
+
+
+class FinalReview(unittest.TestCase):
+    """Reviewer inputs from the final round. Each runs the REAL check in a throwaway home."""
+    MOD = c
+
+    def _go(self, event, **kw):
+        with throwaway_home():
+            st, out, _ = self.MOD.run(json.dumps({"hook_event_name": event, **kw}))
+        return st, ("deny" if "deny" in out else "allow" if out.strip() else "none")
+
+
+    def test_a_read_of_a_file_not_named_like_env_is_checked_for_a_stored_key(self):
+        from stuntkey import scrub
+        with throwaway_home() as h:
+            note = os.path.join(h, "notes.txt")
+            with open(note, "w", encoding="utf-8") as f:
+                f.write("the key is " + SECRET)
+            scrub.remember_key("svc/API_KEY", SECRET)
+            st, out, _ = c.run(payload("preToolUse", tool_name="Read", tool_input={"file_path": note}))
+        self.assertEqual((st, json.loads(out)["permission"]), (0, "deny"))
+
+    def test_more_shell_tool_names_and_unknown_tools_and_no_tool_name(self):
+        for tool, ti in (("run_terminal_cmd", {"command": "cat .env"}), ("run_terminal_command", {"command": "cat .env"}), ("SomethingNew", {"arg": "cat .env"}),
+                         ("ApplyPatch", {"patch": "*** Update File: .env"}), ("", {"command": "cat .env"})):
+            self.assertEqual(self._go("preToolUse", tool_name=tool, tool_input=ti), (0, "deny"), tool)
+
+    def test_grep_glob_and_glob_pattern_reach_the_check(self):
+        seen = []
+        chk = lambda t: seen.append(json.loads(t)) or (0, "")
+        c.run(payload("preToolUse", tool_name="Grep", tool_input={"pattern": "x", "glob": "**/.env"}), check=chk)
+        c.run(payload("preToolUse", tool_name="Glob", tool_input={"pattern": "**/.env"}), check=chk)
+        self.assertEqual([s["tool_input"]["path"] for s in seen], ["**/.env", "**/.env"])
+
+    def test_the_failing_and_crashing_check_tests_really_reach_the_check(self):
+        called = []
+
+        def chk(t):
+            called.append(1)
+            raise RuntimeError("boom")
+        self.assertEqual(c.run(payload("preToolUse", tool_name="Shell", tool_input={"command": "ls"}), check=chk)[0], 2)
+        self.assertEqual(called, [1])
+
+    def test_a_crash_while_checking_mcp_output_withholds_it(self):
+        def boom(v, p, **k):
+            raise RuntimeError("x")
+        out = c.run(payload("postToolUse", tool_name="mcp:fs", tool_input={}, tool_output="{}"), mask=boom)
+        self.assertIn("updated_mcp_tool_output", out[1])
+
+    def test_the_mcp_name_check_ignores_case_in_the_post_hook_too(self):
+        self.assertIn("updated_mcp_tool_output", c.run(payload("postToolUse", tool_name="mcp:fs", tool_input={}, tool_output="{}"), mask=lambda v, p, **k: (v, 1))[1])
 
 
 if __name__ == "__main__":

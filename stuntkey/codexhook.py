@@ -30,12 +30,11 @@ REASON_WITHHELD = ("stuntkey withheld this tool output because it contained a ke
 EVENTS = ("PreToolUse", "PostToolUse")
 
 
-def _deny(reason: str) -> str:
-    return json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
-                                              "permissionDecisionReason": reason}}) + "\n"
-
-
-SHELLISH = ("bash", "shell", "powershell", "exec_command", "local_shell", "terminal")
+SHELLISH = ("bash", "shell", "powershell", "exec_command", "local_shell", "terminal", "shell_command", "unified_exec",
+            "run_terminal_cmd", "run_terminal_command", "run_command", "execute_command", "write_stdin")
+# tools that read or list files by path: checked like a Read (a path that is not named like .env can still hold a key)
+READ_TOOLS = ("read", "read_file", "readfile", "view_image", "list_dir", "grep_files", "open_file", "cat")
+MAX_STRINGS = 40
 PATH_KEYS = ("file_path", "path", "target_file", "notebook_path", "filepath", "filename")
 
 
@@ -54,14 +53,39 @@ def tool_input_dict(value):
 
 
 def command_text(ti: dict):
-    """A shell command as one string: `command` or `cmd`, a list joined with spaces. None when there is none."""
-    for k in ("command", "cmd"):
+    """A shell command as one string: `command`, `cmd` or (write_stdin) `chars`, a list joined with spaces. None when there is none."""
+    for k in ("command", "cmd", "chars"):
         v = ti.get(k)
         if isinstance(v, str) and v.strip():
             return v
         if isinstance(v, (list, tuple)) and v and all(isinstance(x, (str, int, float)) for x in v):
             return " ".join(str(x) for x in v)
     return None
+
+
+def string_calls(base: dict, ti: dict) -> list:
+    """Every string in a tool's arguments, each checked as a shell command line. A tool this adapter does not know could carry shell text
+    or a file name in ANY field; scanning them all is what 'unknown tools are checked' has to mean. Bounded in count and size."""
+    from . import hook
+    out = []
+    for text in hook._all_strings(ti)[:MAX_STRINGS]:
+        if isinstance(text, str) and text.strip():
+            out.append({**base, "tool_name": "Bash", "tool_input": {"command": text[:20000]}})
+    return out
+
+
+def read_calls(base: dict, ti: dict, tool: str = "Read") -> list:
+    """One Read (or Grep) call per path-like field. Read is checked on `file_path` and Grep on `path`; BOTH are filled so neither is
+    skipped (a Read that carried only `path` went unread by the secret-file check)."""
+    paths = [ti[k] for k in PATH_KEYS if isinstance(ti.get(k), str)]
+    for k in ("glob", "pattern"):
+        if isinstance(ti.get(k), str) and tool == "Grep":
+            paths.append(ti[k])
+    calls = []
+    for pth in dict.fromkeys(paths):
+        args = {"file_path": pth, "path": pth} if tool == "Read" else {"path": pth}
+        calls.append({**base, "tool_name": tool, "tool_input": args})
+    return calls
 
 
 def infer_event(payload: dict):
@@ -95,7 +119,13 @@ def _as_claude(payload: dict):
         if cmd is None:
             return None
         return [{**out, "tool_name": "Bash", "tool_input": {"command": cmd}}]
-    return [{**out, "tool_name": name, "tool_input": ti}]
+    if low in READ_TOOLS:
+        calls = read_calls(out, ti, "Read")
+        return calls + string_calls(out, ti) if calls else string_calls(out, ti) or None
+    if low.startswith("mcp__") or low in ("write", "edit", "multiedit", "notebookedit"):
+        return [{**out, "tool_name": name, "tool_input": ti}]
+    # a tool this adapter does not know: its own check as given, plus every string in it as a shell line
+    return [{**out, "tool_name": name, "tool_input": ti}] + string_calls(out, ti)
 
 
 def pre(payload: dict, check=None) -> tuple:

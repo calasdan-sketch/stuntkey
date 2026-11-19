@@ -255,6 +255,16 @@ STEAL_RULES = (
                 r"install(?=[^\n;&|]{0,200}?(?:--force|--upgrade|--reinstall|--ignore-installed|(?<![\w-])-U(?![\w-]))))\b"
                 r"[^\n;&|]{0,200}?\b(?:stuntkey|oathkey)\b", re.I),
      "remove, replace or change the installed stuntkey program (only the person may)"),
+    (re.compile(r"(?:\brm\b|\bmv\b|\bdel\b|\brmdir\b|\brd\b|\bunlink\b|\bRemove-Item\b|\bMove-Item\b|\bRename-Item\b)"
+                r"[^\n;&|]{0,200}?\.(?:codex|cursor)(?:[/\\\s\"']|$)", re.I),
+     "remove or move the folders where Codex and Cursor keep their hooks (only the person may)"),
+    (re.compile(r"\b(?:codex|cursor-agent)(?:\.exe)?\b[^\n;&|]{0,200}?(?:--no-hooks|--dangerously-bypass\S*|(?:-c|--config)[ =]\S*hooks?\S*)|"
+                r"(?:^|[\s;&|`(])(?:CODEX_HOME|CURSOR_CONFIG_DIR)=", re.I),
+     "start Codex or Cursor with its hooks switched off or pointed at another folder (only the person may)"),
+    # a hidden file reached by a wildcard or an expansion instead of its name (`cat .*`, `cat .{env,x}`, `cat .$x`)
+    (re.compile(r"(?:^|[\s;&|`(])(?:cat|type|more|less|head|tail|gc|Get-Content|nl|tac|sort|base64|xxd|od|strings|bat)\b"
+                r"[^\n;&|]{0,80}?\s\.(?:\*|\{|\$)", re.I),
+     "read a hidden file through a wildcard or an expansion (which can be a .env file)"),
     _SETTINGS_WRITE_RULE,
     (re.compile(_SAFE + r"secret-tool\s+(?:lookup|search)\b", re.I), "read the Linux keyring"),
     (re.compile(_SAFE + r"security\s+(?:find-\w+-password|dump-keychain|export)\b", re.I),

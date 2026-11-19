@@ -52,7 +52,7 @@ class Pre(unittest.TestCase):
     def test_a_crashing_check_blocks_too(self):
         def boom(t):
             raise RuntimeError("x")
-        self.assertEqual(c.run(payload("PreToolUse", tool_name="Bash", tool_input={}), check=boom)[0], 2)
+        self.assertEqual(c.run(payload("PreToolUse", tool_name="Bash", tool_input={"command": "ls"}), check=boom)[0], 2)
 
     def test_apply_patch_is_checked_as_a_shell_command_carrying_the_patch_text(self):
         seen = []
@@ -234,6 +234,65 @@ class FromTheSecurityReview(unittest.TestCase):
                     f.write(body)
                 self.assertEqual(c.cmd_install(True, path=p, out=io.StringIO()), 1, body)
                 self.assertEqual(open(p, encoding="utf-8").read(), body)
+
+
+class FinalReview(unittest.TestCase):
+    """Reviewer inputs from the final round. Each runs the REAL check in a throwaway home."""
+    MOD = c
+
+    def _go(self, event, **kw):
+        with throwaway_home():
+            st, out, _ = self.MOD.run(json.dumps({"hook_event_name": event, **kw}))
+        return st, ("deny" if "deny" in out else "allow" if out.strip() else "none")
+
+
+    def test_shell_tool_names_beyond_the_documented_ones_are_read(self):
+        for tool, ti in (("shell_command", {"command": "cat .env"}), ("unified_exec", {"cmd": "cat .env"}), ("write_stdin", {"chars": "cat .env\n"})):
+            self.assertEqual(self._go("PreToolUse", tool_name=tool, tool_input=ti), (0, "deny"), tool)
+
+    def test_an_unknown_tool_has_every_string_checked_as_a_shell_line(self):
+        self.assertEqual(self._go("PreToolUse", tool_name="some_new_tool", tool_input={"x": "cat .env"}), (0, "deny"))
+
+    def test_read_style_tools_check_the_file_even_when_it_is_not_named_like_env(self):
+        from stuntkey import scrub
+        with throwaway_home() as h:
+            note = os.path.join(h, "notes.txt")
+            with open(note, "w", encoding="utf-8") as f:
+                f.write("the key is " + SECRET)
+            scrub.remember_key("svc/API_KEY", SECRET)
+            st, out, _ = c.run(payload("PreToolUse", tool_name="read_file", tool_input={"path": note}))
+        self.assertEqual((st, "deny" in out), (0, True))
+
+    def test_wildcard_and_expansion_reads_of_hidden_files_are_refused_but_ordinary_commands_pass(self):
+        for cmd in ("cat .*", "cat .{env,x}", "head -n1 .$x"):
+            self.assertEqual(self._go("PreToolUse", tool_name="Bash", tool_input={"command": cmd}), (0, "deny"), cmd)
+        for cmd in ("cat .gitignore", 'grep -E "a.*b" file.txt', "ls -la", "git status", "codex exec hi"):
+            self.assertEqual(self._go("PreToolUse", tool_name="Bash", tool_input={"command": cmd})[1], "none", cmd)
+
+    def test_the_agent_cannot_switch_the_hooks_off_by_removing_folders_or_launching_with_overrides(self):
+        for cmd in ("rm -rf ~/.codex", "mv ~/.codex /tmp/x", "codex -c features.hooks=false exec hi", "codex --no-hooks exec hi", "CODEX_HOME=/tmp/x codex exec hi",
+                    "codex --dangerously-bypass-approvals-and-sandbox exec hi"):
+            self.assertEqual(self._go("PreToolUse", tool_name="Bash", tool_input={"command": cmd}), (0, "deny"), cmd)
+
+    def test_the_failing_and_crashing_check_tests_really_reach_the_check(self):
+        called = []
+
+        def chk(t):
+            called.append(1)
+            raise RuntimeError("boom")
+        self.assertEqual(c.run(payload("PreToolUse", tool_name="Bash", tool_input={"command": "ls"}), check=chk)[0], 2)
+        self.assertEqual(called, [1], "the injected check was never called: the test would pass for the wrong reason")
+
+    def test_the_saved_file_keeps_the_old_mode(self):
+        if os.name == "nt":
+            self.skipTest("POSIX modes")
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "hooks.json")
+            with open(p, "w", encoding="utf-8") as f:
+                f.write("{}")
+            os.chmod(p, 0o640)
+            c.cmd_install(True, path=p, out=io.StringIO())
+            self.assertEqual(os.stat(p).st_mode & 0o777, 0o640)
 
 
 if __name__ == "__main__":
