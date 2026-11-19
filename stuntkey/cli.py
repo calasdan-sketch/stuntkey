@@ -250,6 +250,18 @@ def _build_parser() -> argparse.ArgumentParser:
                                 "or times out.")
     hsub.add_parser("check", help="The hook itself: reads Claude Code's JSON "
                                   "on stdin. Not for typing by hand.")
+    hsub.add_parser("codex", help="The Codex CLI hook itself: reads Codex's JSON on stdin. "
+                                  "Not for typing by hand.")
+    ci = hsub.add_parser("codex-install", help="Show or add the hook for OpenAI Codex CLI "
+                                               "(built from its documentation; not yet run inside Codex).")
+    ci.add_argument("--write", action="store_true", help="Write ~/.codex/hooks.json (a backup is kept); without it, only show.")
+    ci.add_argument("--undo", action="store_true", help="Take the stuntkey hook out again.")
+    hsub.add_parser("codex-status", help="Say whether the Codex hook is in ~/.codex/hooks.json.")
+    hsub.add_parser("cursor", help="The Cursor hook itself: reads Cursor's JSON on stdin. Not for typing by hand.")
+    cu = hsub.add_parser("cursor-install", help="Show or add the hook for Cursor (built from its documentation; not yet run inside Cursor).")
+    cu.add_argument("--write", action="store_true", help="Write ~/.cursor/hooks.json (a backup is kept); without it, only show.")
+    cu.add_argument("--undo", action="store_true", help="Take the stuntkey hook out again.")
+    hsub.add_parser("cursor-status", help="Say whether the Cursor hook is in ~/.cursor/hooks.json.")
 
     for name, help_text in (("get", "Add a key: opens the key page, takes the key when you "
                                     "copy it, tests it, saves it in the keychain."),
@@ -1126,6 +1138,17 @@ def _main(argv: list[str] | None = None) -> int:
             return 1
     if args.cmd == "hook":
         # before the recipes load: the hook's stdout must hold only its answer
+        # the Codex and Cursor adapters import hook, so they are dispatched from here (hook must not import them: an import cycle)
+        other = {"codex": ("codexhook", "cmd_codex"), "cursor": ("cursorhook", "cmd_cursor")}
+        app = args.hook_cmd.split("-")[0] if args.hook_cmd.split("-")[0] in other else None
+        if app:
+            import importlib
+            mod = importlib.import_module("." + other[app][0], __package__)
+            if args.hook_cmd == app:
+                return getattr(mod, other[app][1])()
+            if args.hook_cmd.endswith("-status"):
+                return mod.cmd_status()
+            return mod.cmd_install(write=getattr(args, "write", False), undo=getattr(args, "undo", False))
         from . import hook as hook_mod
         return hook_mod.cmd_hook(args)
     if args.cmd == "scan":

@@ -554,8 +554,7 @@ def _final(out, ok_steps: list, problems, changed: bool, extra=None) -> int:
         out.write(f"\n  Almost done: {n} step{'' if n == 1 else 's'} left.\n")
         for text, step in problems:
             out.write(f"    - {_p(text).rstrip('.')}.\n      Do this: {_p(step)}\n")
-        for s in ok_steps:
-            out.write(f"    - done: {_p(s)}\n")
+        # the steps that worked were already printed as Done: while they ran; not repeated here
         if extra:
             extra()
         out.write("  When those are done, run `stuntkey setup` again (it only finishes "
