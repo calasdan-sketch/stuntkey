@@ -17,5 +17,6 @@ packaging/npm/stuntkey.pyz
 # internal working notes and run logs (hold local paths); never publish. build_brand.py is the page generator and stays tracked.
 docs/_work/*
 !docs/_work/build_brand.py
+!docs/_work/release-checklist.md
 !docs/_work/brand_src/
 !docs/_work/brand_src/**
